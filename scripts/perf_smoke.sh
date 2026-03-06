@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CURD_BIN="${CURD_BIN:-$ROOT_DIR/target/release/curd}"
+# Determine binary path (handle cross-compilation target dirs)
+CURD_BIN="${CURD_BIN:-$(find "$ROOT_DIR/target" -name curd -type f -path "*/release/*" | head -n 1)}"
+if [ -z "$CURD_BIN" ] || [ ! -f "$CURD_BIN" ]; then
+    CURD_BIN="$ROOT_DIR/target/release/curd"
+fi
 PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/curd-python/.venv/bin/python}"
 TEST_WS="$(mktemp -d)"
 trap 'rm -rf "$TEST_WS"' EXIT

@@ -16,5 +16,5 @@ curd = "curd_python.cli:main"
 managed = true
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "pyo3/abi3-py37"]
 module-name = "curd_python"

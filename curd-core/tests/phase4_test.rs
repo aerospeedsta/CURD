@@ -324,13 +324,12 @@ pub fn y() { x(); }
 "#,
     )?;
 
-    // SAFETY: test-local env override scoped to this test process.
-    unsafe {
-        std::env::set_var("CURD_INDEX_MODE", "full");
-        std::env::remove_var("CURD_INDEX_SCOPE");
-        std::env::set_var("CURD_INDEX_CHUNK_SIZE", "4096");
-    }
-    let se_default = SearchEngine::new(&root);
+    use curd_core::CurdConfig;
+    let mut cfg = CurdConfig::default();
+    cfg.index.mode = Some("full".to_string());
+    cfg.index.chunk_size = Some(4096);
+    
+    let se_default = SearchEngine::new(&root).with_config(cfg.clone());
     let syms_default = se_default.search("", None)?;
     let fp_default: BTreeSet<String> = syms_default
         .iter()
@@ -339,11 +338,9 @@ pub fn y() { x(); }
 
     // Force tiny chunks and rebuild.
     se_default.invalidate_index();
-    // SAFETY: test-local env override scoped to this test process.
-    unsafe {
-        std::env::set_var("CURD_INDEX_CHUNK_SIZE", "1");
-    }
-    let se_small = SearchEngine::new(&root);
+    cfg.index.chunk_size = Some(1);
+    
+    let se_small = SearchEngine::new(&root).with_config(cfg);
     let syms_small = se_small.search("", None)?;
     let fp_small: BTreeSet<String> = syms_small
         .iter()
@@ -375,13 +372,12 @@ pub fn y() { x(); }
 "#,
     )?;
 
-    // SAFETY: test-local env override scoped to this test process.
-    unsafe {
-        std::env::set_var("CURD_INDEX_MODE", "full");
-        std::env::remove_var("CURD_INDEX_SCOPE");
-        std::env::set_var("CURD_INDEX_EXECUTION", "multithreaded");
-    }
-    let se_mt = SearchEngine::new(&root);
+    use curd_core::CurdConfig;
+    let mut cfg = CurdConfig::default();
+    cfg.index.mode = Some("full".to_string());
+    cfg.index.execution = Some("multithreaded".to_string());
+    
+    let se_mt = SearchEngine::new(&root).with_config(cfg.clone());
     let syms_mt = se_mt.search("", None)?;
     let fp_mt: BTreeSet<String> = syms_mt
         .iter()
@@ -389,11 +385,9 @@ pub fn y() { x(); }
         .collect();
 
     se_mt.invalidate_index();
-    // SAFETY: test-local env override scoped to this test process.
-    unsafe {
-        std::env::set_var("CURD_INDEX_EXECUTION", "multiprocess");
-    }
-    let se_mp = SearchEngine::new(&root);
+    cfg.index.execution = Some("multiprocess".to_string());
+    
+    let se_mp = SearchEngine::new(&root).with_config(cfg);
     let syms_mp = se_mp.search("", None)?;
     let fp_mp: BTreeSet<String> = syms_mp
         .iter()
@@ -419,14 +413,13 @@ pub fn beta() { alpha(); }
 "#,
     )?;
 
-    // SAFETY: test-local env override scoped to this test process.
-    unsafe {
-        std::env::set_var("CURD_INDEX_MODE", "full");
-        std::env::set_var("CURD_INDEX_EXECUTION", "multithreaded");
-        std::env::set_var("CURD_PARSER_BACKEND", "native");
-        std::env::remove_var("CURD_INDEX_SCOPE");
-    }
-    let se = SearchEngine::new(&root);
+    use curd_core::CurdConfig;
+    let mut cfg = CurdConfig::default();
+    cfg.index.mode = Some("full".to_string());
+    cfg.index.execution = Some("multithreaded".to_string());
+    cfg.index.parser_backend = Some("native".to_string());
+    
+    let se = SearchEngine::new(&root).with_config(cfg);
     let _ = se.search("", None)?;
     let stats = se.last_index_stats().expect("index stats");
 

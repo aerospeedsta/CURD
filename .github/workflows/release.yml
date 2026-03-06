@@ -79,29 +79,23 @@ jobs:
       uses: oven-sh/setup-bun@v2
 
     - name: Build Release Binaries
-      run: cargo build --release --target ${{ matrix.target }}
+      run: cargo build --release --target ${{ matrix.target }} -p curd -p curd-core
 
     - name: Build Python Extension
       if: contains(matrix.target, 'musl') == false
       run: |
         cd curd-python
         uv pip install maturin
-        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-          uv run maturin build --release --out ../dist
-        else
-          uv run maturin build --release --target ${{ matrix.target }} --out ../dist
-        fi
+        # Always specify target to ensure correct wheel tagging during cross-builds
+        uv run maturin build --release --target ${{ matrix.target }} --out ../dist
 
     - name: Build Node.js Extension
       if: contains(matrix.target, 'musl') == false
       run: |
         cd curd-node
         bun install
-        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-          bun x napi build --release
-        else
-          bun x napi build --release --target ${{ matrix.target }}
-        fi
+        # Always specify target to ensure correct .node name during cross-builds
+        bun x napi build --release --target ${{ matrix.target }}
         cp *.node ../dist/ || true
 
     - name: Package Binary

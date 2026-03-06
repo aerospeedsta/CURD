@@ -1293,30 +1293,36 @@ fn file_meta(path: &Path) -> Option<(u64, u64)> {
 }
 
 fn max_file_size(cfg: &CurdConfig) -> u64 {
-    std::env::var("CURD_INDEX_MAX_FILE_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
+    cfg.index
+        .max_file_size
+        .or_else(|| {
+            std::env::var("CURD_INDEX_MAX_FILE_SIZE")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+        })
         .filter(|v| *v > 0)
-        .or(cfg.index.max_file_size)
         .unwrap_or(MAX_FILE_SIZE)
 }
 
 fn index_mode(cfg: &CurdConfig) -> String {
-    let mode = std::env::var("CURD_INDEX_MODE")
-        .ok()
-        .or_else(|| cfg.index.mode.clone())
-        .unwrap_or_else(|| "full".to_string())
+    let mode = cfg
+        .index
+        .mode
+        .clone()
+        .or_else(|| std::env::var("CURD_INDEX_MODE").ok())
+        .unwrap_or_else(|| "fast".to_string())
         .to_lowercase();
     match mode.as_str() {
         "full" | "fast" | "lazy" | "scoped" => mode,
-        _ => "full".to_string(),
+        _ => "fast".to_string(),
     }
 }
 
 fn parser_backend_name(cfg: &CurdConfig) -> String {
-    std::env::var("CURD_PARSER_BACKEND")
-        .ok()
-        .or_else(|| cfg.index.parser_backend.clone())
+    cfg.index
+        .parser_backend
+        .clone()
+        .or_else(|| std::env::var("CURD_PARSER_BACKEND").ok())
         .unwrap_or_else(|| "wasm".to_string())
         .to_lowercase()
 }
@@ -1338,27 +1344,35 @@ fn configured_scopes(cfg: &CurdConfig) -> Vec<String> {
 }
 
 fn index_chunk_size(cfg: &CurdConfig) -> usize {
-    std::env::var("CURD_INDEX_CHUNK_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
+    cfg.index
+        .chunk_size
+        .or_else(|| {
+            std::env::var("CURD_INDEX_CHUNK_SIZE")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+        })
         .filter(|v| *v > 0)
-        .or(cfg.index.chunk_size)
         .unwrap_or(4096)
 }
 
 fn index_stall_threshold_ms(cfg: &CurdConfig) -> u64 {
-    std::env::var("CURD_INDEX_STALL_THRESHOLD_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
+    cfg.index
+        .stall_threshold_ms
+        .or_else(|| {
+            std::env::var("CURD_INDEX_STALL_THRESHOLD_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+        })
         .filter(|v| *v > 0)
-        .or(cfg.index.stall_threshold_ms)
         .unwrap_or(15_000)
 }
 
 fn large_file_policy(cfg: &CurdConfig) -> String {
-    let policy = std::env::var("CURD_INDEX_LARGE_FILE_POLICY")
-        .ok()
-        .or_else(|| cfg.index.large_file_policy.clone())
+    let policy = cfg
+        .index
+        .large_file_policy
+        .clone()
+        .or_else(|| std::env::var("CURD_INDEX_LARGE_FILE_POLICY").ok())
         .unwrap_or_else(|| "skip".to_string())
         .to_lowercase();
     match policy.as_str() {
@@ -1368,9 +1382,11 @@ fn large_file_policy(cfg: &CurdConfig) -> String {
 }
 
 fn index_execution_model(cfg: &CurdConfig) -> String {
-    let mode = std::env::var("CURD_INDEX_EXECUTION")
-        .ok()
-        .or_else(|| cfg.index.execution.clone())
+    let mode = cfg
+        .index
+        .execution
+        .clone()
+        .or_else(|| std::env::var("CURD_INDEX_EXECUTION").ok())
         .unwrap_or_else(|| "multithreaded".to_string())
         .to_lowercase();
     match mode.as_str() {

@@ -38,6 +38,9 @@ jobs:
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             name: Windows ARM64
+    env:
+      CARGO_TERM_COLOR: always
+      PYO3_CONFIG_FILE: ${{ github.workspace }}/pyo3_config.ini
 
     steps:
     - uses: actions/checkout@v4
@@ -52,6 +55,7 @@ jobs:
           # We'll rely on dtolnay/rust-toolchain for the target
           echo "Installing extra tools for ${{ matrix.target }}"
         fi
+      shell: bash
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
@@ -89,35 +93,37 @@ jobs:
         echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
     - name: Build Core
-      run: cargo build --workspace --release --target ${{ matrix.target }}
+      run: |
+        # Always use targeted builds to avoid building cdylib extensions (pyo3/napi) 
+        # that conflict with workspace-wide cross-compilation in certain targets.
+        cargo build --release --target ${{ matrix.target }} -p curd -p curd-core
+      shell: bash
 
     - name: Run Tests
       # We only run tests on the native runner architecture to avoid emulation slowness
       if: (matrix.os == 'ubuntu-latest' && matrix.target == 'x86_64-unknown-linux-gnu') || (matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin') || (matrix.os == 'windows-latest')
       run: cargo test --workspace --target ${{ matrix.target }}
+      shell: bash
 
     - name: Perf Smoke
       if: matrix.os != 'windows-latest'
       run: bash scripts/perf_smoke.sh
+      shell: bash
 
     - name: Build Python Extension
       if: contains(matrix.target, 'musl') == false
       run: |
         cd curd-python
         uv pip install maturin
-        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-          uv run maturin build --release
-        else
-          uv run maturin build --release --target ${{ matrix.target }}
-        fi
+        # Always specify target to ensure correct wheel tagging during cross-builds
+        uv run maturin build --release --target ${{ matrix.target }} --out ../dist
+      shell: bash
 
     - name: Build Node.js Extension
       if: contains(matrix.target, 'musl') == false
       run: |
         cd curd-node
         bun install
-        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-          bun x napi build --release
-        else
-          bun x napi build --release --target ${{ matrix.target }}
-        fi
+        # Always specify target to ensure correct .node name during cross-builds
+        bun x napi build --release --target ${{ matrix.target }}
+      shell: bash
