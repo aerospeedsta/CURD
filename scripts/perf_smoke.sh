@@ -7,7 +7,8 @@ CURD_BIN="${CURD_BIN:-$(find "$ROOT_DIR/target" -name curd -type f -path "*/rele
 if [ -z "$CURD_BIN" ] || [ ! -f "$CURD_BIN" ]; then
     CURD_BIN="$ROOT_DIR/target/release/curd"
 fi
-PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/curd-python/.venv/bin/python}"
+# Use system python if available, fallback to a guess
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python || echo "python3")}"
 TEST_WS="$(mktemp -d)"
 trap 'rm -rf "$TEST_WS"' EXIT
 
