@@ -10,6 +10,18 @@ CURD is a high-performance Model Context Protocol (MCP) server designed for deep
 - **LSP Integration**: Real-time diagnostics and symbol resolution via language servers.
 - **Cross-Language Bindings**: Native support for Python, Node.js, and Rust.
 - **Low Latency**: Optimized Rust core with aggressive caching and parallel execution.
+- **Cross-Platform Isolation**: Integrated sandboxing using `bwrap` (Linux) and `sandbox-exec` (macOS).
+
+## Build Tiers & Feature Flags
+
+CURD provides three distinct build tiers to balance capability with system footprint:
+
+- **Core** (`--features core`): Minimal build for pure coders. Fast, lightweight, focusing on symbol analysis and local edits. No MCP server.
+- **MCP** (`--features mcp`): The standard distribution for agentic use. Includes the Model Context Protocol server for integration with tools like Claude Desktop or Cursor.
+- **Full** (`--features full`): Includes all optimizations, remote context linking, and experimental GPU-accelerated workers.
+
+> [!TIP]
+> Use `make core` or `make mcp` to build the specific tier you need.
 
 ## Installation
 
@@ -218,8 +230,16 @@ Precedence model:
 ## Documentation
 
 - [BUILDING.md](BUILDING.md): Detailed compilation and setup instructions.
-- [LICENSE](LICENSE): Released under the MIT License.
+- [LICENSE](LICENSE): Released under the GNU GPLv3 License.
+
+## Platform Support & Sandboxing
+
+CURD implements strict isolation for agentic tool calls:
+- **macOS**: Native isolation via `sandbox-exec`.
+- **Linux**: Native isolation via `bubblewrap`.
+- **Windows**: **Warning**: Native sandboxing is not yet supported. Shell tools run without isolation. Support is planned for Phase 11 (Docker Sandbox).
 
 ## License
 
-This project is licensed under the MIT License.
+Copyright (C) 2026 Aerospeedsta.
+This project is licensed under the GNU General Public License v3 (GPLv3).

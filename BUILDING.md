@@ -51,6 +51,15 @@ If you are on Python 3.14 and hit a PyO3 compatibility error during Python wheel
 - `PYO3_PYTHON=$(which python3.13) make release`
 - or build just the CLI with `cargo build --release -p curd`.
 
+### 4. Build Tiers
+
+You can build specific tiers using shorthand targets:
+```bash
+make core    # Core features only
+make mcp     # Standard MCP server
+make full    # All features + GPU worker
+```
+
 ### 4. System Installation
 
 To install the `curd` CLI globally to `/usr/local/bin`:
@@ -70,7 +79,7 @@ make clean
 
 ### macOS Linker Configuration
 
-When building native extensions for Python (PyO3) or Node.js (NAPI) on macOS, the linker must be configured to allow dynamic lookups for runtime symbols. CURD handles this via `.cargo/config.toml` and crate-specific `build.rs` scripts to ensure `cdylib` bundles link correctly across `x86_64` and `aarch64` architectures.
+When building native extensions for Python (PyO3) or Node.js (NAPI) on macOS, the linker must be configured to allow dynamic lookups for runtime symbols. While `.cargo/config.toml` is removed for a cleaner root, `maturin` and `napi-rs` handle most linking requirements. If building manually, ensure `-C link-arg=-undefined -C link-arg=dynamic_lookup` is passed to the Rust compiler.
 
 ### Grammar Management
 

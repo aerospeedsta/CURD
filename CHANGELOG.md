@@ -23,3 +23,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Promoted all alpha implementations to a unified beta runtime, clearing extensive internal `TODO` markers indicating complete platform features up through Phase 7.
+- **Relicensed to GPLv3:** Migrated the project from MIT to the GNU General Public License v3.
+- **Repository Restructuring:** Consolidated all shell scripts into the `scripts/` directory for better organization and removed legacy `.cargo/` configuration.

@@ -16,10 +16,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            name: Linux GNU
+            name: Linux x64 GNU
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            name: Linux MUSL
+            name: Linux x64 MUSL
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: Linux ARM64 GNU
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            name: Linux ARM64 MUSL
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macOS ARM64
@@ -29,15 +35,23 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: Windows x64
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            name: Windows ARM64
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install MUSL tools
-      if: matrix.target == 'x86_64-unknown-linux-musl'
+    - name: Install cross-compilation tools
+      if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y musl-tools
+        sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+        if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+          # Install aarch64 musl tools if needed, though rustup usually handles cross-musl well with standard musl-tools
+          # We'll rely on dtolnay/rust-toolchain for the target
+          echo "Installing extra tools for ${{ matrix.target }}"
+        fi
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
@@ -61,11 +75,18 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: curd-docs/package-lock.json
 
     - name: Set up Bun
       uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    - name: Set Cross-Compilation Env
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
     - name: Build Core
       run: cargo build --workspace --release --target ${{ matrix.target }}
