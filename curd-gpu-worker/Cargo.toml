@@ -1,0 +1,11 @@
+[package]
+name = "curd-gpu-worker"
+version = "0.5.0-beta"
+edition = "2021"
+
+[dependencies]
+curd-core = { path = "../curd-core", features = ["gpu-embedded"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+pollster = "0.3"

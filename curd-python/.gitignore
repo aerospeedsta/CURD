@@ -1,0 +1,13 @@
+# Maturin/Python Artifacts
+dist/
+__pycache__/
+*.pyc
+
+# Virtual Environment
+.venv/
+
+# Rust Build
+target/
+
+# OS files
+.DS_Store

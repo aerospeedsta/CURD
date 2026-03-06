@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "curd-core",
+    "curd",
+    "curd-node",
+    "curd-python",
+    "curd-gpu-worker"
+]
+resolver = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Partially Optimized Debug Mode
+# Provides a ~3-5x speedup for indexing/search while keeping full debug info.
+[profile.dev]
+opt-level = 1
+
+# Maximize optimization for dependencies (Tree-sitter, Regex, etc.)
+# since these are rarely debugged directly and benefit most from O3.
+[profile.dev.package."*"]
+opt-level = 3

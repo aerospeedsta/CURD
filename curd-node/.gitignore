@@ -1,0 +1,11 @@
+# NAPI-RS Generated
+index.js
+index.d.ts
+curd-node.node
+*.node
+
+# Node modules
+node_modules/
+
+# OS files
+.DS_Store

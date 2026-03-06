@@ -1,0 +1,26 @@
+# Rust
+target/
+.cargo_home/
+
+# Development
+.gemini/
+.tmp/
+.DS_Store
+
+# Python
+curd-python/.venv/
+curd-python/target/
+curd-python/uv.lock
+
+# Node.js
+curd-node/node_modules/
+curd-node/bun.lockb
+curd-node/target/
+curd-node/*.node
+curd-node/index.js
+curd-node/index.d.ts
+
+# CURD Internal
+.curd/
+.curd-grammars/
+curd-cli/curd

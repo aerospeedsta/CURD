@@ -1,0 +1,100 @@
+name: CURD CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: Linux GNU
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: Linux MUSL
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macOS ARM64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macOS x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: Windows x64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install MUSL tools
+      if: matrix.target == 'x86_64-unknown-linux-musl'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: curd-docs/package-lock.json
+
+    - name: Set up Bun
+      uses: oven-sh/setup-bun@v2
+
+    - name: Build Core
+      run: cargo build --workspace --release --target ${{ matrix.target }}
+
+    - name: Run Tests
+      # We only run tests on the native runner architecture to avoid emulation slowness
+      if: (matrix.os == 'ubuntu-latest' && matrix.target == 'x86_64-unknown-linux-gnu') || (matrix.os == 'macos-latest' && matrix.target == 'aarch64-apple-darwin') || (matrix.os == 'windows-latest')
+      run: cargo test --workspace --target ${{ matrix.target }}
+
+    - name: Perf Smoke
+      if: matrix.os != 'windows-latest'
+      run: bash scripts/perf_smoke.sh
+
+    - name: Build Python Extension
+      run: |
+        cd curd-python
+        uv pip install maturin
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          uv run maturin build --release
+        else
+          uv run maturin build --release --target ${{ matrix.target }}
+        fi
+
+    - name: Build Node.js Extension
+      run: |
+        cd curd-node
+        bun install
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          bun x napi build --release
+        else
+          bun x napi build --release --target ${{ matrix.target }}
+        fi

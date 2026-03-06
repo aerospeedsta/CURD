@@ -1,0 +1,23 @@
+{
+    "name": "curd-node",
+    "version": "0.5.0-beta",
+    "description": "Node.js bindings for CURD",
+    "main": "index.js",
+    "types": "index.d.ts",
+    "napi": {
+        "name": "curd-node",
+        "package": {
+            "name": "curd-node"
+        }
+    },
+    "bin": {
+        "curd": "./bin/curd.js"
+    },
+    "scripts": {
+        "build": "napi build --release",
+        "build:debug": "napi build"
+    },
+    "devDependencies": {
+        "@napi-rs/cli": "^2.18.4"
+    }
+}

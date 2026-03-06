@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "curd-python"
+version = "0.5.0-beta"
+description = "Python bindings for CURD"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+curd = "curd_python.cli:main"
+
+[tool.uv]
+managed = true
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "curd_python"
