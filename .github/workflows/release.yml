@@ -82,6 +82,7 @@ jobs:
       run: cargo build --release --target ${{ matrix.target }}
 
     - name: Build Python Extension
+      if: contains(matrix.target, 'musl') == false
       run: |
         cd curd-python
         uv pip install maturin
@@ -92,6 +93,7 @@ jobs:
         fi
 
     - name: Build Node.js Extension
+      if: contains(matrix.target, 'musl') == false
       run: |
         cd curd-node
         bun install

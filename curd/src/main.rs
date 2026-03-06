@@ -1133,6 +1133,10 @@ fn resolve_workspace_root(root: PathBuf) -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
+fn setup_tracing() {
+    // Placeholder for telemetry/logging initialization.
+}
+
 fn enforce_workspace_config(root: &std::path::Path) -> Result<()> {
     curd_core::validate_workspace_config(root)
 }

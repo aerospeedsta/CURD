@@ -39,7 +39,7 @@ bytemuck = { version = "1.18", features = ["derive"], optional = true }
 futures-intrusive = { version = "0.5.0", optional = true }
 
 [features]
-default = ["tls-native"]
+default = ["tls-rustls"]
 tls-native = ["ureq/native-tls"]
 tls-rustls = ["ureq/tls"]
 index-json = []

@@ -101,6 +101,7 @@ jobs:
       run: bash scripts/perf_smoke.sh
 
     - name: Build Python Extension
+      if: contains(matrix.target, 'musl') == false
       run: |
         cd curd-python
         uv pip install maturin
@@ -111,6 +112,7 @@ jobs:
         fi
 
     - name: Build Node.js Extension
+      if: contains(matrix.target, 'musl') == false
       run: |
         cd curd-node
         bun install
