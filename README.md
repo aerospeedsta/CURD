@@ -18,8 +18,7 @@ CURD provides three distinct build tiers to balance capability with system footp
 
 - **Core** (`--features core`): Minimal build for pure coders. Fast, lightweight, focusing on symbol analysis and local edits. No MCP server.
 - **MCP** (`--features mcp`): The standard distribution for agentic use. Includes the Model Context Protocol server for integration with tools like Claude Desktop or Cursor.
-- **Full** (`--features full`): Includes all optimizations, remote context linking, and experimental GPU-accelerated workers.
-
+- 
 > [!TIP]
 > Use `make core` or `make mcp` to build the specific tier you need.
 
@@ -136,7 +135,7 @@ console.log(results);
 ./target/release/curd build . --execute
 ```
 
-## 4c Diagnostics Shortcuts
+## iagnostics Shortcuts
 
 ```bash
 make doctor
@@ -166,7 +165,7 @@ Notes:
 - `multiprocess` uses a worker-process path through hidden `curd index-worker` orchestration.
 - `native` parser backend is an explicit preference; this build deterministically falls back to WASM if native parser is unavailable.
 
-## Workspace Settings (4d)
+## Workspace Settings
 
 CURD now supports workspace config files with precedence:
 1. `settings.toml`
@@ -237,7 +236,7 @@ Precedence model:
 CURD implements strict isolation for agentic tool calls:
 - **macOS**: Native isolation via `sandbox-exec`.
 - **Linux**: Native isolation via `bubblewrap`.
-- **Windows**: **Warning**: Native sandboxing is not yet supported. Shell tools run without isolation. Support is planned for Phase 11 (Docker Sandbox).
+- **Windows**: **Warning**: Native sandboxing is not yet supported. Shell tools run without isolation.
 
 ## License
 
