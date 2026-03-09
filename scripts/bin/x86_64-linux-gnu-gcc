@@ -1,0 +1,2 @@
+#!/bin/bash
+exec /Users/bharath/workshop/expts/CURD/scripts/bin/zigcc -target x86_64-linux-gnu "$@"

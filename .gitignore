@@ -25,3 +25,4 @@ curd-node/index.d.ts
 .curd-grammars/
 curd-cli/curd
 dist/
+.vscode/settings.json

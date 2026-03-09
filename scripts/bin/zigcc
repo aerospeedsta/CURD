@@ -1,0 +1,28 @@
+#!/bin/bash
+TARGET=""
+ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == --target=* ]]; then
+        VAL="${arg#--target=}"
+        CLEAN_VAL=$(echo "$VAL" | sed 's/-unknown-/-/')
+        TARGET="$CLEAN_VAL"
+        ARGS+=("-target" "$CLEAN_VAL")
+    elif [[ "$arg" == -target ]]; then
+        pass
+    else
+        if [ "$PREV_WAS_TARGET" = "1" ]; then
+            CLEAN_VAL=$(echo "$arg" | sed 's/-unknown-/-/')
+            TARGET="$CLEAN_VAL"
+            ARGS+=("$CLEAN_VAL")
+            PREV_WAS_TARGET=0
+        else
+            if [ "$arg" = "-target" ]; then
+                ARGS+=("-target")
+                PREV_WAS_TARGET=1
+            else
+                ARGS+=("$arg")
+            fi
+        fi
+    fi
+done
+exec zig cc "${ARGS[@]}"

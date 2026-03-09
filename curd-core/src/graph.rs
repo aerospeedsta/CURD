@@ -39,6 +39,9 @@ impl DependencyGraph {
     }
 
     pub fn add_dependency_typed(&mut self, caller_id: &str, callee_id: &str, kind: &str) {
+        if caller_id == callee_id {
+            return;
+        }
         self.outgoing
             .entry(caller_id.to_string())
             .or_default()
@@ -323,7 +326,7 @@ impl GraphEngine {
             .outgoing
             .keys()
             .chain(dep_graph.incoming.keys())
-            .filter(|id| id.ends_with(uri))
+            .filter(|id| id.ends_with(uri) && (id.len() == uri.len() || id.get(id.len() - uri.len() - 2..id.len() - uri.len()) == Some("::")))
             .cloned()
             .collect();
         matches.sort();
@@ -337,7 +340,14 @@ impl GraphEngine {
         }
 
         let search = SearchEngine::new(&self.workspace_root);
-        let symbols = search.search("", None)?;
+        let mut symbols = search.search("", None)?;
+        
+        // Auto-prime: if no symbols found, try one fast scan to help the user
+        if symbols.is_empty() {
+            log::info!("Search index is empty. Attempting auto-prime scan for graph building...");
+            let _ = search.search("", Some(crate::SymbolKind::Function)); // Triggers scan
+            symbols = search.search("", None)?;
+        }
         
         let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
         let mut by_link: HashMap<String, Vec<String>> = HashMap::new();
@@ -442,6 +452,14 @@ impl GraphEngine {
                     if !name.is_empty() && !keywords.contains(name) {
                         let targets = resolve_call_targets(name, &s, caller_parent, caller_ext, &by_name, &symbol_by_id);
                         for target in targets {
+                            // Deduplicate: Don't link to aliases if the primary definition exists
+                            if target.contains("::#") {
+                                let primary = target.split("::#").next().unwrap_or(&target);
+                                if symbol_by_id.contains_key(primary) {
+                                    edges.push((s.id.clone(), primary.to_string()));
+                                    continue;
+                                }
+                            }
                             edges.push((s.id.clone(), target));
                         }
                     }

@@ -14,6 +14,13 @@ pub struct IndexRunRecord {
     pub parser_backend_effective: String,
     pub execution_model: String,
     pub total_files: i64,
+    pub cache_hits: i64,
+    pub cache_misses: i64,
+    pub native_files: i64,
+    pub wasm_files: i64,
+    pub native_fallbacks: i64,
+    pub parse_fail: i64,
+    pub no_symbols: i64,
     pub total_ms: i64,
 }
 
@@ -410,6 +417,13 @@ SELECT
   parser_backend_effective,
   execution_model,
   total_files,
+  cache_hits,
+  cache_misses,
+  native_files,
+  wasm_files,
+  native_fallbacks,
+  parse_fail,
+  no_symbols,
   total_ms
 FROM index_runs
 ORDER BY id DESC
@@ -424,7 +438,14 @@ LIMIT ?1
             parser_backend_effective: row.get(3)?,
             execution_model: row.get(4)?,
             total_files: row.get(5)?,
-            total_ms: row.get(6)?,
+            cache_hits: row.get(6)?,
+            cache_misses: row.get(7)?,
+            native_files: row.get(8)?,
+            wasm_files: row.get(9)?,
+            native_fallbacks: row.get(10)?,
+            parse_fail: row.get(11)?,
+            no_symbols: row.get(12)?,
+            total_ms: row.get(13)?,
         })
     })?;
     let mut out = Vec::new();

@@ -329,11 +329,11 @@ dist-python:
 	cd curd-python && uvx maturin build --release --out $(DIST_DIR)/python
 	# Cross-compile for Linux (x86_64 + aarch64)
 	# Note: maturin uses zig to cross-compile if --zig is passed
-	cd curd-python && uvx maturin build --release --zig --target x86_64-unknown-linux-gnu --out $(DIST_DIR)/python
-	cd curd-python && uvx maturin build --release --zig --target aarch64-unknown-linux-gnu --out $(DIST_DIR)/python
+	cd curd-python && PATH="$(CURDIR)/scripts/bin:$$PATH" uvx maturin build --release --zig --target x86_64-unknown-linux-gnu --out $(DIST_DIR)/python
+	cd curd-python && PATH="$(CURDIR)/scripts/bin:$$PATH" uvx maturin build --release --zig --target aarch64-unknown-linux-gnu --out $(DIST_DIR)/python
 	# MUSL wheels (Static libc)
-	cd curd-python && uvx maturin build --release --zig --target x86_64-unknown-linux-musl --out $(DIST_DIR)/python
-	cd curd-python && uvx maturin build --release --zig --target aarch64-unknown-linux-musl --out $(DIST_DIR)/python
+	cd curd-python && PATH="$(CURDIR)/scripts/bin:$$PATH" uvx maturin build --release --zig --target x86_64-unknown-linux-musl --out $(DIST_DIR)/python
+	cd curd-python && PATH="$(CURDIR)/scripts/bin:$$PATH" uvx maturin build --release --zig --target aarch64-unknown-linux-musl --out $(DIST_DIR)/python
 
 dist-node:
 	@echo "Packaging Node artifacts for all platforms..."

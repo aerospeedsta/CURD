@@ -177,6 +177,21 @@ impl ShellEngine {
         })
     }
 
+    pub async fn get_active_tasks(&self) -> Vec<ShellTaskStatus> {
+        let mut tasks = Vec::new();
+        // Extract the keys first to avoid holding the lock across await points
+        let keys: Vec<Uuid> = {
+            let guard = self.active_tasks.lock().await;
+            guard.keys().copied().collect()
+        };
+        for id in keys {
+            if let Ok(status) = self.status(id).await {
+                tasks.push(status);
+            }
+        }
+        tasks
+    }
+
     pub async fn terminate(&self, task_id: Uuid) -> Result<Value> {
         let mut guard = self.active_tasks.lock().await;
         if let Some(mut state) = guard.remove(&task_id) {

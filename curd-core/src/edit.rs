@@ -228,16 +228,8 @@ impl EditEngine {
             final_code = updated;
             action_taken = "replaced";
         } else {
-            // Append at the end (create)
-            if !final_code.ends_with('\n') {
-                final_code.push('\n');
-            }
-            final_code.push('\n');
-            final_code.push_str(new_code);
-            if !new_code.ends_with('\n') {
-                final_code.push('\n');
-            }
-            action_taken = "created";
+            // Refuse to append to existing files unless it's a new file creation
+            anyhow::bail!("SYMBOL_NOT_FOUND: Could not find symbol '{}' in '{}' to replace. Use a different URI or check for typos. CURD v0.6 prevents accidental appending to preserve file integrity.", symbol_name, file_path.display());
         }
 
         std::fs::write(file_path, final_code)?;

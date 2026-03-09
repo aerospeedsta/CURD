@@ -947,8 +947,9 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             println!("=== CURD Workspace Status ===\n");
             
             // 1. Index Status
-            let search = curd_core::SearchEngine::new(&resolved);
-            if let Some(stats) = search.last_index_stats() {
+            let config = curd_core::CurdConfig::load_from_workspace(&resolved);
+            if let Ok(recent_runs) = curd_core::storage::read_recent_index_runs(&resolved, &config, 1) && !recent_runs.is_empty() {
+                let stats = &recent_runs[0];
                 println!("[Index]");
                 println!("  Files Scanned: {}", stats.total_files);
                 println!("  Cache Hits:    {}", stats.cache_hits);

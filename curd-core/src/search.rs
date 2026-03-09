@@ -280,7 +280,7 @@ impl SearchEngine {
         storage.get_symbols_for_file(rel_path).ok()
     }
 
-    fn load_or_build_index<F>(
+    pub fn load_or_build_index<F>(
         &self,
         manager: &mut ParserManager,
         query_hint: Option<&str>,
@@ -811,6 +811,7 @@ impl SearchEngine {
                 "stub" => role = SymbolRole::Stub,
                 "def" | "definition" => role = SymbolRole::Definition,
                 "ref" | "reference" => role = SymbolRole::Reference,
+                "name" => continue, // Skip @name captures as they are auxiliary
                 _ => {}
             }
 
