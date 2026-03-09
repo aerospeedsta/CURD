@@ -1,7 +1,10 @@
 # CURD
 
-CURD is a high-performance Model Context Protocol (MCP) server designed for deep codebase analysis and manipulation. It treats code functions and classes as first-class objects, providing a unified interface for symbol indexing, dependency graph analysis, and semantic editing.
+CURD is a high-performance, developer friendly engine enclosed in a Model Context Protocol (MCP) server designed for deep codebase analysis and manipulation. It treats code functions and classes as first-class objects, providing a unified interface for symbol indexing, dependency graph analysis, and semantic editing. CURD makes Git reasonable in an agentic world - makes the latter more human, whilst being able to keep track with the speed of agentic commits.
 
+> [!NOTE]
+ The codebase is subject to heavy refactoring at this time. 
+ 
 ## Features
 
 - **Concurrent Symbol Indexing**: Fast extraction of functions, classes, and metadata using Tree-sitter.
@@ -238,7 +241,16 @@ CURD implements strict isolation for agentic tool calls:
 - **Linux**: Native isolation via `bubblewrap`.
 - **Windows**: **Warning**: Native sandboxing is not yet supported. Shell tools run without isolation.
 
-## License
+## Project Status
 
+- **CURD Engine:** The high-performance Rust core. It maintains the AST-native shadowstore and handles atomic, conflict-free transactions before they ever touch your Git history.
+- **WikiCURD `[In Development]`:** A GPU-accelerated (GPUI) control plane. It transforms raw repository data into a navigable map of reasoning, allowing humans to audit agent traces at sub-millisecond latency.
+- **curd-agent `[In Development]`:** A specialized execution harness built on the **Codex** engine. It treats code as a logic-graph to solve repository-level issues (targeting 80% on SWE-bench).
+
+## License
 Copyright (C) 2026 Aerospeedsta.
-This project is licensed under the GNU General Public License v3 (GPLv3).
+
+The current prototype of CURD is released under the GNU General Public License v3 (GPLv3).
+
+> [!IMPORTANT]
+    Notice of Research Phase & Future Relicensing: I am currently auditing third-party dependencies to ensure proper credit is given to the MIT/Apache projects that make this tool possible. I am also mapping the core architecture for the broader project (WikiCURD and curd-agent). The entire project will transition to a Dual-License (AGPLv3 / Commercial) or Business Source License (BSL) model in a more mature state. Until that point, the repository is in a Source-Available Research Phase; I am not currently accepting external Pull Requests or Issues.
