@@ -25,7 +25,13 @@ pub struct ContextRegistry {
 
 impl ContextRegistry {
     pub fn load(workspace_root: &Path) -> Self {
-        let path = workspace_root.join(".curd/contexts.json");
+        let mut real_root = workspace_root.to_path_buf();
+        let path_str = real_root.to_string_lossy();
+        if let Some(idx) = path_str.find(".curd/shadow/") {
+            real_root = PathBuf::from(&path_str[..idx]);
+        }
+        
+        let path = real_root.join(".curd/contexts.json");
         if path.exists()
             && let Ok(content) = fs::read_to_string(&path)
                 && let Ok(registry) = serde_json::from_str::<ContextRegistry>(&content) {

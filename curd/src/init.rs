@@ -97,7 +97,12 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
     } else {
         let mut detected = Vec::new();
         if let Some(home) = get_home_dir() {
-            if home.join(".gemini").exists() { detected.push("gemini".to_string()); }
+            if home.join(".gemini").exists() || workspace_root.join("GEMINI.md").exists() { detected.push("gemini".to_string()); }
+            
+            // Copilot & Codex
+            if home.join(".copilot").exists() || workspace_root.join(".copilot").exists() { detected.push("copilot".to_string()); }
+            if home.join(".codex").exists() || workspace_root.join(".codex").exists() { detected.push("codex".to_string()); }
+
             if workspace_root.join(".cursor").exists() || home.join("Library/Application Support/Cursor").exists() || home.join("AppData/Roaming/Cursor").exists() {
                 detected.push("cursor".to_string());
             }
@@ -106,8 +111,40 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
             } else {
                 PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("Claude/claude_desktop_config.json")
             };
-            if claude_path.exists() { detected.push("claude_desktop".to_string()); }
+            if claude_path.exists() || workspace_root.join("CLAUDE.md").exists() { detected.push("claude_desktop".to_string()); }
             if workspace_root.join(".mcp.json").exists() { detected.push("claude_code".to_string()); }
+
+            // Cline
+            let cline_global = if cfg!(target_os = "macos") {
+                home.join("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+            } else if cfg!(target_os = "windows") {
+                PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+            } else {
+                home.join(".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+            };
+            if cline_global.exists() || workspace_root.join(".cline").exists() { detected.push("cline".to_string()); }
+
+            // Roo Code
+            let roo_global = if cfg!(target_os = "macos") {
+                home.join("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json")
+            } else if cfg!(target_os = "windows") {
+                PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json")
+            } else {
+                home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json")
+            };
+            if roo_global.exists() || workspace_root.join(".roo").exists() { detected.push("roo_code".to_string()); }
+
+            // Windsurf
+            let windsurf_global = home.join(".codeium/windsurf/mcp_config.json");
+            if windsurf_global.exists() { detected.push("windsurf".to_string()); }
+
+            // Zed
+            let zed_global = if cfg!(target_os = "windows") {
+                PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("Zed/settings.json")
+            } else {
+                home.join(".config/zed/settings.json")
+            };
+            if zed_global.exists() || workspace_root.join(".zed").exists() { detected.push("zed".to_string()); }
         }
 
         if detected.len() > 1 {
@@ -172,22 +209,25 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
             });
 
             let (config_path_opt, block_key) = match harness.as_str() {
-                "gemini" => (get_home_dir().map(|h| h.join(".gemini").join("config.json")), "mcpServers"),
+                "gemini" => (Some(workspace_root.join(".gemini").join("settings.json")), "mcpServers"),
+                "copilot" => (Some(workspace_root.join(".copilot").join("mcp-config.json")), "mcpServers"),
+                "codex" => (Some(workspace_root.join(".codex").join("config.json")), "mcpServers"),
                 "cursor" => (Some(workspace_root.join(".cursor").join("mcp.json")), "mcpServers"),
-                "claude_desktop" => {
-                    let path = if cfg!(target_os = "macos") {
-                        get_home_dir().map(|h| h.join("Library/Application Support/Claude/claude_desktop_config.json"))
-                    } else {
-                        std::env::var("APPDATA").ok().map(|a| PathBuf::from(a).join("Claude/claude_desktop_config.json"))
-                    };
-                    (path, "mcpServers")
-                }
+                "claude_desktop" => (Some(workspace_root.join(".mcp.json")), "mcpServers"),
                 "claude_code" => (Some(workspace_root.join(".mcp.json")), "mcpServers"),
+                "cline" => (Some(workspace_root.join(".cline").join("cline_mcp_settings.json")), "mcpServers"),
+                "roo_code" => (Some(workspace_root.join(".roo").join("cline_mcp_settings.json")), "mcpServers"),
+                "windsurf" => (Some(workspace_root.join(".windsurf").join("mcp_config.json")), "mcpServers"),
+                "zed" => (Some(workspace_root.join(".zed").join("settings.json")), "context_servers"),
                 _ => (None, ""),
             };
 
             if let Some(config_path) = config_path_opt {
-                let server_name = format!("curd_{}", agent_name);
+                let server_name = if name_override.is_some() {
+                    format!("curd_{}", agent_name)
+                } else {
+                    "curd".to_string()
+                };
                 if let Some(parent) = config_path.parent() { let _ = fs::create_dir_all(parent); }
                 let mut config_json = if config_path.exists() {
                     serde_json::from_str(&fs::read_to_string(&config_path)?).unwrap_or(json!({}))
@@ -211,12 +251,10 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
             println!("Installing CURD Skills for harness: {}...", harness);
             match harness.as_str() {
                 "gemini" => {
-                    let skill_dir = get_home_dir().map(|h| h.join(".gemini").join("skills").join("propose-plan"));
-                    if let Some(dir) = skill_dir {
-                        let _ = fs::create_dir_all(&dir);
-                        let _ = fs::write(dir.join("SKILL.md"), PROPOSE_PLAN_SKILL_MD);
-                        println!("  - Installed Gemini Skill to {}", dir.display());
-                    }
+                    let skill_dir = workspace_root.join(".gemini").join("skills").join("propose-plan");
+                    let _ = fs::create_dir_all(&skill_dir);
+                    let _ = fs::write(skill_dir.join("SKILL.md"), PROPOSE_PLAN_SKILL_MD);
+                    println!("  - Installed Gemini Skill to {}", skill_dir.display());
                 },
                 "cursor" => {
                     let rule_dir = workspace_root.join(".cursor").join("rules");
@@ -224,60 +262,12 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
                     let _ = fs::write(rule_dir.join("propose-plan.mdc"), PROPOSE_PLAN_RULE_MDC);
                     println!("  - Installed Cursor Rule to {}", rule_dir.display());
                 },
-                "claude_desktop" | "claude_code" => {
-                    let claude_md = workspace_root.join("CLAUDE.md");
-                    let mut existing = if claude_md.exists() { fs::read_to_string(&claude_md).unwrap_or_default() } else { String::new() };
-                    if !existing.contains("CURD Refactor Planning") {
-                        existing.push_str("\n\n# CURD Refactor Planning\nWhen proposing changes, generate a `plan.json` in `.curd/plans/` and provide the UUID.");
-                    }
-                    let _ = fs::write(&claude_md, existing);
-                    println!("  - Updated CLAUDE.md at {}", claude_md.display());
-                },
                 _ => {
-                    println!("  ! Warning: Skill installation not automated for harness '{}'", harness);
+                    println!("  ! Skill logic handles via tools natively for harness '{}'", harness);
                 }
             }
         }
     }
 
-    // 5. Enforce universal workspace agent policies
-    enforce_workspace_security_policies(workspace_root);
-
     Ok(())
-}
-
-fn enforce_workspace_security_policies(workspace_root: &Path) {
-    let policy = "\n\n# CURD Security Boundary
-1. **No System Directory Access:** Do NOT under any circumstances attempt to read, write, list, or execute operations on the `.curd/` directory or `.env` files. They contain agentic private keys and transactional system states!
-2. **Use CURD Tools First:** NEVER use raw shells (`bash`, `sh`, etc.) or execute local scripts (`./script.sh`) directly. Always utilize the native CURD `shell`, `edit`, `read`, and `graph` tools for workspace operations.
-3. **No Raw Shell Edits:** Do NOT use `sed`, `awk`, `cat >`, `echo >`, or `echo >>` to mutate files. Always use the semantic `curd edit` tool to perform structural modifications.
-4. **No Path Escapes:** Do NOT use absolute paths (`/`) or parent traversals (`..`) to escape the workspace sandbox.
-";
-    
-    let targets = [
-        workspace_root.join("CLAUDE.md"),
-        workspace_root.join(".claude.md"),
-        workspace_root.join(".cursorrules"),
-        workspace_root.join("GEMINI.md"),
-        workspace_root.join(".gemini.md"),
-        workspace_root.join(".codex").join(".agents"),
-    ];
-
-    println!("Enforcing workspace-level agent security policies...");
-    for target in targets {
-        if let Some(parent) = target.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let mut existing = if target.exists() {
-            fs::read_to_string(&target).unwrap_or_default()
-        } else {
-            String::new()
-        };
-        
-        if !existing.contains("CURD Security Boundary") {
-            existing.push_str(policy);
-            let _ = fs::write(&target, existing);
-            println!("  - Enforced security policy in {}", target.display());
-        }
-    }
 }

@@ -146,18 +146,72 @@ fn escape_mermaid_label(s: &str) -> String {
 use std::collections::HashSet;
 
 fn render_ascii(uris: &[String], edges: &[(String, String)]) -> String {
-    let mut out = String::from("ASCII dependency graph\n");
+    let mut out = String::from("\n\x1b[1;36m┌── Symbol Dependency Matrix\x1b[0m\n");
     if edges.is_empty() {
         for uri in uris {
-            out.push_str(&format!("* {}\n", uri));
+            out.push_str(&format!("│  \x1b[33m•\x1b[0m {}\n", uri));
         }
+        out.push_str("└───────────────────────────\n");
         return out;
     }
 
+    // Build adjacency list
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    let mut all_nodes = HashSet::new();
     for (from, to) in edges {
-        out.push_str(&format!("{} -> {}\n", from, to));
+        adj.entry(from.clone()).or_default().push(to.clone());
+        all_nodes.insert(from.clone());
+        all_nodes.insert(to.clone());
     }
+
+    // Find roots (nodes that are in uris and have children)
+    for root in uris {
+        if !all_nodes.contains(root) {
+            out.push_str(&format!("│  \x1b[33m•\x1b[0m {}\n", root));
+            continue;
+        }
+        render_tree_recursive(root, &adj, &mut HashSet::new(), "", true, &mut out);
+    }
+    out.push_str("\x1b[1;36m└───────────────────────────\x1b[0m\n");
     out
+}
+
+fn render_tree_recursive(
+    node: &str,
+    adj: &HashMap<String, Vec<String>>,
+    visited: &mut HashSet<String>,
+    prefix: &str,
+    is_last: bool,
+    out: &mut String,
+) {
+    let connector = if prefix.is_empty() {
+        "│  "
+    } else if is_last {
+        "└── "
+    } else {
+        "├── "
+    };
+
+    out.push_str(&format!("│  {}{}{}\n", prefix, connector, node));
+
+    if visited.contains(node) {
+        return;
+    }
+    visited.insert(node.to_string());
+
+    if let Some(children) = adj.get(node) {
+        let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+        for (i, child) in children.iter().enumerate() {
+            render_tree_recursive(
+                child,
+                adj,
+                visited,
+                &new_prefix,
+                i == children.len() - 1,
+                out,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

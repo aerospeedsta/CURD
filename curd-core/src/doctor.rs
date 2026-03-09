@@ -348,6 +348,16 @@ impl DoctorEngine {
             for f in &r.findings {
                 out.push_str(&format!("  [{}] ({}) {}\n", f.severity.to_uppercase(), f.code, f.message));
             }
+            
+            // Show detailed parse failure samples if available
+            if let Some(ref s) = r.index_probe.stats {
+                if !s.parse_fail_samples.is_empty() {
+                    out.push_str("\nPARSE FAILURE SAMPLES:\n");
+                    for sample in &s.parse_fail_samples {
+                        out.push_str(&format!("  • {}\n", sample));
+                    }
+                }
+            }
         } else {
             out.push_str("\nNo findings. Workspace looks healthy.\n");
         }
@@ -357,7 +367,16 @@ impl DoctorEngine {
 }
 
 fn symbol_fingerprint(symbols: &[Symbol]) -> Vec<String> {
-    let mut lines: Vec<String> = symbols.iter().map(|s| format!("{}|{}", s.id, s.semantic_hash)).collect();
+    let mut lines: Vec<String> = symbols
+        .iter()
+        .map(|s| {
+            format!(
+                "{}|{}",
+                s.id,
+                s.semantic_hash.as_deref().unwrap_or("[no_hash]")
+            )
+        })
+        .collect();
     lines.sort_unstable();
     lines
 }

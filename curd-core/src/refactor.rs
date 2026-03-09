@@ -289,6 +289,9 @@ pub fn run_refactor(root: &Path, action: RefactorAction) -> Result<String> {
                 profile: None,
                 target: None,
                 execute: true,
+                zig: false,
+                command: None,
+                allow_untrusted: true, // Internal refactor builds are considered trusted as they are triggered by specific user action
                 trailing_args: Vec::new(),
             })?;
             if build_resp.status != "ok" {

@@ -60,12 +60,25 @@ impl EditEngine {
 
         let parts: Vec<&str> = actual_uri.split("::").collect();
         let file_part = parts.first().copied().unwrap_or("");
-        let symbol_part = parts.get(1).copied();
-        let line_part = parts.get(2).copied().and_then(|l| l.parse::<usize>().ok());
+        
+        // Support nested symbols: Class::method
+        let (symbol_name, line_part) = if parts.len() > 3 {
+             // file::Class::method::line
+             (format!("{}::{}", parts[1], parts[2]), parts.get(3).copied().and_then(|l| l.parse::<usize>().ok()))
+        } else if parts.len() == 3 {
+             // file::Class::method OR file::symbol::line
+             if let Ok(line) = parts[2].parse::<usize>() {
+                 (parts[1].to_string(), Some(line))
+             } else {
+                 (format!("{}::{}", parts[1], parts[2]), None)
+             }
+        } else {
+             (parts.get(1).copied().unwrap_or("").to_string(), None)
+        };
 
         let file_path = crate::workspace::validate_sandboxed_path(&target_root, file_part)?;
 
-        if symbol_part.is_none() {
+        if symbol_name.is_empty() {
             // Module top edit
             if action == "delete" {
                 return Err(anyhow::anyhow!(
@@ -75,13 +88,9 @@ impl EditEngine {
             return self.edit_module_top(&file_path, code, uri);
         }
 
-        let Some(symbol_name) = symbol_part else {
-            return Err(anyhow::anyhow!("Missing symbol segment in URI '{}'", uri));
-        };
-
         match action {
-            "upsert" => self.upsert_symbol(&file_path, symbol_name, line_part, code, uri),
-            "delete" => self.delete_symbol(&file_path, symbol_name, line_part, uri),
+            "upsert" => self.upsert_symbol(&file_path, &symbol_name, line_part, code, uri),
+            "delete" => self.delete_symbol(&file_path, &symbol_name, line_part, uri),
             _ => Err(anyhow::anyhow!("Unknown action: {}", action)),
         }
     }
@@ -94,7 +103,8 @@ impl EditEngine {
         }
 
         let source_code = std::fs::read_to_string(file_path)?;
-        let mut manager = ParserManager::new(self.workspace_root.join(".curd/grammars"))?;
+        let curd_dir = crate::workspace::get_curd_dir(&self.workspace_root);
+        let mut manager = ParserManager::new(curd_dir.join("grammars"))?;
         let search = SearchEngine::new(&self.workspace_root);
 
         let symbols = search.parse_file(file_path, &mut manager)?;
@@ -107,12 +117,7 @@ impl EditEngine {
             }
         }
 
-        let mut final_code = source_code[..earliest_byte].to_string();
-        if !final_code.is_empty() && !final_code.ends_with('\n') {
-            final_code.push('\n');
-        }
-
-        final_code.push_str(new_code);
+        let mut final_code = new_code.to_string();
         if !final_code.ends_with('\n') {
             final_code.push('\n');
         }
@@ -151,7 +156,8 @@ impl EditEngine {
         }
 
         let source_code = std::fs::read_to_string(file_path).context("read source")?;
-        let mut manager = ParserManager::new(self.workspace_root.join(".curd/grammars"))
+        let curd_dir = crate::workspace::get_curd_dir(&self.workspace_root);
+        let mut manager = ParserManager::new(curd_dir.join("grammars"))
             .context("ParserManager::new")?;
         let search = SearchEngine::new(&self.workspace_root);
 
@@ -159,7 +165,17 @@ impl EditEngine {
             .parse_file(file_path, &mut manager)
             .context("parse_file")?;
             
-        let matches: Vec<_> = symbols.into_iter().filter(|s| s.name == symbol_name).collect();
+        let mut matches: Vec<_> = symbols.into_iter().filter(|s| s.name == symbol_name).collect();
+        
+        // If no direct match, try matching by suffix (e.g., 'to_dict' matches 'Task::to_dict')
+        if matches.is_empty() && !symbol_name.contains("::") {
+            matches = search
+                .parse_file(file_path, &mut manager)?
+                .into_iter()
+                .filter(|s| s.name.ends_with(&format!("::{}", symbol_name)))
+                .collect();
+        }
+
         let target = if matches.len() > 1 {
             if let Some(target_line) = line_part {
                 matches.into_iter().find(|s| s.start_line == target_line)
@@ -186,11 +202,28 @@ impl EditEngine {
                 self.validate_churn(&lang, &source_code, t.start_byte, t.end_byte)?;
             }
 
-            let mut updated = String::new();
+            // Robust range expansion: Tree-sitter nodes often stop exactly at the last token.
+            // When replacing, we should take the rest of the line and the newline to avoid
+            // leaving ghost code or double newlines.
             let start = t.start_byte.min(source_code.len());
-            let end = t.end_byte.min(source_code.len()).max(start);
+            let mut end = t.end_byte.min(source_code.len()).max(start);
+            
+            // Expand end to include trailing whitespace and exactly one newline if present
+            let bytes = source_code.as_bytes();
+            while end < bytes.len() && (bytes[end] == b' ' || bytes[end] == b'\t' || bytes[end] == b'\r') {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end] == b'\n' {
+                end += 1;
+            }
+
+            let mut updated = String::new();
             updated.push_str(&source_code[..start]);
             updated.push_str(new_code);
+            // Ensure the new code ends with a newline if the old range did and the new one doesn't
+            if !new_code.ends_with('\n') {
+                 updated.push('\n');
+            }
             updated.push_str(&source_code[end..]);
             final_code = updated;
             action_taken = "replaced";
@@ -201,7 +234,9 @@ impl EditEngine {
             }
             final_code.push('\n');
             final_code.push_str(new_code);
-            final_code.push('\n');
+            if !new_code.ends_with('\n') {
+                final_code.push('\n');
+            }
             action_taken = "created";
         }
 
@@ -231,14 +266,35 @@ impl EditEngine {
         let target_nodes = manager.count_nodes(language_name, target_snippet)?;
 
         let config = crate::config::CurdConfig::load_from_workspace(&self.workspace_root);
-        let limit = config.edit.churn_limit;
+        
+        let limit = if total_nodes <= config.edit.small_file_nodes {
+            config.edit.churn_small_limit
+        } else if total_nodes >= config.edit.massive_file_nodes {
+            config.edit.churn_massive_limit.min(config.edit.churn_limit)
+        } else if total_nodes >= config.edit.large_file_nodes {
+            config.edit.churn_large_limit.min(config.edit.churn_limit)
+        } else {
+            config.edit.churn_limit
+        };
 
         let churn = target_nodes as f64 / total_nodes as f64;
         if churn > limit {
+            let size_label = if total_nodes <= config.edit.small_file_nodes {
+                "Small file"
+            } else if total_nodes >= config.edit.massive_file_nodes {
+                "Massive file"
+            } else if total_nodes >= config.edit.large_file_nodes {
+                "Large file"
+            } else {
+                "Standard file"
+            };
+            
             anyhow::bail!(
-                "AST Churn Limit Exceeded: Modification replaces {:.1}% of the file's AST nodes, which exceeds the current limit of {:.1}%. Break this into smaller semantic edits.",
+                "AST Churn Limit Exceeded: Modification replaces {:.1}% of the file's AST nodes, which exceeds the current limit of {:.1}% for a {} ({} nodes). Break this into smaller semantic edits.",
                 churn * 100.0,
-                limit * 100.0
+                limit * 100.0,
+                size_label,
+                total_nodes
             );
         }
         Ok(())
@@ -315,7 +371,7 @@ fn b() {
         std::fs::write(root.join("test.rs"), code).unwrap();
 
         // 2. Create CURD.toml with a strict limit
-        std::fs::write(root.join("CURD.toml"), "[edit]\nchurn_limit = 0.1\n").unwrap();
+        std::fs::write(root.join("CURD.toml"), "[edit]\nchurn_limit = 0.1\nsmall_file_nodes = 0\n").unwrap();
 
         let engine = EditEngine::new(root);
 

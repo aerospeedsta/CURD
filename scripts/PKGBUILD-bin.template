@@ -1,0 +1,18 @@
+# Maintainer: CURD Team <team@curd.dev>
+pkgname=curd-bin
+pkgver=${VERSION}
+pkgrel=1
+pkgdesc="Semantic agentic CLI for code surgery and architectural exploration"
+arch=('x86_64' 'aarch64')
+url="https://github.com/aerospeedsta/CURD"
+license=('MIT')
+provides=('curd')
+conflicts=('curd')
+source_x86_64=("${url}/releases/download/v${pkgver}/curd-linux-x86_64")
+source_aarch64=("${url}/releases/download/v${pkgver}/curd-linux-aarch64")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    install -Dm755 "${srcdir}/curd-linux-${CARCH}" "${pkgdir}/usr/bin/curd"
+}

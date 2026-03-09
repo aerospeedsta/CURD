@@ -5,16 +5,17 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionState {
-    id: u64,
+    id: Uuid,
     label: Option<String>,
     started_at_secs: u64,
     snapshots: HashMap<String, String>,
+    graph_snapshot: Option<crate::graph::DependencyGraph>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +42,8 @@ impl SessionReviewEngine {
             active: Arc::new(Mutex::new(None)),
         };
         let _ = fs::create_dir_all(engine.sessions_dir());
-        if let Some(id) = engine.head_id()
+        if let Some(id_str) = engine.head_id_str()
+            && let Ok(id) = Uuid::parse_str(&id_str)
             && let Ok(state) = engine.load_session(id)
             && let Ok(mut g) = engine.active.lock()
         {
@@ -62,12 +64,17 @@ impl SessionReviewEngine {
             snapshots.insert(rel, content);
         }
 
-        let id = next_session_id();
+        // Capture initial graph state
+        let graph_engine = crate::graph::GraphEngine::new(&self.workspace_root);
+        let graph_snapshot = graph_engine.build_dependency_graph().ok();
+
+        let id = Uuid::new_v4();
         let state = SessionState {
             id,
             label: label.map(ToString::to_string),
             started_at_secs: now_secs(),
             snapshots,
+            graph_snapshot,
         };
         self.save_session(&state)?;
         self.write_head(id)?;
@@ -79,7 +86,8 @@ impl SessionReviewEngine {
             "session_id": id,
             "label": state.label,
             "started_at_secs": state.started_at_secs,
-            "snapshot_file_count": state.snapshots.len()
+            "snapshot_file_count": state.snapshots.len(),
+            "graph_available": state.graph_snapshot.is_some()
         }))
     }
 
@@ -138,6 +146,7 @@ impl SessionReviewEngine {
             };
             s.clone()
         };
+        
         let changes = self.compute_raw_changes(&session)?;
         let mut findings: Vec<Finding> = Vec::new();
         let mut changed_files: Vec<String> = Vec::new();
@@ -175,6 +184,15 @@ impl SessionReviewEngine {
             }
         }
 
+        // Detect Graph Changes
+        let mut graph_diff = json!(null);
+        if let Some(old_graph) = &session.graph_snapshot {
+            let graph_engine = crate::graph::GraphEngine::new(&self.workspace_root);
+            if let Ok(new_graph) = graph_engine.build_dependency_graph() {
+                graph_diff = self.diff_graphs(old_graph, &new_graph);
+            }
+        }
+
         // Syntax diagnostics for changed files
         let lsp = LspEngine::new(&self.workspace_root);
         for path in &changed_files {
@@ -204,7 +222,6 @@ impl SessionReviewEngine {
             }
         }
 
-        // Missing tests heuristic for core changes
         let touched_core = changed_files.iter().any(|p| is_source_file(p));
         let touched_tests = changed_files.iter().any(|p| is_test_file(p));
         if touched_core && !touched_tests {
@@ -223,9 +240,26 @@ impl SessionReviewEngine {
         let med = findings.iter().filter(|f| f.severity == "medium").count();
         let low = findings.iter().filter(|f| f.severity == "low").count();
 
+        // Join with tool call history for provenance
+        let history = crate::HistoryEngine::new(&self.workspace_root);
+        let provenance: Vec<_> = history.get_history(1000)
+            .into_iter()
+            .filter(|e| e.transaction_id == Some(session.id))
+            .map(|e| {
+                json!({
+                    "timestamp": e.timestamp_unix,
+                    "tool": e.operation,
+                    "input": e.input,
+                    "success": e.success
+                })
+            })
+            .collect();
+
         Ok(json!({
             "session_id": session.id,
             "changed_files": changed_files,
+            "graph_diff": graph_diff,
+            "provenance": provenance,
             "summary": {
                 "high": high,
                 "medium": med,
@@ -234,6 +268,51 @@ impl SessionReviewEngine {
             },
             "findings": findings
         }))
+    }
+
+    fn diff_graphs(&self, old: &crate::graph::DependencyGraph, new: &crate::graph::DependencyGraph) -> Value {
+        let mut added_nodes = Vec::new();
+        let mut removed_nodes = Vec::new();
+        let mut added_edges = Vec::new();
+        let mut removed_edges = Vec::new();
+
+        let old_nodes: HashSet<_> = old.outgoing.keys().collect();
+        let new_nodes: HashSet<_> = new.outgoing.keys().collect();
+
+        for n in new_nodes.difference(&old_nodes) {
+            added_nodes.push(n.to_string());
+        }
+        for n in old_nodes.difference(&new_nodes) {
+            removed_nodes.push(n.to_string());
+        }
+
+        // Diff edges
+        let mut old_edges = HashSet::new();
+        for (from, tos) in &old.outgoing {
+            for to in tos {
+                old_edges.insert((from.clone(), to.clone()));
+            }
+        }
+        let mut new_edges = HashSet::new();
+        for (from, tos) in &new.outgoing {
+            for to in tos {
+                new_edges.insert((from.clone(), to.clone()));
+            }
+        }
+
+        for (from, to) in new_edges.difference(&old_edges) {
+            added_edges.push(json!({"from": from, "to": to}));
+        }
+        for (from, to) in old_edges.difference(&new_edges) {
+            removed_edges.push(json!({"from": from, "to": to}));
+        }
+
+        json!({
+            "added_nodes": added_nodes,
+            "removed_nodes": removed_nodes,
+            "added_edges": added_edges,
+            "removed_edges": removed_edges
+        })
     }
 
     pub fn end(&self) -> Result<Value> {
@@ -313,24 +392,22 @@ impl SessionReviewEngine {
     fn head_path(&self) -> PathBuf {
         self.sessions_dir().join("HEAD")
     }
-    fn session_path(&self, id: u64) -> PathBuf {
+    fn session_path(&self, id: Uuid) -> PathBuf {
         self.sessions_dir().join(format!("session_{}.json", id))
     }
-    fn write_head(&self, id: u64) -> Result<()> {
+    fn write_head(&self, id: Uuid) -> Result<()> {
         fs::write(self.head_path(), id.to_string())?;
         Ok(())
     }
-    fn head_id(&self) -> Option<u64> {
-        fs::read_to_string(self.head_path())
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
+    fn head_id_str(&self) -> Option<String> {
+        fs::read_to_string(self.head_path()).ok().map(|s| s.trim().to_string())
     }
     fn save_session(&self, state: &SessionState) -> Result<()> {
         let path = self.session_path(state.id);
         fs::write(path, serde_json::to_string_pretty(state)?)?;
         Ok(())
     }
-    fn load_session(&self, id: u64) -> Result<SessionState> {
+    fn load_session(&self, id: Uuid) -> Result<SessionState> {
         let path = self.session_path(id);
         Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
     }
@@ -351,7 +428,6 @@ fn diff_added_removed(old: &str, new: &str) -> (Vec<(usize, String)>, usize) {
     let n = a.len();
     let m = b.len();
 
-    // Prevent OOM for very large files by capping the DP matrix
     if n.checked_mul(m).is_none_or(|cells| cells > 4_000_000) {
         let added = b
             .iter()
@@ -439,9 +515,4 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn next_session_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }

@@ -84,6 +84,9 @@ fn detect_build_systems(root: &Path) -> Vec<BuildSystemMatch> {
         ("Go", "go.mod", "-json flag on go build/test"),
         ("Gradle", "build.gradle", "--console=plain capture"),
         ("Gradle (Kotlin)", "build.gradle.kts", "--console=plain capture"),
+        ("Gradle", "settings.gradle", "--console=plain capture"),
+        ("Gradle (Kotlin)", "settings.gradle.kts", "--console=plain capture"),
+        ("Gradle", "gradlew", "--console=plain capture"),
         ("Maven", "pom.xml", "-B batch mode + output redirect"),
         ("Bazel", "BUILD", "--build_event_json_file"),
         ("Bazel", "WORKSPACE", "--build_event_json_file"),
@@ -141,9 +144,12 @@ fn scaffold_curd_dir(root: &Path) -> Result<()> {
     fs::create_dir_all(curd_dir.join("feedback"))?;
     fs::create_dir_all(curd_dir.join("wiki"))?;
     fs::create_dir_all(curd_dir.join("commits"))?;
+    fs::create_dir_all(curd_dir.join("grammars"))?;
 
     // Create default curd.toml if none exists
-    let has_config = root.join("settings.toml").exists()
+    let has_config = root.join(".curd").join("curd.toml").exists()
+        || root.join(".curd").join("settings.toml").exists()
+        || root.join("settings.toml").exists()
         || root.join("curd.toml").exists()
         || root.join("CURD.toml").exists();
 
@@ -156,11 +162,12 @@ mode = "full"                # full|fast|lazy|scoped
 
 [edit]
 churn_limit = 0.30
+enforce_transactional = true # Mandatory sessions for AI agents
 
 [doctor]
 strict = false
 "#;
-        fs::write(root.join("curd.toml"), default_config)?;
+        fs::write(curd_dir.join("curd.toml"), default_config)?;
     }
 
     // Add .curd/ to .gitignore if git is in use and not already ignored
@@ -222,14 +229,22 @@ pub fn run_init(root: &Path) -> Result<()> {
     // Scaffold .curd/ directory
     let curd_dir = root.join(".curd");
     if curd_dir.exists() {
-        println!("  .curd/ directory already exists — skipping scaffold.");
+        println!("  .curd/ directory already exists — ensuring subdirectories...");
+        scaffold_curd_dir(root)?;
     } else {
         scaffold_curd_dir(root)?;
         println!("  ✅ Created .curd/ directory:");
         println!("     ├── builds/      (build capture logs)");
         println!("     ├── feedback/    (annotation ledger)");
         println!("     ├── wiki/        (generated docs)");
-        println!("     └── commits/     (provenance tracking)");
+        println!("     ├── commits/     (provenance tracking)");
+        println!("     └── grammars/    (WASM/Native parser storage)");
+    }
+
+    // Bootstrap core grammars
+    println!("  📥 Bootstrapping core semantic grammars...");
+    if let Ok(mut manager) = curd_core::ParserManager::new(curd_dir.join("grammars")) {
+        let _ = manager.bootstrap_core_grammars();
     }
 
     // Show config status
@@ -244,6 +259,8 @@ pub fn run_init(root: &Path) -> Result<()> {
             println!("  ✅ .curd/ added to .gitignore.");
         }
     }
+
+    println!("  ✅ Transactional safety barrier enabled by default.");
 
     // Build capture hint
     if !info.build_systems.is_empty() {
@@ -264,6 +281,59 @@ pub fn run_init(root: &Path) -> Result<()> {
     println!();
 
     Ok(())
+}
+
+/// Surgically cleans up CURD configurations from AI agent directories without deleting their state.
+pub fn cleanup_agent_configs(root: &Path) {
+    let targets = [
+        (root.join(".gemini").join("settings.json"), "mcpServers"),
+        (root.join(".copilot").join("mcp-config.json"), "mcpServers"),
+        (root.join(".codex").join("config.json"), "mcpServers"),
+        (root.join(".cursor").join("mcp.json"), "mcpServers"),
+        (root.join(".mcp.json"), "mcpServers"), // claude_desktop / claude_code
+        (root.join(".cline").join("cline_mcp_settings.json"), "mcpServers"),
+        (root.join(".roo").join("cline_mcp_settings.json"), "mcpServers"),
+        (root.join(".windsurf").join("mcp_config.json"), "mcpServers"),
+        (root.join(".zed").join("settings.json"), "context_servers"),
+    ];
+
+    for (target_path, block_key) in targets {
+        if target_path.exists() {
+            if let Ok(content) = fs::read_to_string(&target_path) {
+                if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let mut modified = false;
+                    if let Some(obj) = config.as_object_mut() {
+                        if let Some(servers) = obj.get_mut(block_key).and_then(|v| v.as_object_mut()) {
+                            let keys_to_remove: Vec<String> = servers
+                                .keys()
+                                .filter(|k| k.starts_with("curd_"))
+                                .cloned()
+                                .collect();
+                            for k in keys_to_remove {
+                                servers.remove(&k);
+                                modified = true;
+                            }
+                        }
+                    }
+                    if modified {
+                        let _ = fs::write(&target_path, serde_json::to_string_pretty(&config).unwrap_or_default());
+                        println!("Removed CURD blocks from {}", target_path.display());
+                    }
+                }
+            }
+        }
+    }
+    
+    // Clean up specific skills silently
+    let gemini_skill = root.join(".gemini/skills/propose-plan/SKILL.md");
+    if gemini_skill.exists() {
+        let _ = fs::remove_file(&gemini_skill);
+        if let Some(p) = gemini_skill.parent() { let _ = fs::remove_dir(p); }
+    }
+    let cursor_rule = root.join(".cursor/rules/propose-plan.mdc");
+    if cursor_rule.exists() {
+        let _ = fs::remove_file(&cursor_rule);
+    }
 }
 
 #[cfg(test)]
@@ -313,7 +383,7 @@ mod tests {
         assert!(root.join(".curd/feedback").exists());
         assert!(root.join(".curd/wiki").exists());
         assert!(root.join(".curd/commits").exists());
-        assert!(root.join("curd.toml").exists());
+        assert!(root.join(".curd/curd.toml").exists());
         
         let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
         assert!(gitignore.contains(".curd/"));

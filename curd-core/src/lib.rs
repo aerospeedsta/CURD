@@ -78,8 +78,34 @@ pub use search::{
 };
 pub use session_review::SessionReviewEngine;
 pub use shell::ShellEngine;
-pub use storage::{IndexRunRecord, read_recent_index_runs, record_index_run};
+pub use storage::{IndexRunRecord, Storage, read_recent_index_runs, record_index_run};
 pub use symbols::{Symbol, SymbolIndex, SymbolKind};
 pub use transaction::ShadowStore;
 pub use watchdog::Watchdog;
 pub use workspace::{WorkspaceEngine, list_workspace, scan_workspace};
+
+/// Recursively redact sensitive fields from a JSON value.
+pub fn redact_value(mut val: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match &mut val {
+        Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if matches!(
+                    k.as_str(),
+                    "code" | "snippet" | "signature_hex" | "nonce" | "session_token" | "original_code" | "mutated_code"
+                ) {
+                    *v = Value::String("[REDACTED]".to_string());
+                } else {
+                    *v = redact_value(v.clone());
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                *v = redact_value(v.clone());
+            }
+        }
+        _ => {}
+    }
+    val
+}

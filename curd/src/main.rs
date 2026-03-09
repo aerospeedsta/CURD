@@ -69,9 +69,24 @@ enum Commands {
         /// Optional build target
         #[arg(long)]
         target: Option<String>,
-        /// Execute planned commands (default is dry-run plan only)
-        #[arg(long)]
+        /// Execute planned commands (default: true)
+        #[arg(long, default_value = "true", action = clap::ArgAction::Set, allow_hyphen_values = true)]
         execute: bool,
+        /// Only show the build plan, do not execute.
+        #[arg(long)]
+        plan: bool,
+        /// Custom command to run directly, overriding adapters (e.g. `pixi run dev2`)
+        #[arg(short = 'c', long)]
+        command: Option<String>,
+        /// Allow execution of custom adapters defined in workspace settings.toml without prompt.
+        #[arg(long)]
+        allow_untrusted: bool,
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
+        /// Use cargo-zigbuild instead of cargo build
+        #[arg(long)]
+        zig: bool,
         /// Trailing arguments to pass directly to the underlying compiler/adapter
         #[arg(last = true)]
         trailing_args: Vec<String>,
@@ -79,8 +94,8 @@ enum Commands {
     /// Print a shell hook to implicitly route standard commands (like 'make') through CURD
     #[cfg(feature = "core")]
     Hook {
-        /// The target shell (zsh, bash, fish)
-        #[arg(value_parser = ["zsh", "bash", "fish"])]
+        /// The target shell (zsh, bash, fish, powershell)
+        #[arg(value_parser = ["zsh", "bash", "fish", "powershell"])]
         shell: String,
     },
     /// Compare symbols at AST level
@@ -122,6 +137,23 @@ enum Commands {
         /// Path to the workspace root
         #[arg(default_value = ".")]
         root: PathBuf,
+    },
+    /// Soft detach CURD from the current workspace (removes git hooks and scrubs scripts)
+    #[cfg(feature = "core")]
+    Detach {
+        /// Path to the workspace root
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
+    /// Permanently delete CURD from the current workspace by removing the .curd/ directory
+    #[cfg(feature = "core")]
+    Delete {
+        /// Path to the workspace root
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// Force skip confirmation
+        #[arg(short, long)]
+        yes: bool,
     },
     /// Print a summary of the current workspace state (index stats, shadow changes, etc.)
     #[cfg(feature = "core")]
@@ -220,6 +252,11 @@ enum Commands {
         #[arg(long)]
         response: PathBuf,
     },
+    /// Alias for curd doctor indexing
+    #[cfg(feature = "core")]
+    Index(Box<DoctorArgs>),
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 #[derive(Subcommand)]
@@ -276,6 +313,10 @@ pub enum ContextCommands {
 pub enum SessionCommands {
     /// Open a new shadow transaction
     Begin,
+    /// View changes and architectural impact of the current session
+    Review,
+    /// View a detailed log of all tool calls and their results
+    Log,
     /// Commit the active shadow transaction to disk
     Commit,
     /// Discard the active shadow transaction
@@ -378,6 +419,14 @@ pub struct DoctorArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // SAFETY: process-wide static initialization at startup.
+    // Must happen BEFORE Tokio runtime threads take over to avoid UB.
+    if let Ok(exe) = std::env::current_exe() {
+        unsafe {
+            std::env::set_var("CURD_INDEX_WORKER_BIN", exe);
+        }
+    }
+
     // Initialize tracing
     setup_tracing();
 
@@ -391,12 +440,6 @@ async fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
-    if let Ok(exe) = std::env::current_exe() {
-        // SAFETY: process-wide static initialization at startup.
-        unsafe {
-            std::env::set_var("CURD_INDEX_WORKER_BIN", exe);
-        }
-    }
 
     match cli.command {
         #[cfg(feature = "mcp")]
@@ -417,7 +460,7 @@ async fn main() -> Result<()> {
             init::init_agent(name.as_deref(), harness.as_deref(), &resolved)
         }
         #[cfg(feature = "core")]
-        Some(Commands::Doctor(args)) => {
+        Some(Commands::Doctor(args)) | Some(Commands::Index(args)) => {
             let resolved = resolve_workspace_root(args.root.clone());
             doctor::run_doctor(
                 &resolved,
@@ -455,21 +498,91 @@ async fn main() -> Result<()> {
             profile,
             target,
             execute,
+            plan,
+            command,
+            allow_untrusted,
+            json,
+            zig,
             trailing_args,
         }) => {
+            let actual_execute = if plan { false } else { execute };
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            let out = curd_core::run_build(
+            let mut out = curd_core::run_build(
                 &resolved,
                 BuildRequest {
-                    adapter,
-                    profile,
-                    target,
-                    execute,
-                    trailing_args,
+                    adapter: adapter.clone(),
+                    profile: profile.clone(),
+                    target: target.clone(),
+                    execute: actual_execute,
+                    zig,
+                    command: command.clone(),
+                    allow_untrusted,
+                    trailing_args: trailing_args.clone(),
                 },
             )?;
-            println!("{}", serde_json::to_string_pretty(&out)?);
+
+            if out.untrusted_confirmation_required && !json {
+                println!("\n\x1b[1;33m⚠️  UNTRUSTED BUILD ADAPTER DETECTED\x1b[0m");
+                println!("The adapter \x1b[1m'{}'\x1b[0m is defined in the local \x1b[34m.curd/settings.toml\x1b[0m.", out.adapter);
+                println!("Executing this adapter may run arbitrary commands on your system.");
+                
+                let confirmation = dialoguer::Confirm::new()
+                    .with_prompt("Do you want to continue with execution?")
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false);
+
+                if confirmation {
+                    out = curd_core::run_build(
+                        &resolved,
+                        BuildRequest {
+                            adapter: adapter.clone(),
+                            profile: profile.clone(),
+                            target: target.clone(),
+                            execute: actual_execute,
+                            zig,
+                            command,
+                            allow_untrusted: true,
+                            trailing_args,
+                        },
+                    )?;
+                } else {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+            
+            if json {
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                use colored::*;
+                let title = if actual_execute { "EXECUTION" } else { "PLAN" };
+                let header = format!("--- CURD BUILD {} ---", title);
+                println!("{}", header.bold().cyan());
+                println!("  {}   {}", "Adapter:".dimmed(), out.adapter.bold());
+                println!("  {}   {}", "Profile:".dimmed(), out.profile.bold());
+                if let Some(ref t) = out.target { 
+                    println!("  {}   {}", "Target: ".dimmed(), t.bold()); 
+                }
+                println!("  {}   {}", "Steps:  ".dimmed(), out.steps.len());
+                
+                for (i, step) in out.steps.iter().enumerate() {
+                    let cmd_str = step.command.join(" ");
+                    println!("    [{}] {}", i + 1, cmd_str.white());
+                    if let Some(suc) = step.success {
+                        let status_str = if suc { "SUCCESS".green() } else { "FAILED".red() };
+                        println!("         {} {}", "Result:".dimmed(), status_str.bold());
+                    }
+                }
+                
+                let footer = if out.status == "ok" {
+                    "✔ Build process completed successfully.".green()
+                } else {
+                    "✘ Build process failed.".red()
+                };
+                println!("\n{}\n", footer.bold());
+            }
             if out.status == "ok" {
                 Ok(())
             } else {
@@ -575,9 +688,48 @@ alias ninja="_curd_build_hook ninja"
 alias cmake="_curd_build_hook cmake"
 "#;
 
+            let powershell = r#"function Invoke-CurdBuildHook {
+    param($Tool, $Args)
+    if (!(Test-Path -Path ".\.curd" -PathType Container)) {
+        & $Tool @Args
+        return
+    }
+
+    $Intercept = $false
+    $SubCmd = $Args[0]
+
+    switch ($Tool) {
+        "cargo" { if ("build","check","test","run" -contains $SubCmd) { $Intercept = $true } }
+        "npm" { if ("build","test","lint" -contains $SubCmd) { $Intercept = $true } }
+        "yarn" { if ("build","test","lint" -contains $SubCmd) { $Intercept = $true } }
+        "pnpm" { if ("build","test","lint" -contains $SubCmd) { $Intercept = $true } }
+        "bun" { if ("build","test","lint" -contains $SubCmd) { $Intercept = $true } }
+        "make" { if (!("clean","help" -contains $SubCmd)) { $Intercept = $true } }
+        "ninja" { if (!("clean","help" -contains $SubCmd)) { $Intercept = $true } }
+        "cmake" { if (!("clean","help" -contains $SubCmd)) { $Intercept = $true } }
+    }
+
+    if ($Intercept) {
+        curd build --adapter $Tool --execute -- @Args
+    } else {
+        & $Tool @Args
+    }
+}
+
+function cargo { Invoke-CurdBuildHook "cargo" $args }
+function npm { Invoke-CurdBuildHook "npm" $args }
+function yarn { Invoke-CurdBuildHook "yarn" $args }
+function pnpm { Invoke-CurdBuildHook "pnpm" $args }
+function bun { Invoke-CurdBuildHook "bun" $args }
+function make { Invoke-CurdBuildHook "make" $args }
+function ninja { Invoke-CurdBuildHook "ninja" $args }
+function cmake { Invoke-CurdBuildHook "cmake" $args }
+"#;
+
             match shell.as_str() {
                 "zsh" | "bash" => println!("{}", zsh_bash),
                 "fish" => println!("{}", fish),
+                "powershell" => println!("{}", powershell),
                 _ => {}
             }
             Ok(())
@@ -734,6 +886,60 @@ alias cmake="_curd_build_hook cmake"
             workspace_init::run_init(&resolved)
         }
         #[cfg(feature = "core")]
+        Some(Commands::Detach { root }) => {
+            let resolved = resolve_workspace_root(root);
+            println!("Performing soft detach...");
+            // 1. Remove pre-push hook if we installed one
+            let hook_path = resolved.join(".git/hooks/pre-push");
+            if hook_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&hook_path) {
+                    if content.contains("curd detach") {
+                        let _ = std::fs::remove_file(&hook_path);
+                        println!("Removed CURD git pre-push hook.");
+                    }
+                }
+            }
+            
+            workspace_init::cleanup_agent_configs(&resolved);
+            
+            println!("CURD workspace soft-detached. Local `.curd/` data is preserved.");
+            Ok(())
+        }
+        #[cfg(feature = "core")]
+        Some(Commands::Delete { root, yes }) => {
+            let resolved = resolve_workspace_root(root);
+            let curd_dir = resolved.join(".curd");
+            
+            if !yes {
+                let confirmation = dialoguer::Confirm::new()
+                    .with_prompt("WARNING: This will permanently delete your local `.curd/` directory, history, and shadow index. Are you sure?")
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false);
+                if !confirmation {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+            
+            // Soft detach cleanup first
+            let _ = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "curd".into()))
+                .arg("detach")
+                .arg(&resolved)
+                .output();
+
+            if curd_dir.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&curd_dir) {
+                    println!("Failed to delete CURD: {}", e);
+                } else {
+                    println!("Successfully deleted CURD from workspace.");
+                }
+            } else {
+                println!("CURD is not initialized in this workspace.");
+            }
+            Ok(())
+        }
+        #[cfg(feature = "core")]
         Some(Commands::Status { root }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
@@ -837,9 +1043,10 @@ alias cmake="_curd_build_hook cmake"
             
             let re = curd_core::ReadEngine::new(&resolved);
             let mut current_uri = uri.clone();
+            let session_root = detect_active_session_root(&resolved);
             
             loop {
-                let results = re.read(vec![current_uri.clone()], 1)?;
+                let results = re.read(vec![current_uri.clone()], 1, session_root.as_deref())?;
                 
                 if let Some(res) = results.first() {
                     if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
@@ -908,9 +1115,10 @@ alias cmake="_curd_build_hook cmake"
             
             let ee = curd_core::EditEngine::new(&resolved);
             let mut current_uri = uri.clone();
+            let session_root = detect_active_session_root(&resolved);
             
             loop {
-                match ee.edit(&current_uri, &code, &action, None) {
+                match ee.edit(&current_uri, &code, &action, session_root.as_deref()) {
                     Ok(result) => {
                         println!("Edit applied: {}", serde_json::to_string_pretty(&result)?);
                         break;
@@ -954,21 +1162,41 @@ alias cmake="_curd_build_hook cmake"
             match command {
                 SessionCommands::Begin => {
                     shadow.begin()?;
+                    let engine = curd_core::SessionReviewEngine::new(&resolved);
+                    engine.begin(None)?;
                     println!("Started new shadow transaction.");
+                }
+                SessionCommands::Review => {
+                    let engine = curd_core::SessionReviewEngine::new(&resolved);
+                    let res = engine.review().await?;
+                    println!("{}", serde_json::to_string_pretty(&res)?);
+                }
+                SessionCommands::Log => {
+                    let history = curd_core::HistoryEngine::new(&resolved);
+                    let shadow_id = shadow.get_session_id();
+                    let items = history.get_history(100);
+                    let filtered: Vec<_> = items.into_iter()
+                        .filter(|e| e.transaction_id == shadow_id)
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&filtered)?);
                 }
                 SessionCommands::Commit => {
                     if !shadow.is_active() {
                         anyhow::bail!("No active shadow session to commit.");
                     }
                     shadow.commit()?;
-                    println!("Committed shadow changes to disk.");
+                    let engine = curd_core::SessionReviewEngine::new(&resolved);
+                    engine.end()?;
+                    println!("Committed shadow changes to disk and ended session.");
                 }
                 SessionCommands::Rollback => {
                     if !shadow.is_active() {
                         anyhow::bail!("No active shadow session to rollback.");
                     }
                     shadow.rollback();
-                    println!("Discarded active shadow transaction.");
+                    let engine = curd_core::SessionReviewEngine::new(&resolved);
+                    engine.end()?;
+                    println!("Discarded active shadow transaction and ended session.");
                 }
             }
             Ok(())
@@ -1047,6 +1275,7 @@ alias cmake="_curd_build_hook cmake"
                             workspace_root: resolved.clone(),
                             session_id: session_uuid,
                             read_only: false,
+                            config: curd_core::CurdConfig::load_from_workspace(&resolved),
                             se: std::sync::Arc::new(curd_core::SearchEngine::new(&resolved)),
                             re: std::sync::Arc::new(curd_core::ReadEngine::new(&resolved)),
                             ee: std::sync::Arc::new(curd_core::EditEngine::new(&resolved)),
@@ -1085,10 +1314,21 @@ alias cmake="_curd_build_hook cmake"
             }
             Ok(())
         }
+        Some(Commands::External(args)) => {
+            let cmd = args.join(" ");
+            eprintln!("\x1b[31merror\x1b[0m: unrecognized subroutine '\x1b[33m{}\x1b[0m'", cmd);
+            eprintln!("\x1b[2mRun `curd help` for a list of available commands.\x1b[0m");
+            std::process::exit(1);
+        }
         None => {
             // If legacy path provided, use MCP (only when mcp feature enabled)
             #[cfg(feature = "mcp")]
             if let Some(root) = cli.legacy_root {
+                if !root.exists() && root.to_string_lossy() != "." {
+                    eprintln!("\x1b[31merror\x1b[0m: unrecognized subroutine '\x1b[33m{}\x1b[0m'", root.to_string_lossy());
+                    eprintln!("\x1b[2mRun `curd help` for a list of available commands.\x1b[0m");
+                    std::process::exit(1);
+                }
                 let resolved = resolve_workspace_root(root);
                 enforce_workspace_config(&resolved)?;
                 let server = McpServer::new(&resolved.to_string_lossy());
@@ -1131,6 +1371,21 @@ fn resolve_workspace_root(root: PathBuf) -> PathBuf {
         }
 
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Helper to detect if we are currently in an active CURD session
+/// and return the shadow root if it exists.
+fn detect_active_session_root(workspace_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let curd_dir = curd_core::workspace::get_curd_dir(workspace_root);
+    let shadow_base = curd_dir.join("shadow");
+    
+    // If the shadow directory exists and looks like it's populated, we treat it as an active session root.
+    // In the future, we can read SESSION_LOCK to be more precise, but for local CLI usage,
+    // if a shadow root exists, we typically want to operate on it.
+    if shadow_base.exists() && fs::read_dir(&shadow_base).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Some(shadow_base);
+    }
+    None
 }
 
 fn setup_tracing() {

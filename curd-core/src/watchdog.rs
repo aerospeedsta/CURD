@@ -179,7 +179,8 @@ impl Watchdog {
             status, count, regression_note, loop_note, u_list
         );
 
-        let report_path = root.join(".curd").join("watchdog_report.md");
+        let curd_dir = crate::workspace::get_curd_dir(root);
+        let report_path = curd_dir.join("watchdog_report.md");
         if let Some(p) = report_path.parent() {
             let _ = std::fs::create_dir_all(p);
         }

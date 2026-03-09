@@ -306,6 +306,18 @@ impl ShadowStore {
         self.shadow_root.as_ref()
     }
 
+    /// Returns the UUID of the active session, if any.
+    pub fn get_session_id(&self) -> Option<Uuid> {
+        self.shadow_root.as_ref().and_then(|root| {
+            let name = root.file_name()?.to_string_lossy();
+            if name.starts_with("curd_shadow_") {
+                Uuid::parse_str(&name[12..]).ok()
+            } else {
+                None
+            }
+        })
+    }
+
     /// Mark a file as staged without modifying content in shadow.
     pub fn mark_staged(&mut self, path: &Path) -> Result<()> {
         if !self.active {

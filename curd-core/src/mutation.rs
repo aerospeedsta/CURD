@@ -30,7 +30,8 @@ impl MutationEngine {
     }
 
     pub fn record_trace(&self, trace: &MutationTrace) -> Result<()> {
-        let dir = self.workspace_root.join(".curd/traces");
+        let curd_dir = crate::workspace::get_curd_dir(&self.workspace_root);
+        let dir = curd_dir.join("traces");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("repl_history.jsonl");
         let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
@@ -40,7 +41,7 @@ impl MutationEngine {
         Ok(())
     }
 
-    pub fn mutate_symbol(&self, uri: &str) -> Result<Value> {
+    pub fn mutate_symbol(&self, uri: &str, shadow_root: Option<&Path>) -> Result<Value> {
         let mut parts = uri.splitn(2, "::");
         let file_part = parts.next().unwrap_or("");
         let symbol_name = parts.next().ok_or_else(|| anyhow::anyhow!("Invalid URI: missing symbol part"))?;
@@ -50,18 +51,22 @@ impl MutationEngine {
             return Err(anyhow::anyhow!("File not found: {}", file_part));
         }
         
-        let mut shadow = crate::ShadowStore::new(&self.workspace_root);
-        if !shadow.is_active() {
-            shadow.begin()?;
-        }
-        
-        let shadow_file = shadow.shadow_root.as_ref().unwrap().join(file_part);
+        // If we have a shadow_root from an active session, use it.
+        // Otherwise, fail if enforcement is on (checked at dispatch level).
+        let shadow_file = if let Some(root) = shadow_root {
+            root.join(file_part)
+        } else {
+            // Fallback to real path if no shadow root (though dispatch_tool might have blocked this)
+            file_path.clone()
+        };
+
         if let Some(parent) = shadow_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let source_code = std::fs::read_to_string(&shadow_file).or_else(|_| std::fs::read_to_string(&file_path))?;
         
-        let mut manager = ParserManager::new(self.workspace_root.join(".curd/grammars"))?;
+        let curd_dir = crate::workspace::get_curd_dir(&self.workspace_root);
+        let mut manager = ParserManager::new(curd_dir.join("grammars"))?;
         let search = SearchEngine::new(&self.workspace_root);
         
         // Parse the shadow file or real file depending on what we loaded
@@ -79,7 +84,10 @@ impl MutationEngine {
         final_code.push_str(&source_code[symbol.end_byte..]);
 
         std::fs::write(&shadow_file, &final_code)?;
-        shadow.stage(Path::new(&file_part), &final_code).ok();
+        
+        // If we are in a shadow root, we should also notify the shadow store manifest
+        // if we have access to it. For now, just writing to the shadow file is 
+        // enough as `discover_implicit_changes` will find it during diff/commit.
         
         // Invalidate index since we changed the file
         SearchEngine::new(&self.workspace_root).invalidate_index();
@@ -89,8 +97,8 @@ impl MutationEngine {
             schema_version: "1.0".to_string(),
             timestamp_secs: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
             uri: uri.to_string(),
-            original_code: symbol_code.to_string(),
-            mutated_code: mutated_code.clone(),
+            original_code: if crate::redact_value(json!({"code": symbol_code})).get("code").is_some_and(|v| v == "[REDACTED]") { "[REDACTED]".into() } else { symbol_code.to_string() },
+            mutated_code: if crate::redact_value(json!({"code": mutated_code})).get("code").is_some_and(|v| v == "[REDACTED]") { "[REDACTED]".into() } else { mutated_code.clone() },
             mutation_type: mutation_type.clone(),
             agent_repair: None,
             build_status: None,
@@ -179,7 +187,7 @@ mod tests {
     fn test_mutate_symbol_missing_file() {
         let dir = tempdir().unwrap();
         let engine = MutationEngine::new(dir.path());
-        let res = engine.mutate_symbol("src/missing.py::foo");
+        let res = engine.mutate_symbol("src/missing.py::foo", None);
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("not found"));
     }

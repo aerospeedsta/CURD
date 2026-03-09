@@ -99,7 +99,8 @@ impl PyCurdEngine {
             "uris": uris,
             "verbosity": verbosity.unwrap_or(1)
         });
-        let res = self.block_on(handle_read(&params, Arc::clone(&self.ctx.re)));
+        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let res = self.block_on(handle_read(&params, Arc::clone(&self.ctx.re), shadow_root));
         if let Some(e) = res.get("error").and_then(|v| v.as_str()) {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
@@ -121,7 +122,8 @@ impl PyCurdEngine {
             "action": action.unwrap_or("upsert"),
             "adaptation_justification": justification.unwrap_or("")
         });
-        let res = self.block_on(handle_edit(&params, Arc::clone(&self.ctx.ee)));
+        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let res = self.block_on(handle_edit(&params, Arc::clone(&self.ctx.ee), shadow_root));
         if let Some(e) = res.get("error").and_then(|v| v.as_str()) {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
@@ -198,7 +200,9 @@ impl PyCurdEngine {
     #[pyo3(signature = (command))]
     fn shell(&self, py: Python, command: &str) -> PyResult<PyObject> {
         let params = serde_json::json!({ "command": command });
-        let res: serde_json::Value = self.block_on(handle_shell(&params, &self.ctx.she));
+        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let res: serde_json::Value =
+            self.block_on(handle_shell(&params, &self.ctx.she, shadow_root.as_deref()));
         if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
@@ -218,7 +222,12 @@ impl PyCurdEngine {
             "action": action.unwrap_or("create"),
             "destination": destination
         });
-        let res: serde_json::Value = self.block_on(handle_manage_file(&params, Arc::clone(&self.ctx.fie)));
+        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let res: serde_json::Value = self.block_on(handle_manage_file(
+            &params,
+            Arc::clone(&self.ctx.fie),
+            shadow_root,
+        ));
         if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }

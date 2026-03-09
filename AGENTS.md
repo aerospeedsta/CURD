@@ -155,6 +155,7 @@ Commit review gate (`workspace commit`) may block by thresholds:
 3. `diff` reflects staged + implicit shadow changes.
 4. `commit` performs conflict-aware writeback.
 5. `rollback` cleans shadow state without mutating workspace files.
+6. MANDATORY SESSIONS: As of v0.5.0, agents MUST open a session via `workspace(action: 'begin')` before calling any state-mutating tools (`edit`, `mutate`, `manage_file`, or destructive `shell` commands). Failure to do so will result in a barrier error.
 
 Conflict behavior:
 
@@ -207,6 +208,7 @@ Do not:
 - introduce hidden behavior changes without schema/update notes.
 - move business logic from core into bindings.
 - weaken transaction safety boundaries.
+- PERFORM WRITES WITHOUT A SESSION: Always wrap plan executions and individual edits in a `workspace` begin/commit cycle.
 
 ---
 

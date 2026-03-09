@@ -18,8 +18,9 @@ impl FileEngine {
     }
 
     /// Primary execution router for safe path management
-    pub fn manage(&self, uri: &str, action: &str, destination: Option<&str>) -> Result<Value> {
-        let clean_uri = crate::workspace::validate_sandboxed_path(&self.workspace_root, uri)?;
+    pub fn manage(&self, uri: &str, action: &str, destination: Option<&str>, shadow_root: Option<&Path>) -> Result<Value> {
+        let target_root = shadow_root.unwrap_or(&self.workspace_root);
+        let clean_uri = crate::workspace::validate_sandboxed_path(target_root, uri)?;
 
         match action {
             "create" => {
@@ -66,7 +67,7 @@ impl FileEngine {
                     anyhow::anyhow!("'rename' action requires a 'destination' parameter.")
                 })?;
                 let clean_dest =
-                    crate::workspace::validate_sandboxed_path(&self.workspace_root, dest)?;
+                    crate::workspace::validate_sandboxed_path(target_root, dest)?;
 
                 if !clean_uri.exists() {
                     return Err(anyhow::anyhow!(

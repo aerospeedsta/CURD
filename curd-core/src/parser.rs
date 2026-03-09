@@ -278,7 +278,44 @@ impl ParserManager {
                 );
             }
         }
+        eprintln!("DEBUG: create_native_parser SUCCESS for {}", language_name);
         Ok(parser)
+    }
+
+    pub fn load_query(&self, language_name: &str) -> Result<String> {
+        use crate::symbols::*;
+        // Priority:
+        // 1. Local override in .curd/queries/<lang>.scm
+        // 2. Built-in core queries
+        let queries_dir = self.local_grammars_dir.parent().map(|p| p.join("queries"));
+        if let Some(dir) = queries_dir {
+            let local_query = dir.join(format!("{}.scm", language_name));
+            if local_query.exists() {
+                return Ok(fs::read_to_string(local_query)?);
+            }
+        }
+
+        match language_name {
+            "python" => Ok(PYTHON_QUERY.to_string()),
+            "rust" => Ok(RUST_QUERY.to_string()),
+            "javascript" => Ok(JS_QUERY.to_string()),
+            "typescript" => Ok(TS_QUERY.to_string()),
+            "go" => Ok(GO_QUERY.to_string()),
+            "c" => Ok(C_QUERY.to_string()),
+            "cpp" => Ok(CPP_QUERY.to_string()),
+            "java" => Ok(JAVA_QUERY.to_string()),
+            _ => Ok(String::new()),
+        }
+    }
+
+    pub fn bootstrap_core_grammars(&mut self) -> Result<()> {
+        let core_langs = ["rust", "python", "javascript", "typescript", "go", "c", "cpp", "java"];
+        for lang in core_langs {
+            if let Err(e) = self.get_language_bytes(lang) {
+                log::warn!("Failed to bootstrap grammar for {}: {}", lang, e);
+            }
+        }
+        Ok(())
     }
 
     pub fn count_nodes(&mut self, language_name: &str, source: &str) -> Result<usize> {

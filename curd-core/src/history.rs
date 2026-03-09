@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub struct HistoryEntry {
     pub timestamp_unix: u64,
     pub session_id: Uuid,
+    pub transaction_id: Option<Uuid>,
     pub operation: String, // "dsl" or "plan"
     pub input: Value,
     pub output: Value,
@@ -23,10 +24,8 @@ pub struct HistoryEngine {
 
 impl HistoryEngine {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
-        let log_path = workspace_root
-            .as_ref()
-            .join(".curd")
-            .join("repl_history.jsonl");
+        let curd_dir = crate::workspace::get_curd_dir(workspace_root.as_ref());
+        let log_path = curd_dir.join("repl_history.jsonl");
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -36,6 +35,7 @@ impl HistoryEngine {
     pub fn log(
         &self,
         session_id: Uuid,
+        transaction_id: Option<Uuid>,
         operation: &str,
         input: Value,
         output: Value,
@@ -47,12 +47,17 @@ impl HistoryEngine {
             .unwrap_or_default()
             .as_secs();
 
+        // Redact sensitive fields before logging
+        let redacted_input = crate::redact_value(input);
+        let redacted_output = crate::redact_value(output);
+
         let entry = HistoryEntry {
             timestamp_unix: now,
             session_id,
+            transaction_id,
             operation: operation.to_string(),
-            input,
-            output,
+            input: redacted_input,
+            output: redacted_output,
             success,
             error,
         };

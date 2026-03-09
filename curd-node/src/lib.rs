@@ -104,7 +104,8 @@ impl CurdEngine {
             "uris": uris,
             "verbosity": verbosity.unwrap_or(1)
         });
-        let res = handle_read(&params, Arc::clone(&self.ctx.re)).await;
+        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let res = handle_read(&params, Arc::clone(&self.ctx.re), shadow_root).await;
         if res.get("error").is_some() {
             return Err(Error::from_reason(res["error"].to_string()));
         }
@@ -125,7 +126,8 @@ impl CurdEngine {
             "action": action.unwrap_or_else(|| "upsert".to_string()),
             "adaptation_justification": justification.unwrap_or_default()
         });
-        let res = handle_edit(&params, Arc::clone(&self.ctx.ee)).await;
+        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let res = handle_edit(&params, Arc::clone(&self.ctx.ee), shadow_root).await;
         if res.get("error").is_some() {
             return Err(Error::from_reason(res["error"].to_string()));
         }
@@ -199,7 +201,9 @@ impl CurdEngine {
     #[napi]
     pub async fn shell(&self, command: String) -> Result<serde_json::Value> {
         let params = serde_json::json!({ "command": command });
-        let res: serde_json::Value = handle_shell(&params, &self.ctx.she).await;
+        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let res: serde_json::Value =
+            handle_shell(&params, &self.ctx.she, shadow_root.as_deref()).await;
         if res.get("error").is_some() {
             return Err(Error::from_reason(res["error"].to_string()));
         }
@@ -218,7 +222,9 @@ impl CurdEngine {
             "action": action.unwrap_or_else(|| "create".to_string()),
             "destination": destination
         });
-        let res: serde_json::Value = handle_manage_file(&params, Arc::clone(&self.ctx.fie)).await;
+        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let res: serde_json::Value =
+            handle_manage_file(&params, Arc::clone(&self.ctx.fie), shadow_root).await;
         if res.get("error").is_some() {
             return Err(Error::from_reason(res["error"].to_string()));
         }

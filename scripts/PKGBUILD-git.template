@@ -1,0 +1,31 @@
+# Maintainer: CURD Team <team@curd.dev>
+pkgname=curd-git
+pkgver=0.5.0.beta
+pkgrel=1
+pkgdesc="Semantic agentic CLI for code surgery and architectural exploration (Git version)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/aerospeedsta/CURD"
+license=('MIT')
+depends=('cargo' 'git')
+provides=('curd')
+conflicts=('curd' 'curd-bin')
+source=('curd::git+https://github.com/aerospeedsta/CURD.git')
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "${srcdir}/curd"
+    ( set -o pipefail
+      git describe --long --tags 2>/dev/null | sed 's/\([^-]*-g\)/r\1/;s/-/./g' ||
+      printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+    )
+}
+
+build() {
+    cd "${srcdir}/curd"
+    cargo build --release -p curd --features full
+}
+
+package() {
+    cd "${srcdir}/curd"
+    install -Dm755 "target/release/curd" "${pkgdir}/usr/bin/curd"
+}

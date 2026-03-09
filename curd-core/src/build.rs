@@ -2,7 +2,6 @@ use crate::CurdConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BuildRequest {
@@ -10,6 +9,10 @@ pub struct BuildRequest {
     pub profile: Option<String>,
     pub target: Option<String>,
     pub execute: bool,
+    pub zig: bool,
+    pub command: Option<String>,
+    #[serde(default)]
+    pub allow_untrusted: bool,
     #[serde(default)]
     pub trailing_args: Vec<String>,
 }
@@ -31,6 +34,7 @@ pub struct BuildResponse {
     pub target: Option<String>,
     pub execute: bool,
     pub steps: Vec<BuildStep>,
+    pub untrusted_confirmation_required: bool,
 }
 
 pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
@@ -43,23 +47,81 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
         req.target = cfg.build.default_target.clone();
     }
     let profile = req.profile.unwrap_or_else(|| "debug".to_string());
-    let adapter = req
-        .adapter
-        .or_else(|| cfg.build.preferred_adapter.clone())
-        .unwrap_or_else(|| detect_adapter(&root, &cfg));
-    let mut steps = plan_steps(
-        &root,
-        &adapter,
-        &profile,
-        req.target.clone(),
-        &cfg.build.build_dir,
-        &req.trailing_args,
-        &cfg,
-    )?;
+
+    let mut untrusted_confirmation_required = false;
+    
+    let (mut steps, adapter) = if let Some(cmd) = req.command {
+        if !req.allow_untrusted && req.execute {
+            untrusted_confirmation_required = true;
+        }
+
+        let shell_bin = if cfg!(target_os = "windows") {
+            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+        } else {
+            std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
+        };
+        let shell_flag = if cfg!(target_os = "windows") { "/C" } else { "-lc" };
+        
+        (
+            vec![BuildStep {
+                adapter: "custom-shell".to_string(),
+                cwd: root.to_string_lossy().to_string(),
+                command: vec![shell_bin, shell_flag.to_string(), cmd],
+                status: None,
+                success: None,
+            }],
+            "custom-shell".to_string(),
+        )
+    } else {
+        let adapter = req
+            .adapter
+            .or_else(|| cfg.build.preferred_adapter.clone())
+            .unwrap_or_else(|| detect_adapter(&root, &cfg));
+
+        // SECURITY: Identify custom adapters from workspace configuration
+        let is_custom = !matches!(
+            adapter.as_str(),
+            "cargo"
+                | "cmake"
+                | "ninja"
+                | "make"
+                | "uv"
+                | "go"
+                | "gradle"
+                | "maven"
+                | "bazel"
+                | "meson"
+                | "buck2"
+                | "npm"
+                | "yarn"
+                | "pnpm"
+                | "bun"
+                | "pixi"
+                | "mise"
+        );
+
+        if is_custom && !req.allow_untrusted && req.execute {
+            untrusted_confirmation_required = true;
+        }
+
+        let steps = plan_steps(
+            &root,
+            &adapter,
+            &profile,
+            req.target.clone(),
+            &cfg.build.build_dir,
+            &req.trailing_args,
+            req.zig,
+            &cfg,
+        )?;
+        (steps, adapter)
+    };
 
     let mut ok = true;
-    if req.execute {
-        let builds_dir = root.join(".curd").join("builds");
+    if req.execute && !untrusted_confirmation_required {
+        let sandbox = crate::Sandbox::new(&root);
+        let curd_dir = crate::workspace::get_curd_dir(&root);
+        let builds_dir = curd_dir.join("builds");
         let _ = std::fs::create_dir_all(&builds_dir);
         let log_path = builds_dir.join("latest.log");
         let mut log_file = std::fs::File::create(&log_path).ok();
@@ -77,23 +139,47 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
                 let _ = writeln!(f, "=== Executing: {} ===", step.command.join(" "));
             }
             
-            let mut cmd = Command::new(&step.command[0]);
-            if step.command.len() > 1 {
-                cmd.args(&step.command[1..]);
-            }
+            let mut cmd = sandbox.build_std_command(&step.command[0], &step.command[1..]);
             cmd.current_dir(&step.cwd);
             
-            // Capture output instead of inheriting stdout/stderr blindly
-            if let Ok(output) = cmd.output() {
-                step.status = output.status.code();
-                step.success = Some(output.status.success());
-                
-                if let Some(f) = log_file.as_mut() {
-                    let _ = f.write_all(&output.stdout);
-                    let _ = f.write_all(&output.stderr);
+            cmd.stdout(std::process::Stdio::inherit());
+            cmd.stderr(std::process::Stdio::piped());
+            
+            if let Ok(mut child) = cmd.spawn() {
+                let mut captured_stderr = String::new();
+                if let Some(stderr) = child.stderr.take() {
+                    use std::io::{BufRead, BufReader};
+                    let reader = BufReader::new(stderr);
+                    for line_res in reader.lines() {
+                        if let Ok(line) = line_res {
+                            eprintln!("{}", line); // Stream to user
+                            if let Some(f) = log_file.as_mut() {
+                                let _ = writeln!(f, "{}", line);
+                            }
+                            if captured_stderr.len() < 1024 * 1024 {
+                                captured_stderr.push_str(&line);
+                                captured_stderr.push('\n');
+                            }
+                        }
+                    }
                 }
                 
-                if !output.status.success() {
+                if let Ok(status) = child.wait() {
+                    step.status = status.code();
+                    let success = status.success();
+                    step.success = Some(success);
+                    
+                    if !success {
+                        ok = false;
+                        parse_and_propagate_faults(&root, &captured_stderr);
+                        break;
+                    }
+                } else {
+                    step.status = Some(1);
+                    step.success = Some(false);
+                    if let Some(f) = log_file.as_mut() {
+                        let _ = writeln!(f, "Failed to wait on process.");
+                    }
                     ok = false;
                     break;
                 }
@@ -120,6 +206,7 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
         target: req.target,
         execute: req.execute,
         steps,
+        untrusted_confirmation_required,
     })
 }
 
@@ -159,6 +246,51 @@ fn detect_adapter(root: &Path, cfg: &CurdConfig) -> String {
     if root.join("Makefile").exists() || root.join("makefile").exists() {
         return "make".to_string();
     }
+    if root.join("pyproject.toml").exists() || root.join("uv.lock").exists() {
+        return "uv".to_string();
+    }
+    if root.join("go.mod").exists() {
+        return "go".to_string();
+    }
+    if root.join("package.json").exists() {
+        if root.join("pnpm-lock.yaml").exists() {
+            return "pnpm".to_string();
+        }
+        if root.join("yarn.lock").exists() {
+            return "yarn".to_string();
+        }
+        if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
+            return "bun".to_string();
+        }
+        return "npm".to_string();
+    }
+    if root.join("build.gradle").exists()
+        || root.join("build.gradle.kts").exists()
+        || root.join("settings.gradle").exists()
+        || root.join("settings.gradle.kts").exists()
+        || root.join("gradlew").exists()
+        || root.join("gradlew.bat").exists()
+    {
+        return "gradle".to_string();
+    }
+    if root.join("pixi.toml").exists() {
+        return "pixi".to_string();
+    }
+    if root.join("mise.toml").exists() || root.join(".mise.toml").exists() {
+        return "mise".to_string();
+    }
+    if root.join("pom.xml").exists() {
+        return "maven".to_string();
+    }
+    if root.join("WORKSPACE").exists() || root.join("WORKSPACE.bazel").exists() || root.join("BUILD").exists() || root.join("BUILD.bazel").exists() {
+        return "bazel".to_string();
+    }
+    if root.join("meson.build").exists() {
+        return "meson".to_string();
+    }
+    if root.join(".buckconfig").exists() {
+        return "buck2".to_string();
+    }
     "make".to_string()
 }
 
@@ -169,6 +301,7 @@ fn plan_steps(
     target: Option<String>,
     build_dir_cfg: &Option<String>,
     trailing_args: &[String],
+    zig: bool,
     cfg: &CurdConfig,
 ) -> Result<Vec<BuildStep>> {
     let mut steps = Vec::new();
@@ -180,7 +313,11 @@ fn plan_steps(
     let lower_profile = profile.to_lowercase();
     match adapter {
         "cargo" => {
-            let mut cmd = vec!["cargo".to_string(), "build".to_string()];
+            let mut cmd = if zig {
+                vec!["cargo".to_string(), "zigbuild".to_string()]
+            } else {
+                vec!["cargo".to_string(), "build".to_string()]
+            };
             if lower_profile == "release" {
                 cmd.push("--release".to_string());
             }
@@ -277,6 +414,170 @@ fn plan_steps(
                 success: None,
             });
         }
+        "uv" => {
+            let mut cmd = vec!["uv".to_string(), "build".to_string()];
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "go" => {
+            let mut cmd = vec!["go".to_string(), "build".to_string()];
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "gradle" => {
+            let gradlew = root.join("gradlew");
+            let mut cmd = if gradlew.exists() {
+                vec![gradlew.to_string_lossy().to_string()]
+            } else {
+                vec!["gradle".to_string()]
+            };
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            } else {
+                cmd.push("build".to_string());
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "maven" => {
+            let mvnw = root.join("mvnw");
+            let mut cmd = if mvnw.exists() {
+                vec![mvnw.to_string_lossy().to_string()]
+            } else {
+                vec!["mvn".to_string()]
+            };
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            } else {
+                cmd.push("compile".to_string());
+            }
+            if lower_profile == "release" {
+                cmd.push("-P".to_string());
+                cmd.push("release".to_string());
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "bazel" => {
+            let mut cmd = vec!["bazel".to_string(), "build".to_string()];
+            if lower_profile == "release" {
+                cmd.push("-c".to_string());
+                cmd.push("opt".to_string());
+            } else if lower_profile == "debug" {
+                cmd.push("-c".to_string());
+                cmd.push("dbg".to_string());
+            }
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            } else {
+                cmd.push("//...".to_string());
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "meson" => {
+            let mut cmd = vec!["meson".to_string(), "compile".to_string(), "-C".to_string(), build_dir_s];
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "buck2" => {
+            let mut cmd = vec!["buck2".to_string(), "build".to_string()];
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            } else {
+                cmd.push("//...".to_string());
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "npm" | "yarn" | "pnpm" | "bun" => {
+            let mut cmd = vec![adapter.to_string(), "run".to_string(), "build".to_string()];
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "pixi" => {
+            let mut cmd = vec!["pixi".to_string(), "run".to_string()];
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            } else {
+                cmd.push("build".to_string());
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "mise" => {
+            let mut cmd = vec!["mise".to_string(), "run".to_string()];
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            } else {
+                cmd.push("build".to_string());
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
         other => {
             if let Some(custom) = cfg.build.adapters.get(other) {
                 if custom.steps.is_empty() {
@@ -336,6 +637,93 @@ fn sandbox_rel(root: &Path, rel: &str) -> Result<PathBuf> {
             e
         )
     })
+}
+
+fn parse_and_propagate_faults(root: &Path, stderr: &str) {
+    let cfg = crate::CurdConfig::load_from_workspace(root);
+    let storage = match crate::storage::Storage::open(root, &cfg) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let graph_engine = crate::graph::GraphEngine::new(root);
+
+    let lines: Vec<&str> = stderr.lines().collect();
+    for line in lines {
+        let line = line.trim();
+        let mut extracted: Option<(String, usize)> = None;
+
+        // Rust: "--> src/main.rs:10:5"
+        if line.starts_with("--> ") {
+            let parts: Vec<&str> = line[4..].split(':').collect();
+            if parts.len() >= 2 {
+                if let Ok(line_num) = parts[1].parse::<usize>() {
+                    extracted = Some((parts[0].to_string(), line_num));
+                }
+            }
+        }
+        // Node: "at functionName (/path/to/file.js:10:15)" or "at /path/to/file.js:10:15"
+        else if line.starts_with("at ") {
+            let mut target = line;
+            if let Some(start) = line.find('(') {
+                if let Some(end) = line.find(')') {
+                    target = &line[start + 1..end];
+                }
+            } else {
+                target = &line[3..]; // after "at "
+            }
+            let parts: Vec<&str> = target.split(':').collect();
+            if parts.len() >= 2 {
+                if let Ok(line_num) = parts[1].parse::<usize>() {
+                    extracted = Some((parts[0].to_string(), line_num));
+                }
+            }
+        }
+        // Python: "File \"/path/to/file.py\", line 10, in"
+        else if line.starts_with("File \"") && line.contains("\", line ") {
+            if let Some(end_quote) = line[6..].find('\"') {
+                let file_path = &line[6..6 + end_quote];
+                let rest = &line[6 + end_quote + 8..]; // skip ", line "
+                if let Some(comma) = rest.find(',') {
+                    if let Ok(line_num) = rest[..comma].parse::<usize>() {
+                        extracted = Some((file_path.to_string(), line_num));
+                    }
+                }
+            }
+        }
+        // C/C++: "src/main.cpp:10:5: error: ..."
+        else if let Some(err_idx) = line.find(": error:") {
+            let prefix = &line[..err_idx];
+            let parts: Vec<&str> = prefix.split(':').collect();
+            if parts.len() >= 2 {
+                let file_path = if parts.len() > 2 {
+                    parts[0..parts.len() - 2].join(":")
+                } else {
+                    parts[0].to_string()
+                };
+                let line_str = parts[parts.len() - 2];
+                if let Ok(line_num) = line_str.parse::<usize>() {
+                    extracted = Some((file_path, line_num));
+                }
+            }
+        }
+
+        if let Some((filepath, line_num)) = extracted {
+            let clean_path = filepath.trim();
+            let abs_path = if Path::new(clean_path).is_absolute() {
+                PathBuf::from(clean_path)
+            } else {
+                root.join(clean_path)
+            };
+            
+            let canon_path = std::fs::canonicalize(&abs_path).unwrap_or(abs_path);
+            let abs_path_str = canon_path.to_string_lossy().to_string();
+
+            if let Ok(Some(symbol_id)) = storage.get_symbol_at_line(&abs_path_str, line_num) {
+                log::info!("Mapped build error at {}:{} to semantic symbol: {}", clean_path, line_num, symbol_id);
+                let _ = graph_engine.annotate_fault(&symbol_id, uuid::Uuid::new_v4());
+            }
+        }
+    }
 }
 
 #[cfg(test)]

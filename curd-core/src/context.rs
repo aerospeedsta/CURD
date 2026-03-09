@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, broadcast};
@@ -23,6 +23,7 @@ pub struct EngineContext {
     pub workspace_root: PathBuf,
     pub session_id: Uuid,
     pub read_only: bool,
+    pub config: CurdConfig,
     pub se: Arc<SearchEngine>,
     pub re: Arc<ReadEngine>,
     pub ee: Arc<EditEngine>,
@@ -48,9 +49,30 @@ pub struct EngineContext {
     pub watchdog: Arc<Watchdog>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionBudget {
+    pub tokens_consumed: u64,
+    pub hazardous_calls_made: u64,
+    pub started_at_secs: u64,
+}
+
+impl Default for SessionBudget {
+    fn default() -> Self {
+        Self {
+            tokens_consumed: 0,
+            hazardous_calls_made: 0,
+            started_at_secs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }
+    }
+}
+
 pub struct SessionEntry {
     pub pubkey_hex: String,
     pub state: ReplState,
+    pub budget: SessionBudget,
     pub last_touched_secs: u64,
 }
 
@@ -60,6 +82,7 @@ impl EngineContext {
             workspace_root: self.workspace_root.clone(),
             session_id: self.session_id,
             read_only: self.read_only,
+            config: self.config.clone(),
             se: Arc::clone(&self.se),
             re: Arc::clone(&self.re),
             ee: Arc::clone(&self.ee),
@@ -95,7 +118,8 @@ impl EngineContext {
         let (tx_events, _) = tokio::sync::broadcast::channel(1024);
 
         // Session Locking
-        let lock_path = root_path.join(".curd").join("SESSION_LOCK");
+        let curd_dir = crate::workspace::get_curd_dir(&root_path);
+        let lock_path = curd_dir.join("SESSION_LOCK");
         let mut read_only = false;
         if let Some(parent) = lock_path.parent() {
             let _ = fs::create_dir_all(parent);
@@ -108,10 +132,13 @@ impl EngineContext {
             let _ = fs::write(&lock_path, std::process::id().to_string());
         }
 
+        let config = CurdConfig::load_from_workspace(&root_path);
+
         Arc::new(EngineContext {
             workspace_root: root_path.clone(),
             session_id,
             read_only,
+            config: config.clone(),
             se: Arc::new(SearchEngine::new(root).with_events(tx_events.clone())),
             re: Arc::new(ReadEngine::new(root)),
             ee: Arc::new(EditEngine::new(root).with_watchdog(watchdog.clone())),
@@ -163,19 +190,79 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
         });
     }
 
+    // NEW: Session Enforcement Barrier for hazardous tools
+    if ctx.config.edit.enforce_transactional && risky_tool(name) {
+        let is_active = ctx.we.shadow.lock().map(|s| s.is_active()).unwrap_or(false);
+        if !is_active {
+            return json!({
+                "error": format!("TRANS_BARRIER: Cannot execute hazardous tool '{}': No active session. All writes must be performed within a CURD session per AGENTS.md safety rules. Run workspace(action: 'begin') first.", name)
+            });
+        }
+    }
+
+    // 3. Resource Budget Enforcement
+    let session_token = params.get("session_token").and_then(|v| v.as_str());
+    if let Some(token) = session_token {
+        let mut sessions = ctx.sessions.lock().await;
+        if let Some(entry) = sessions.get_mut(token) {
+            let now = now_secs();
+            let elapsed = now.saturating_sub(entry.budget.started_at_secs);
+            
+            // Check time budget
+            if let Some(max_secs) = ctx.config.budget.max_session_secs {
+                if elapsed > max_secs {
+                    return json!({"error": format!("BUDGET_EXHAUSTED: Session has exceeded the maximum allowed duration of {}s.", max_secs)});
+                }
+            }
+
+            // Check hazardous calls budget
+            if risky_tool(name) {
+                entry.budget.hazardous_calls_made += 1;
+                if let Some(max_calls) = ctx.config.budget.max_hazardous_calls {
+                    if entry.budget.hazardous_calls_made > max_calls {
+                        return json!({"error": format!("BUDGET_EXHAUSTED: Session has exceeded the maximum allowed number of hazardous tool calls ({}).", max_calls)});
+                    }
+                }
+            }
+
+            entry.last_touched_secs = now;
+        }
+    }
+
+    // Capture response for budget tracking (tokens)
     let res = match name {
         "search" => handle_search(params, ctx).await,
         "contract" => handle_contract(params, ctx).await,
-        "read" => handle_read(params, Arc::clone(&ctx.re)).await,
-        "edit" => handle_edit(params, Arc::clone(&ctx.ee)).await,
+        "read" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_read(params, Arc::clone(&ctx.re), shadow_root).await
+        }
+        "edit" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_edit(params, Arc::clone(&ctx.ee), shadow_root).await
+        }
         "graph" => handle_graph(params, Arc::clone(&ctx.ge)).await,
         "workspace" => handle_workspace(params, ctx).await,
         "find" => {
             json!({"error": "The 'find' tool has been merged into 'search'. Use 'search' with mode='text'."})
         }
-        "shell" => handle_shell(params, &ctx.she).await,
+        "shell" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        }
+        "shell_status" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        }
+        "terminate" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        }
         "diagram" => handle_diagram(params, Arc::clone(&ctx.de)).await,
-        "manage_file" => handle_manage_file(params, Arc::clone(&ctx.fie)).await,
+        "manage_file" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_manage_file(params, Arc::clone(&ctx.fie), shadow_root).await
+        }
         "lsp" => handle_lsp(params, &ctx.le).await,
         "profile" => handle_profile(params, &ctx.pe).await,
         "debug" => handle_debug_dispatcher(params, &ctx.dbe).await,
@@ -183,6 +270,7 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
         "doc" => handle_doc(params, Arc::clone(&ctx.doce)).await,
         "doctor" => handle_doctor(params, &ctx.doctore).await,
         "benchmark" => handle_benchmark(params, ctx).await,
+        "stamina" => handle_stamina(params, ctx).await,
         "simulate" => handle_simulate(params).await,
         "template" => handle_template(params, ctx).await,
         "proposal" => handle_proposal(params, ctx).await,
@@ -194,15 +282,38 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
         "propose_plan" => handle_propose_plan(params, ctx).await,
         "execute_active_plan" => handle_execute_active_plan(params, ctx).await,
         "research" => handle_research(params).await,
-        "mutate" => handle_mutate(params, Arc::clone(&ctx.mu)).await,
+        "mutate" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_mutate(params, Arc::clone(&ctx.mu), shadow_root).await
+        }
         _ => json!({"error": format!("Tool not found: {}", name)}),
     };
+
+    // Update token consumption (heuristic: 1 token per 4 chars of result)
+    if let Some(token) = session_token {
+        let mut sessions = ctx.sessions.lock().await;
+        if let Some(entry) = sessions.get_mut(token) {
+            let res_str = res.to_string();
+            let estimated_tokens = (res_str.len() / 4) as u64;
+            entry.budget.tokens_consumed += estimated_tokens;
+
+            if let Some(max_tokens) = ctx.config.budget.max_tokens {
+                if entry.budget.tokens_consumed > max_tokens {
+                    // Note: We return the result but mark subsequent calls as blocked
+                    log::warn!("Session {} has exhausted token budget ({} consumed)", token, entry.budget.tokens_consumed);
+                }
+            }
+        }
+    }
 
     let error = res.get("error").and_then(|e| e.as_str()).map(|s| s.to_string());
     let success = error.is_none();
 
+    let transaction_id = ctx.we.shadow.lock().ok().and_then(|s| s.get_session_id());
+
     ctx.he.log(
         ctx.session_id,
+        transaction_id,
         name,
         params.clone(),
         res.clone(),
@@ -218,16 +329,36 @@ async fn execute_benchmark_target(operation: &str, params: &Value, ctx: &EngineC
     match operation {
         "search" => handle_search(params, ctx).await,
         "contract" => handle_contract(params, ctx).await,
-        "read" => handle_read(params, Arc::clone(&ctx.re)).await,
-        "edit" => handle_edit(params, Arc::clone(&ctx.ee)).await,
+        "read" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_read(params, Arc::clone(&ctx.re), shadow_root).await
+        }
+        "edit" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_edit(params, Arc::clone(&ctx.ee), shadow_root).await
+        }
         "graph" => handle_graph(params, Arc::clone(&ctx.ge)).await,
         "workspace" => handle_workspace(params, ctx).await,
         "find" => {
             json!({"error": "The 'find' tool has been merged into 'search'. Use 'search' with mode='text'."})
         }
-        "shell" => handle_shell(params, &ctx.she).await,
+        "shell" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        }
+        "shell_status" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        }
+        "terminate" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        }
         "diagram" => handle_diagram(params, Arc::clone(&ctx.de)).await,
-        "manage_file" => handle_manage_file(params, Arc::clone(&ctx.fie)).await,
+        "manage_file" => {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_manage_file(params, Arc::clone(&ctx.fie), shadow_root).await
+        }
         "lsp" => handle_lsp(params, &ctx.le).await,
         "profile" => handle_profile(params, &ctx.pe).await,
         "debug" => handle_debug_dispatcher(params, &ctx.dbe).await,
@@ -289,7 +420,7 @@ fn is_known_tool_name(name: &str) -> bool {
 }
 
 fn risky_tool(name: &str) -> bool {
-    matches!(name, "edit" | "manage_file" | "shell")
+    matches!(name, "edit" | "manage_file" | "shell" | "mutate")
 }
 
 fn extract_uri_path(uri: &str) -> &str {
@@ -506,7 +637,8 @@ pub async fn handle_contract(params: &Value, ctx: &EngineContext) -> Value {
         return json!({"error":"contract requires: uri"});
     }
 
-    let read = handle_read(&json!({"uris":[uri], "verbosity": 1}), Arc::clone(&ctx.re)).await;
+    let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+    let read = handle_read(&json!({"uris":[uri], "verbosity": 1}), Arc::clone(&ctx.re), shadow_root).await;
     if read.get("error").is_some() {
         return read;
     }
@@ -605,6 +737,51 @@ pub async fn handle_search(params: &Value, ctx: &EngineContext) -> Value {
                                     log::warn!("Blocking non-HTTP(S) delegation URL: {}", url);
                                     continue;
                                 }
+
+                                // SSRF PROTECTION: Block localhost and private IP ranges
+                                // More robust host extraction: find everything between :// and the next / or @
+                                let host_part = url.split("://").nth(1).unwrap_or("");
+                                let host_and_port = if let Some(at_idx) = host_part.find('@') {
+                                    &host_part[at_idx + 1..]
+                                } else {
+                                    host_part
+                                };
+                                let host = host_and_port.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+                                
+                                let mut is_blocked = false;
+                                let host_lower = host.to_lowercase();
+                                if host_lower == "localhost" {
+                                    is_blocked = true;
+                                } else if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, 0)) {
+                                    for addr in addrs {
+                                        let ip = addr.ip();
+                                        if ip.is_loopback() || ip.is_unspecified() {
+                                            is_blocked = true;
+                                            break;
+                                        }
+                                        if let std::net::IpAddr::V4(ipv4) = ip {
+                                            let octets = ipv4.octets();
+                                            if octets[0] == 10 || 
+                                               (octets[0] == 172 && (16..=31).contains(&octets[1])) || 
+                                               (octets[0] == 192 && octets[1] == 168) ||
+                                               (octets[0] == 169 && octets[1] == 254) {
+                                                is_blocked = true;
+                                                break;
+                                            }
+                                        } else if let std::net::IpAddr::V6(ipv6) = ip {
+                                            if (ipv6.segments()[0] & 0xfe00) == 0xfc00 {
+                                                is_blocked = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if is_blocked {
+                                    log::warn!("Blocking restricted delegation URL: {}", url);
+                                    continue;
+                                }
+
                                 let payload = json!({
                                     "jsonrpc": "2.0",
                                     "id": 1,
@@ -835,7 +1012,7 @@ pub fn build_index_quality(stats: &IndexBuildStats) -> Value {
     })
 }
 
-pub async fn handle_read(params: &Value, engine: Arc<ReadEngine>) -> Value {
+pub async fn handle_read(params: &Value, engine: Arc<ReadEngine>, shadow_root: Option<PathBuf>) -> Value {
     let uris: Vec<String> = params
         .get("uris")
         .and_then(|u| u.as_array())
@@ -849,14 +1026,14 @@ pub async fn handle_read(params: &Value, engine: Arc<ReadEngine>) -> Value {
         .get("verbosity")
         .and_then(|v| v.as_u64())
         .unwrap_or(1) as u8;
-    match tokio::task::spawn_blocking(move || engine.read(uris, verbosity)).await {
+    match tokio::task::spawn_blocking(move || engine.read(uris, verbosity, shadow_root.as_deref())).await {
         Ok(Ok(res)) => json!({"status": "ok", "results": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
         Err(e) => json!({"error": format!("Task join error in read: {}", e)}),
     }
 }
 
-pub async fn handle_edit(params: &Value, engine: Arc<EditEngine>) -> Value {
+pub async fn handle_edit(params: &Value, engine: Arc<EditEngine>, shadow_root: Option<PathBuf>) -> Value {
     let uri = params
         .get("uri")
         .and_then(|v| v.as_str())
@@ -881,7 +1058,7 @@ pub async fn handle_edit(params: &Value, engine: Arc<EditEngine>) -> Value {
         return json!({"error": "Missing 'adaptation_justification'. You must provide a concise technical reason why this specific adaptation is necessary."});
     }
 
-    match tokio::task::spawn_blocking(move || engine.edit(&uri, &code, &action, None)).await {
+    match tokio::task::spawn_blocking(move || engine.edit(&uri, &code, &action, shadow_root.as_deref())).await {
         Ok(Ok(res)) => json!({"status": "ok", "message": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
         Err(e) => json!({"error": format!("Task join error in edit: {}", e)}),
@@ -1131,11 +1308,41 @@ pub async fn handle_workspace(params: &Value, ctx: &EngineContext) -> Value {
     }
 }
 
-pub async fn handle_shell(params: &Value, engine: &ShellEngine) -> Value {
-    let command = params.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    match engine.shell(command, None).await {
-        Ok(res) => json!({"status": "ok", "output": res}),
-        Err(e) => json!({"error": e.to_string()}),
+pub async fn handle_shell(params: &Value, engine: &ShellEngine, shadow_root: Option<&Path>) -> Value {
+    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("execute");
+    
+    match action {
+        "execute" => {
+            let command = params.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let is_background = params.get("is_background").and_then(|v| v.as_bool()).unwrap_or(false);
+            match engine.shell(command, shadow_root, is_background).await {
+                Ok(res) => json!({"status": "ok", "output": res}),
+                Err(e) => json!({"error": e.to_string()}),
+            }
+        }
+        "status" => {
+            let task_id_str = params.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Ok(task_id) = Uuid::parse_str(task_id_str) {
+                match engine.status(task_id).await {
+                    Ok(res) => json!({"status": "ok", "result": res}),
+                    Err(e) => json!({"error": e.to_string()}),
+                }
+            } else {
+                json!({"error": "Invalid or missing task_id for status action."})
+            }
+        }
+        "terminate" => {
+            let task_id_str = params.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Ok(task_id) = Uuid::parse_str(task_id_str) {
+                match engine.terminate(task_id).await {
+                    Ok(res) => json!({"status": "ok", "result": res}),
+                    Err(e) => json!({"error": e.to_string()}),
+                }
+            } else {
+                json!({"error": "Invalid or missing task_id for terminate action."})
+            }
+        }
+        _ => json!({"error": "shell action must be one of: execute, terminate"}),
     }
 }
 
@@ -1149,14 +1356,18 @@ pub async fn handle_diagram(params: &Value, engine: Arc<DiagramEngine>) -> Value
                 .collect()
         })
         .unwrap_or_default();
-    match tokio::task::spawn_blocking(move || engine.diagram(uris)).await {
+    let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("mermaid").to_string();
+    let up_depth = params.get("up_depth").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
+    let down_depth = params.get("down_depth").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
+
+    match tokio::task::spawn_blocking(move || engine.diagram_with_format(uris, &format, up_depth, down_depth)).await {
         Ok(Ok(res)) => json!({"status": "ok", "diagram": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
         Err(e) => json!({"error": format!("Task join error in diagram: {}", e)}),
     }
 }
 
-pub async fn handle_manage_file(params: &Value, engine: Arc<FileEngine>) -> Value {
+pub async fn handle_manage_file(params: &Value, engine: Arc<FileEngine>, shadow_root: Option<PathBuf>) -> Value {
     let path = params
         .get("path")
         .and_then(|v| v.as_str())
@@ -1171,7 +1382,7 @@ pub async fn handle_manage_file(params: &Value, engine: Arc<FileEngine>) -> Valu
         .get("destination")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    match tokio::task::spawn_blocking(move || engine.manage(&path, &action, dest.as_deref())).await
+    match tokio::task::spawn_blocking(move || engine.manage(&path, &action, dest.as_deref(), shadow_root.as_deref())).await
     {
         Ok(Ok(res)) => json!({"status": "ok", "message": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
@@ -1544,7 +1755,7 @@ pub async fn handle_template(params: &Value, ctx: &EngineContext) -> Value {
             if name.trim().is_empty() || template.is_null() {
                 return json!({"error": "template register requires: name, template"});
             }
-            let path = dir.join(format!("{}.json", name));
+            let path = dir.join(format!("{}.json", sanitize_id(name)));
             match fs::write(
                 path,
                 serde_json::to_string_pretty(&template).unwrap_or_else(|_| "{}".to_string()),
@@ -1573,7 +1784,7 @@ pub async fn handle_template(params: &Value, ctx: &EngineContext) -> Value {
             if name.trim().is_empty() {
                 return json!({"error": "template get requires: name"});
             }
-            let path = dir.join(format!("{}.json", name));
+            let path = dir.join(format!("{}.json", sanitize_id(name)));
             match fs::read_to_string(path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -1592,7 +1803,7 @@ pub async fn handle_template(params: &Value, ctx: &EngineContext) -> Value {
                 .and_then(|v| v.as_object())
                 .cloned()
                 .unwrap_or_default();
-            let path = dir.join(format!("{}.json", name));
+            let path = dir.join(format!("{}.json", sanitize_id(name)));
             let Some(template) = fs::read_to_string(path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -1797,6 +2008,33 @@ pub async fn handle_proposal(params: &Value, ctx: &EngineContext) -> Value {
     }
 }
 
+pub async fn handle_stamina(params: &Value, ctx: &EngineContext) -> Value {
+    let session_token = params.get("session_token").and_then(|v| v.as_str()).unwrap_or("");
+    if session_token.is_empty() {
+        return json!({"error": "stamina requires: session_token"});
+    }
+
+    let sessions = ctx.sessions.lock().await;
+    if let Some(entry) = sessions.get(session_token) {
+        let now = now_secs();
+        let elapsed = now.saturating_sub(entry.budget.started_at_secs);
+        
+        json!({
+            "status": "ok",
+            "budget": {
+                "tokens_consumed": entry.budget.tokens_consumed,
+                "max_tokens": ctx.config.budget.max_tokens,
+                "hazardous_calls_made": entry.budget.hazardous_calls_made,
+                "max_hazardous_calls": ctx.config.budget.max_hazardous_calls,
+                "uptime_secs": elapsed,
+                "max_session_secs": ctx.config.budget.max_session_secs
+            }
+        })
+    } else {
+        json!({"error": "Invalid session_token"})
+    }
+}
+
 pub async fn handle_checkpoint(params: &Value, ctx: &EngineContext) -> Value {
     let action = params
         .get("action")
@@ -1810,7 +2048,7 @@ pub async fn handle_checkpoint(params: &Value, ctx: &EngineContext) -> Value {
         .workspace_root
         .join(".curd")
         .join("checkpoints")
-        .join(plan_id);
+        .join(sanitize_id(plan_id));
 
     match action {
         "list" => {
@@ -1833,7 +2071,7 @@ pub async fn handle_checkpoint(params: &Value, ctx: &EngineContext) -> Value {
             if name.trim().is_empty() {
                 return json!({"error": "checkpoint get requires: name"});
             }
-            let path = base.join(name);
+            let path = base.join(format!("{}.json", sanitize_id(name)));
             match fs::read_to_string(path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -2630,13 +2868,13 @@ pub async fn handle_research(params: &Value) -> Value {
     })
 }
 
-pub async fn handle_mutate(params: &Value, mu: Arc<MutationEngine>) -> Value {
+pub async fn handle_mutate(params: &Value, mu: Arc<MutationEngine>, shadow_root: Option<PathBuf>) -> Value {
     let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
     if uri.is_empty() {
         return json!({"error": "mutate requires: uri"});
     }
 
-    match mu.mutate_symbol(uri) {
+    match mu.mutate_symbol(uri, shadow_root.as_deref()) {
         Ok(val) => val,
         Err(e) => json!({"error": format!("Mutation failed: {}", e)}),
     }

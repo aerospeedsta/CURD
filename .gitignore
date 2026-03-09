@@ -24,3 +24,4 @@ curd-node/index.d.ts
 .curd/
 .curd-grammars/
 curd-cli/curd
+dist/

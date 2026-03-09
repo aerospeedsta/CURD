@@ -1,8 +1,10 @@
-use crate::{CurdConfig, IndexBuildStats};
+use crate::{CurdConfig, IndexBuildStats, Symbol, SymbolKind};
 use anyhow::Result;
 use rusqlite::{Connection, params};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexRunRecord {
@@ -15,17 +17,48 @@ pub struct IndexRunRecord {
     pub total_ms: i64,
 }
 
-pub fn record_index_run(root: &Path, cfg: &CurdConfig, stats: &IndexBuildStats) -> Result<()> {
-    if !cfg.storage.enabled {
-        return Ok(());
-    }
-    let db_path = sqlite_path(root, cfg);
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let conn = open_storage_conn(db_path, cfg)?;
+/// Initialize the symbol index and graph tables in the SQLite database.
+pub fn initialize_symbol_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
+CREATE TABLE IF NOT EXISTS files (
+    filepath TEXT PRIMARY KEY,
+    mtime_ms INTEGER NOT NULL,
+    file_size INTEGER NOT NULL,
+    content_hash TEXT
+);
+
+CREATE TABLE IF NOT EXISTS symbols (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    role TEXT NOT NULL,
+    link_name TEXT,
+    filepath TEXT NOT NULL,
+    start_byte INTEGER NOT NULL,
+    end_byte INTEGER NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    semantic_hash TEXT,
+    fault_id TEXT,
+    FOREIGN KEY(filepath) REFERENCES files(filepath) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_symbols_filepath ON symbols(filepath);
+
+CREATE TABLE IF NOT EXISTS edges (
+    caller_id TEXT NOT NULL,
+    callee_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    PRIMARY KEY(caller_id, callee_id, kind),
+    FOREIGN KEY(caller_id) REFERENCES symbols(id) ON DELETE CASCADE,
+    FOREIGN KEY(callee_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_edges_caller ON edges(caller_id);
+CREATE INDEX IF NOT EXISTS idx_edges_callee ON edges(callee_id);
+
 CREATE TABLE IF NOT EXISTS index_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts_unix INTEGER NOT NULL,
@@ -43,8 +76,25 @@ CREATE TABLE IF NOT EXISTS index_runs (
   no_symbols INTEGER NOT NULL,
   total_ms INTEGER NOT NULL
 );
+
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
 "#,
     )?;
+    Ok(())
+}
+
+pub fn record_index_run(root: &Path, cfg: &CurdConfig, stats: &IndexBuildStats) -> Result<()> {
+    if !cfg.storage.enabled {
+        return Ok(());
+    }
+    let db_path = sqlite_path(root, cfg);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let conn = open_storage_conn(db_path, cfg)?;
+    initialize_symbol_index(&conn)?;
+    
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -75,6 +125,267 @@ INSERT INTO index_runs (
         ],
     )?;
     Ok(())
+}
+
+/// A connection to the CURD SQLite storage
+pub struct Storage {
+    pub conn: Connection,
+}
+
+impl Storage {
+    pub fn open(root: &Path, cfg: &CurdConfig) -> Result<Self> {
+        let db_path = sqlite_path(root, cfg);
+        if let Some(parent) = db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let conn = open_storage_conn(db_path, cfg)?;
+        initialize_symbol_index(&conn)?;
+        Ok(Self { conn })
+    }
+
+    pub fn delete_file_data(&self, filepath: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM files WHERE filepath = ?1", params![filepath])?;
+        Ok(())
+    }
+
+    pub fn upsert_file(&self, filepath: &str, mtime_ms: u64, file_size: u64, content_hash: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO files (filepath, mtime_ms, file_size, content_hash) 
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(filepath) DO UPDATE SET 
+                mtime_ms = excluded.mtime_ms,
+                file_size = excluded.file_size,
+                content_hash = excluded.content_hash",
+            params![filepath, mtime_ms as i64, file_size as i64, content_hash],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_symbols(&self, symbols: &[Symbol]) -> Result<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO symbols 
+             (id, name, kind, role, link_name, filepath, start_byte, end_byte, start_line, end_line, semantic_hash, fault_id) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )?;
+        for s in symbols {
+            let kind_str = match s.kind {
+                SymbolKind::Function => "function",
+                SymbolKind::Class => "class",
+                SymbolKind::Struct => "struct",
+                SymbolKind::Interface => "interface",
+                SymbolKind::Module => "module",
+                SymbolKind::Variable => "variable",
+                SymbolKind::Method => "method",
+                SymbolKind::Unknown => "unknown",
+            };
+            let role_str = match s.role {
+                crate::symbols::SymbolRole::Definition => "definition",
+                crate::symbols::SymbolRole::Stub => "stub",
+                crate::symbols::SymbolRole::Reference => "reference",
+            };
+            
+            // SECURITY: Ensure absolute path for storage
+            let abs_filepath = if s.filepath.is_absolute() {
+                s.filepath.clone()
+            } else {
+                // If relative, assume it belongs to current workspace being indexed
+                // But best if caller provides absolute.
+                s.filepath.clone()
+            };
+
+            stmt.execute(params![
+                s.id,
+                s.name,
+                kind_str,
+                role_str,
+                s.link_name,
+                abs_filepath.to_string_lossy(),
+                s.start_byte as i64,
+                s.end_byte as i64,
+                s.start_line as i64,
+                s.end_line as i64,
+                s.semantic_hash,
+                s.fault_id
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn get_file_meta(&self, filepath: &str) -> Result<Option<(u64, u64)>> {
+        let mut stmt = self.conn.prepare("SELECT mtime_ms, file_size FROM files WHERE filepath = ?1")?;
+        let mut rows = stmt.query_map(params![filepath], |row| {
+            Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64))
+        })?;
+        if let Some(row) = rows.next() {
+            Ok(Some(row?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_all_file_meta(&self) -> Result<HashMap<String, (u64, u64)>> {
+        let mut stmt = self.conn.prepare("SELECT filepath, mtime_ms, file_size FROM files")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, i64>(1)? as u64, row.get::<_, i64>(2)? as u64),
+            ))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (path, meta) = row?;
+            out.insert(path, meta);
+        }
+        Ok(out)
+    }
+
+    pub fn get_symbols_for_file(&self, filepath: &str) -> Result<Vec<Symbol>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, kind, role, link_name, filepath, start_byte, end_byte, start_line, end_line, semantic_hash, fault_id 
+             FROM symbols WHERE filepath = ?1",
+        )?;
+        let rows = stmt.query_map(params![filepath], |row| {
+            let kind_str: String = row.get(2)?;
+            let kind = match kind_str.as_str() {
+                "function" => SymbolKind::Function,
+                "class" => SymbolKind::Class,
+                "struct" => SymbolKind::Struct,
+                "interface" => SymbolKind::Interface,
+                "module" => SymbolKind::Module,
+                "variable" => SymbolKind::Variable,
+                "method" => SymbolKind::Method,
+                _ => SymbolKind::Unknown,
+            };
+            let role_str: String = row.get(3)?;
+            let role = match role_str.as_str() {
+                "stub" => crate::symbols::SymbolRole::Stub,
+                "reference" => crate::symbols::SymbolRole::Reference,
+                _ => crate::symbols::SymbolRole::Definition,
+            };
+            Ok(Symbol {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind,
+                role,
+                link_name: row.get(4)?,
+                filepath: PathBuf::from(row.get::<_, String>(5)?),
+                start_byte: row.get::<_, i64>(6)? as usize,
+                end_byte: row.get::<_, i64>(7)? as usize,
+                start_line: row.get::<_, i64>(8)? as usize,
+                end_line: row.get::<_, i64>(9)? as usize,
+                signature: None,
+                semantic_hash: row.get(10)?,
+                fault_id: row.get(11)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_symbol_at_line(&self, filepath: &str, line: usize) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM symbols WHERE filepath = ?1 AND start_line <= ?2 AND end_line >= ?2 ORDER BY (end_line - start_line) ASC LIMIT 1"
+        )?;
+        let mut rows = stmt.query_map(params![filepath, line as i64], |row| row.get::<_, String>(0))?;
+        if let Some(row) = rows.next() {
+            Ok(Some(row?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn commit_indexing_results(&mut self, entries: &[crate::search::IndexWorkerEntry]) -> Result<()> {
+        let conn = &mut self.conn;
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+        conn.execute("PRAGMA synchronous = OFF", [])?;
+        
+        let tx = conn.transaction()?;
+        {
+            let mut symbol_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO symbols 
+                 (id, name, kind, role, link_name, filepath, start_byte, end_byte, start_line, end_line, semantic_hash, fault_id) 
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            )?;
+            let mut file_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO files (filepath, mtime_ms, file_size) VALUES (?1, ?2, ?3)"
+            )?;
+
+            for entry in entries {
+                tx.execute("DELETE FROM files WHERE filepath = ?1", params![entry.rel])?;
+                file_stmt.execute(params![entry.rel, entry.mtime_ms as i64, entry.file_size as i64])?;
+                
+                for s in &entry.symbols {
+                    if s.name.contains("main") {
+                    }
+                    let kind_str = match s.kind {
+                        SymbolKind::Function => "function",
+                        SymbolKind::Class => "class",
+                        SymbolKind::Struct => "struct",
+                        SymbolKind::Interface => "interface",
+                        SymbolKind::Module => "module",
+                        SymbolKind::Variable => "variable",
+                        SymbolKind::Method => "method",
+                        SymbolKind::Unknown => "unknown",
+                    };
+                    let role_str = match s.role {
+                        crate::symbols::SymbolRole::Definition => "definition",
+                        crate::symbols::SymbolRole::Stub => "stub",
+                        crate::symbols::SymbolRole::Reference => "reference",
+                    };
+                    symbol_stmt.execute(params![
+                        s.id,
+                        s.name,
+                        kind_str,
+                        role_str,
+                        s.link_name,
+                        entry.rel,
+                        s.start_byte as i64,
+                        s.end_byte as i64,
+                        s.start_line as i64,
+                        s.end_line as i64,
+                        s.semantic_hash,
+                        s.fault_id
+                    ])?;
+                }
+            }
+        }
+        tx.commit()?;
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+        conn.execute("PRAGMA synchronous = NORMAL", [])?;
+        Ok(())
+    }
+
+    pub fn annotate_symbol_fault(&self, symbol_id: &str, fault_id: Uuid) -> Result<()> {
+        self.conn.execute(
+            "UPDATE symbols SET fault_id = ?1 WHERE id = ?2",
+            params![fault_id.to_string(), symbol_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_symbol_fault(&self, symbol_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE symbols SET fault_id = NULL WHERE id = ?1",
+            params![symbol_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_symbol_fault(&self, symbol_id: &str) -> Result<Option<Uuid>> {
+        let mut stmt = self.conn.prepare("SELECT fault_id FROM symbols WHERE id = ?1")?;
+        let mut rows = stmt.query_map(params![symbol_id], |row| {
+            let fid: Option<String> = row.get(0)?;
+            Ok(fid.and_then(|s| Uuid::parse_str(&s).ok()))
+        })?;
+        if let Some(row) = rows.next() {
+            Ok(row?)
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 pub fn read_recent_index_runs(
@@ -124,14 +435,21 @@ LIMIT ?1
 }
 
 fn sqlite_path(root: &Path, cfg: &CurdConfig) -> PathBuf {
+    let curd_dir = crate::workspace::get_curd_dir(root);
     let rel = cfg
         .storage
         .sqlite_path
         .clone()
-        .unwrap_or_else(|| ".curd/curd_state.sqlite3".to_string());
+        .unwrap_or_else(|| {
+             curd_dir.strip_prefix(root)
+                .unwrap_or(&curd_dir)
+                .join("curd_state.sqlite3")
+                .to_string_lossy()
+                .to_string()
+        });
     crate::workspace::validate_sandboxed_path(root, &rel).unwrap_or_else(|_| {
         // Keep deterministic fallback inside workspace if an unsafe path is configured.
-        root.join(".curd").join("curd_state.sqlite3")
+        curd_dir.join("curd_state.sqlite3")
     })
 }
 

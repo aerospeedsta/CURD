@@ -8,6 +8,29 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Returns the path to the internal CURD state directory.
+/// Priority: 
+/// 1. CURD_STATE_DIR environment variable
+/// 2. workspace_root/.curd
+pub fn get_curd_dir(workspace_root: &Path) -> PathBuf {
+    if let Ok(env_path) = std::env::var("CURD_STATE_DIR") {
+        let p = PathBuf::from(env_path);
+        if !p.is_absolute() {
+             return workspace_root.join(p);
+        }
+        return p;
+    }
+
+    // Detect if we are in a shadow transaction root
+    let root_str = workspace_root.to_string_lossy();
+    if let Some(idx) = root_str.find(".curd/shadow/") {
+        let real_root = PathBuf::from(&root_str[..idx]);
+        return real_root.join(".curd");
+    }
+
+    workspace_root.join(".curd")
+}
+
 /// Scans a workspace directory for supported source files, correctly ignoring
 /// paths specified in .gitignore and avoiding hidden directories like .git.
 pub fn scan_workspace(root: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
@@ -143,15 +166,9 @@ pub fn validate_sandboxed_path(workspace_root: &Path, requested_path: &str) -> R
     for component in path.components() {
         if let std::path::Component::Normal(c) = component {
             if c == ".curd" {
-                let norm = requested_path.replace('\\', "/");
-                let is_safe_auth = norm == ".curd/authorized_agents.json" || norm.ends_with("/.curd/authorized_agents.json");
-                let is_safe_settings = norm == ".curd/settings.toml" || norm.ends_with("/.curd/settings.toml");
-                if !is_safe_auth && !is_safe_settings {
-                    return Err(anyhow::anyhow!(
-                        "Access to the internal '.curd' directory is strictly prohibited to prevent data corruption and security bypasses."
-                    ));
-                }
-                break;
+                return Err(anyhow::anyhow!(
+                    "Access to the internal '.curd' directory is strictly prohibited to prevent data corruption and security bypasses."
+                ));
             }
         }
     }
@@ -190,17 +207,39 @@ pub fn validate_sandboxed_path(workspace_root: &Path, requested_path: &str) -> R
 
 /// Returns true if the workspace is currently locked by another active session.
 pub fn is_workspace_locked(workspace_root: &Path) -> bool {
-    let lock_path = workspace_root.join(".curd").join("SESSION_LOCK");
+    let curd_dir = get_curd_dir(workspace_root);
+    let lock_path = curd_dir.join("SESSION_LOCK");
     if !lock_path.exists() {
         return false;
     }
-    if let Ok(pid_str) = std::fs::read_to_string(&lock_path)
-        && let Ok(pid) = pid_str.trim().parse::<u32>()
-        && pid == std::process::id()
-    {
-        return false;
+    if let Ok(pid_str) = std::fs::read_to_string(&lock_path) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            if pid == std::process::id() {
+                return false;
+            }
+
+            // Check if the process is actually alive (Unix-specific check)
+            #[cfg(unix)]
+            {
+                let exists = std::process::Command::new("kill")
+                    .arg("-0")
+                    .arg(pid.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(true); // Assume alive if check fails
+
+                if !exists {
+                    log::info!("Stale lock detected for PID {}. Ignoring.", pid);
+                    let _ = std::fs::remove_file(&lock_path);
+                    return false;
+                }
+            }
+            return true;
+        }
     }
-    true
+    false
 }
 
 /// Very simple initial check to only process source files we care about.
@@ -340,7 +379,7 @@ impl WorkspaceEngine {
                 let report = audit(&before_graph, &after_graph);
 
                 // If alerts were generated, write them to disk so the agent can read them
-                let curd_dir = self.workspace_root.join(".curd");
+                let curd_dir = get_curd_dir(&self.workspace_root);
                 let alerts_file = curd_dir.join("alerts.json");
                 if !report.is_clean() {
                     let _ = fs::create_dir_all(&curd_dir);
@@ -399,14 +438,14 @@ impl WorkspaceEngine {
                     "architectural_alerts": serde_json::Value::Null,
                     "watchdog_report": serde_json::Value::Null
                 });
-
-                let alerts_file = self.workspace_root.join(".curd").join("alerts.json");
+                let curd_dir = get_curd_dir(&self.workspace_root);
+                let alerts_file = curd_dir.join("alerts.json");
                 if let Ok(content) = fs::read_to_string(&alerts_file)
                     && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                         report_json["architectural_alerts"] = json;
                     }
-
-                let watchdog_file = self.workspace_root.join(".curd").join("watchdog_report.md");
+ 
+                let watchdog_file = curd_dir.join("watchdog_report.md");
                 if let Ok(content) = fs::read_to_string(&watchdog_file) {
                     report_json["watchdog_report"] = serde_json::json!(content);
                 }
@@ -415,14 +454,15 @@ impl WorkspaceEngine {
             }
             "clear_faults" => {
                 let graph = crate::GraphEngine::new(&self.workspace_root);
+                let curd_dir = get_curd_dir(&self.workspace_root);
                 let _ = std::fs::remove_file(
-                    self.workspace_root.join(".curd").join("watchdog_report.md"),
+                    curd_dir.join("watchdog_report.md"),
                 );
                 // We'll add a clear_all method to GraphEngine
                 let mut g = graph.build_dependency_graph()?;
                 g.fault_states.clear();
                 let _ = std::fs::write(
-                    self.workspace_root.join(".curd").join("graph_index.json"),
+                    curd_dir.join("graph_index.json"),
                     serde_json::to_string(&g)?,
                 );
 

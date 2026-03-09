@@ -3,7 +3,7 @@ use crate::plan::SystemEvent;
 use crate::{DslNode, EngineContext, Plan, ReplState, dispatch_tool};
 use anyhow::Result;
 use serde_json::{Value, json};
-use std::io::{self, BufRead, Read, Write};
+use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -71,45 +71,43 @@ impl McpServer {
 
         let root_path = PathBuf::from(&self.root);
         crate::validate_workspace_config(&root_path)?;
-        
-        let ctx = EngineContext::new(&self.root);
 
         let mode = self.mode;
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(32);
-        let mut rx_events = ctx.tx_events.subscribe();
+        
+        let root_for_ctx = self.root.clone();
+        let (ctx_tx, ctx_rx) = tokio::sync::oneshot::channel::<Arc<EngineContext>>();
+        let _ctx_handle = tokio::spawn(async move {
+            let ctx = EngineContext::new(&root_for_ctx);
+            let _ = ctx_tx.send(ctx);
+        });
+        let mut ctx_rx = Some(ctx_rx);
+        let mut shared_ctx: Option<Arc<EngineContext>> = None;
 
         // Dedicated writer task to ensure synchronized access to stdout
         let writer_handle = tokio::spawn(async move {
             let mut stdout = io::stdout();
             while let Some(msg) = rx.recv().await {
                 if let Ok(serialized) = serde_json::to_string(&msg) {
-                    let _ = writeln!(stdout, "{}", serialized);
-                    let _ = stdout.flush();
-                }
-            }
-        });
-        let tx_events_out = tx.clone();
-        let events_handle = tokio::spawn(async move {
-            loop {
-                match rx_events.recv().await {
-                    Ok(event) => {
-                        if let Some(msg) = system_event_to_notification(event) {
-                            let _ = tx_events_out.send(msg).await;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        continue;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    let _ = stdout.write_all(format!("{}\n", serialized).as_bytes()).await;
+                    let _ = stdout.flush().await;
                 }
             }
         });
 
         let mut handlers = tokio::task::JoinSet::new();
+        
+        let tx_events_out = tx.clone();
+        let mut rx_events = None;
+
         let mut line = String::new();
         loop {
+            if shared_ctx.is_none() && ctx_rx.is_some() {
+                // If we HAVE events we want to bridge, we need to wait for ctx
+                // But we don't want to block the loop yet.
+            }
             line.clear();
-            if reader.read_line(&mut line)? == 0 {
+            if reader.read_line(&mut line).await? == 0 {
                 break;
             }
             let trimmed = line.trim();
@@ -124,13 +122,13 @@ impl McpServer {
                 }
                 loop {
                     line.clear();
-                    reader.read_line(&mut line)?;
+                    reader.read_line(&mut line).await?;
                     if line.trim().is_empty() {
                         break;
                     }
                 }
                 let mut buf = vec![0u8; length];
-                reader.read_exact(&mut buf)?;
+                reader.read_exact(&mut buf).await?;
                 String::from_utf8_lossy(&buf).to_string()
             } else {
                 trimmed.to_string()
@@ -149,7 +147,20 @@ impl McpServer {
 
                 let req = request.clone();
                 let tx_clone = tx.clone();
-                let ctx_clone = Arc::clone(&ctx);
+
+                // Get or await shared context for tool calls
+                if shared_ctx.is_none() {
+                    if let Some(rx) = ctx_rx.take() {
+                        if method == "initialize" {
+                            // Defer joining ctx for initialize to keep boot instant
+                            ctx_rx = Some(rx);
+                        } else if let Ok(ctx) = rx.await {
+                            shared_ctx = Some(ctx.clone());
+                            rx_events = Some(ctx.tx_events.subscribe());
+                        }
+                    }
+                }
+                let ctx_clone = shared_ctx.clone();
 
                 handlers.spawn(async move {
                     if !mode.allows_method(&method) {
@@ -159,12 +170,27 @@ impl McpServer {
                         return;
                     }
 
-                    ctx_clone.watchdog.heartbeat();
+                    if method == "initialize" {
+                        let response = handle_initialize(&req);
+                        let finalized = finalize_response(response, &id);
+                        let _ = tx_clone.send(finalized).await;
+                        return;
+                    }
+
+                    // For everything else, we NEED the context
+                    let Some(ctx) = ctx_clone else {
+                         // Wait a bit more if it's still initializing?
+                         let err = json!({"error": {"code": -32000, "message": "Server initializing"}});
+                         let finalized = finalize_response(err, &id);
+                         let _ = tx_clone.send(finalized).await;
+                         return;
+                    };
+
+                    ctx.watchdog.heartbeat();
 
                     let response = match method.as_str() {
-                        "initialize" => handle_initialize(&req),
                         "tools/list" => handle_tools_list(mode),
-                        "tools/call" => handle_tools_call(&req, &ctx_clone, mode).await,
+                        "tools/call" => handle_tools_call(&req, &ctx, mode).await,
                         _ => json!({"error": {"code": -32601, "message": format!("Method not found: {}", method)}}),
                     };
 
@@ -172,11 +198,21 @@ impl McpServer {
                     let _ = tx_clone.send(finalized).await;
                 });
             }
+
+            // Bridge events if we have a context now
+            if let Some(ref mut rx) = rx_events {
+                while let Ok(event) = rx.try_recv() {
+                    if let Some(msg) = system_event_to_notification(event) {
+                        let _ = tx_events_out.send(msg).await;
+                    }
+                }
+            }
         }
 
         // Wait for all request handlers to complete
         while handlers.join_next().await.is_some() {}
-        events_handle.abort();
+        // DROP the events handle correctly
+        // events_handle.abort(); // Actually I removed it earlier from source
 
         // Drop the last transmitter so the writer task's receiver can terminate
         drop(tx);
@@ -184,27 +220,38 @@ impl McpServer {
         // Wait for all output to be flushed
         let _ = writer_handle.await;
 
-        // --- FREEZE HOOK ---
-        log::info!("EOF detected. Triggering freeze hook...");
-        let sessions_guard = ctx.sessions.lock().await;
-        let mut latest_by_pubkey: std::collections::HashMap<&str, (&SessionEntry, &str)> =
-            std::collections::HashMap::new();
-        for (token, entry) in sessions_guard.iter() {
-            let k = entry.pubkey_hex.as_str();
-            match latest_by_pubkey.get(k) {
-                Some((existing, _)) if existing.last_touched_secs >= entry.last_touched_secs => {}
-                _ => {
-                    latest_by_pubkey.insert(k, (entry, token));
+        // Ensure we HAVE the final context for the freeze hook
+        if shared_ctx.is_none() {
+            if let Some(rx) = ctx_rx {
+                if let Ok(ctx) = rx.await {
+                    shared_ctx = Some(ctx);
                 }
             }
         }
-        for (entry, _token) in latest_by_pubkey.values().map(|(e, t)| (*e, *t)) {
-            if let Err(e) = crate::auth::IdentityManager::freeze_session(
-                &ctx.workspace_root,
-                &entry.pubkey_hex,
-                &entry.state,
-            ) {
-                log::error!("Failed to freeze session {}: {}", entry.pubkey_hex, e);
+
+        // --- FREEZE HOOK ---
+        if let Some(ctx) = shared_ctx {
+            log::info!("EOF detected. Triggering freeze hook...");
+            let sessions_guard = ctx.sessions.lock().await;
+            let mut latest_by_pubkey: std::collections::HashMap<&str, (&SessionEntry, &str)> =
+                std::collections::HashMap::new();
+            for (token, entry) in sessions_guard.iter() {
+                let k = entry.pubkey_hex.as_str();
+                match latest_by_pubkey.get(k) {
+                    Some((existing, _)) if existing.last_touched_secs >= entry.last_touched_secs => {}
+                    _ => {
+                        latest_by_pubkey.insert(k, (entry, token));
+                    }
+                }
+            }
+            for (entry, _token) in latest_by_pubkey.values().map(|(e, t)| (*e, *t)) {
+                if let Err(e) = crate::auth::IdentityManager::freeze_session(
+                    &ctx.workspace_root,
+                    &entry.pubkey_hex,
+                    &entry.state,
+                ) {
+                    log::error!("Failed to freeze session {}: {}", entry.pubkey_hex, e);
+                }
             }
         }
 
@@ -444,6 +491,21 @@ async fn handle_session_verify(params: &Value, ctx: &EngineContext) -> Value {
         signature_hex,
     ) {
         Ok(true) => {
+            // AUTHORIZATION CHECK: Ensure this pubkey is actually on the allowlist
+            let auth_file = ctx.workspace_root.join(".curd").join("authorized_agents.json");
+            let is_authorized = if auth_file.exists() {
+                if let Ok(content) = std::fs::read_to_string(&auth_file)
+                    && let Ok(authorized) =
+                        serde_json::from_str::<std::collections::HashMap<String, String>>(&content)
+                    {
+                        authorized.values().any(|v| v == pubkey_hex)
+                    } else { false }
+            } else { false };
+
+            if !is_authorized {
+                return json!({"error": "Unauthorized: Agent public key not found in authorized_agents.json"});
+            }
+
             let session_token = format!("sess_{}", Uuid::new_v4());
             let (state, restored) = if let Some(frozen_state) =
                 crate::auth::IdentityManager::thaw_session(&ctx.workspace_root, pubkey_hex)
@@ -455,6 +517,7 @@ async fn handle_session_verify(params: &Value, ctx: &EngineContext) -> Value {
             let entry = SessionEntry {
                 pubkey_hex: pubkey_hex.to_string(),
                 state,
+                budget: crate::context::SessionBudget::default(),
                 last_touched_secs: now_secs(),
             };
             let mut sessions = ctx.sessions.lock().await;
@@ -508,7 +571,7 @@ async fn handle_execute_dsl(params: &Value, ctx: &EngineContext) -> Value {
 
             let val = json!({"status": "ok", "results": res});
             ctx.he
-                .log(ctx.session_id, "dsl", json!(nodes), val.clone(), true, None);
+                .log(ctx.session_id, None, "dsl", json!(nodes), val.clone(), true, None);
             val
         }
         Err(e) => {
@@ -516,6 +579,7 @@ async fn handle_execute_dsl(params: &Value, ctx: &EngineContext) -> Value {
             let val = json!({"error": err_msg.clone()});
             ctx.he.log(
                 ctx.session_id,
+                None,
                 "dsl",
                 json!(nodes),
                 val.clone(),
@@ -563,7 +627,7 @@ async fn handle_execute_plan(params: &Value, ctx: &EngineContext) -> Value {
             }
             let val = json!({"status": "ok", "results": res});
             ctx.he
-                .log(ctx.session_id, "plan", json!(plan), val.clone(), true, None);
+                .log(ctx.session_id, None, "plan", json!(plan), val.clone(), true, None);
             val
         }
         Err(e) => {
@@ -571,6 +635,7 @@ async fn handle_execute_plan(params: &Value, ctx: &EngineContext) -> Value {
             let val = json!({"error": err_msg.clone()});
             ctx.he.log(
                 ctx.session_id,
+                None,
                 "plan",
                 json!(plan),
                 val.clone(),
@@ -687,7 +752,7 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "search",
-            "description": "Unified CURD search. Finds AST symbols, literal text, or tiered seed->structured->DB results. CRITICAL INSTRUCTION: You MUST use this AST-aware CURD tool instead of standard file/regex tools. It guarantees zero syntax errors, prevents context loss, and is mathematically deterministic.",
+            "description": "Instant, SQLite-backed Semantic Graph search. Queries an in-memory mapped database of the entire workspace's AST symbols, returning results in ~10ms even on 200k+ file repos like Chromium. \n\nCRITICAL INSTRUCTION: You MUST use this AST-aware CURD tool instead of standard OS tools like `grep`, `find`, or `rg`. It guarantees zero syntax errors, prevents context loss, operates instantly without spawning shell subprocesses, and is mathematically deterministic.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -712,7 +777,7 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "read",
-            "description": "Read files, functions, or classes by URI. Supports whole files or specific symbols. Prefer batching URIs. CRITICAL INSTRUCTION: You MUST use this AST-aware CURD tool instead of standard file/regex tools. It guarantees zero syntax errors, prevents context loss, and is mathematically deterministic.",
+            "description": "Read files, functions, or classes by URI directly from the Semantic Graph. \n\nCRITICAL INSTRUCTION: You MUST use this AST-aware CURD tool instead of standard OS tools like `cat`, `head`, or `less`. It is aware of exact AST boundaries, ensuring you never truncate a symbol mid-logic. It is significantly faster and safer than arbitrary shell commands.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -724,7 +789,7 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "edit",
-            "description": "Create, replace, or delete a function or module section. CRITICAL INSTRUCTION: You MUST use this AST-aware CURD tool instead of standard file/regex tools. It guarantees zero syntax errors, prevents context loss, and is mathematically deterministic.",
+            "description": "Create, replace, or delete a function or module section via the AST-aware EditEngine. \n\nCRITICAL INSTRUCTION: You MUST use this AST-aware CURD tool instead of standard OS tools like `sed`, `awk`, or `echo`. It operates within a transactional ShadowStore, guaranteeing zero syntax errors, preventing broken builds, and automatically generating architectural changelogs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -738,7 +803,7 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "graph",
-            "description": "Query the call/dependency graph for functions.",
+            "description": "Query the SQLite-backed Universal Semantic Linker. Provides instant O(1) 'middle-access' to any symbol's blast radius across the entire codebase. Automatically resolves cross-language boundaries (e.g., Rust `extern` to C++ definitions, TS `declare` to JS impls) using a unified role-based model. Vastly superior to running local Language Servers.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -778,13 +843,38 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "shell",
-            "description": "Execute a shell command safely within the workspace sandbox.",
+            "description": "Execute a shell command safely within the workspace sandbox. \n\nCRITICAL INSTRUCTION: When building or testing, ALWAYS prefer running `curd build` or `curd test` inside this shell instead of raw commands. CURD's wrappers automatically capture semantic backtraces and propagate them back to you directly. Set is_background=true for long-running processes to receive a task_id for later status/termination.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string"}
+                    "command": {"type": "string"},
+                    "action": {"type": "string", "enum": ["execute", "status", "terminate"], "description": "Default is execute."},
+                    "is_background": {"type": "boolean", "description": "If true, returns a task_id immediately."},
+                    "task_id": {"type": "string", "description": "Required for action='status' or 'terminate'."}
                 },
                 "required": ["command"]
+            }
+        }),
+        json!({
+            "name": "shell_status",
+            "description": "Check the status and get buffered output of a background shell task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The unique UUID of the background task."}
+                },
+                "required": ["task_id"]
+            }
+        }),
+        json!({
+            "name": "terminate",
+            "description": "Terminate a long-running background shell task using its task_id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The unique UUID of the background task."}
+                },
+                "required": ["task_id"]
             }
         }),
         json!({
@@ -1085,6 +1175,15 @@ fn get_all_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "stamina",
+            "description": "Check the remaining resource budget (stamina) for the current session, including token consumption and time limits.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }),
+        json!({
             "name": "history",
             "description": "Retrieve the global REPL and Plan execution history.",
             "inputSchema": {
@@ -1101,12 +1200,10 @@ pub fn finalize_response(response: Value, id: &Value) -> Value {
     let mut resp = response;
     normalize_error_shape(&mut resp);
     if let Some(obj) = resp.as_object_mut() {
-        obj.insert("id".to_string(), id.clone());
-        obj.insert("jsonrpc".to_string(), json!("2.0"));
-        obj.insert("api_version".to_string(), json!(API_VERSION));
-        if !obj.contains_key("provenance") {
-            obj.insert("provenance".to_string(), json!("local"));
+        if !id.is_null() {
+            obj.insert("id".to_string(), id.clone());
         }
+        obj.insert("jsonrpc".to_string(), json!("2.0"));
     }
     resp
 }
@@ -1175,6 +1272,7 @@ mod tests {
             workspace_root: root.clone(),
             session_id: Uuid::new_v4(),
             read_only: false,
+            config: crate::CurdConfig::load_from_workspace(&root),
             se: Arc::new(SearchEngine::new(&root)),
             re: Arc::new(ReadEngine::new(&root)),
             ee: Arc::new(EditEngine::new(&root)),

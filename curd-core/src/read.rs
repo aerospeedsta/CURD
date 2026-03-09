@@ -17,13 +17,13 @@ impl ReadEngine {
     }
 
     /// Read an array of URIs with a specific verbosity level
-    pub fn read(&self, uris: Vec<String>, verbosity: u8) -> Result<Vec<Value>> {
+    pub fn read(&self, uris: Vec<String>, verbosity: u8, shadow_root: Option<&Path>) -> Result<Vec<Value>> {
         let search = SearchEngine::new(&self.workspace_root);
         let mut results = Vec::new();
 
         for uri in uris {
             let mut actual_uri = uri.as_str();
-            let mut target_root = self.workspace_root.clone();
+            let mut target_root = shadow_root.unwrap_or(&self.workspace_root).to_path_buf();
 
             if uri.starts_with('@')
                 && let Some(idx) = uri.find("::") {
@@ -50,13 +50,13 @@ impl ReadEngine {
 
             if let Some(symbol_name) = symbol_part {
                 // Function or class read
-                match self.read_symbol(&search, &uri, file_part, symbol_name, line_part, verbosity, &target_root) {
+                match self.read_symbol(&search, &uri, file_part, symbol_name, line_part, verbosity, &target_root, shadow_root) {
                     Ok(val) => results.push(val),
                     Err(e) => results.push(json!({"uri": uri, "error": e.to_string()})),
                 }
             } else {
                 // File-level read
-                match self.read_file(&search, &uri, file_part, verbosity, &target_root) {
+                match self.read_file(&search, &uri, file_part, verbosity, &target_root, shadow_root) {
                     Ok(val) => results.push(val),
                     Err(e) => results.push(json!({"uri": uri, "error": e.to_string()})),
                 }
@@ -76,11 +76,15 @@ impl ReadEngine {
         line_part: Option<usize>,
         verbosity: u8,
         target_root: &Path,
+        _shadow_root: Option<&Path>,
     ) -> Result<Value> {
         let symbols = search.search(symbol_name, None)?;
         let mut matches: Vec<_> = symbols
             .into_iter()
-            .filter(|s| s.filepath.to_string_lossy().ends_with(file_part) || file_part.ends_with(&s.filepath.to_string_lossy().to_string()))
+            .filter(|s| {
+                let s_path = s.filepath.to_string_lossy();
+                s_path.ends_with(file_part) || file_part.ends_with(&s_path.to_string())
+            })
             .filter(|s| s.name == symbol_name)
             .collect();
 
@@ -180,6 +184,7 @@ impl ReadEngine {
         file_part: &str,
         verbosity: u8,
         target_root: &Path,
+        _shadow_root: Option<&Path>,
     ) -> Result<Value> {
         let file_path = crate::workspace::validate_sandboxed_path(target_root, file_part)?;
         if !file_path.exists() {

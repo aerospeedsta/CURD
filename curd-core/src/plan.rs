@@ -751,9 +751,10 @@ impl PlanEngine {
         match &final_res {
             Ok(v) => ctx
                 .he
-                .log(ctx.session_id, "dsl", json!(nodes), v.clone(), true, None),
+                .log(ctx.session_id, None, "dsl", json!(nodes), v.clone(), true, None),
             Err(e) => ctx.he.log(
                 ctx.session_id,
+                None,
                 "dsl",
                 json!(nodes),
                 json!(null),
@@ -978,9 +979,10 @@ impl PlanEngine {
         match &final_res {
             Ok(v) => ctx
                 .he
-                .log(ctx.session_id, "plan", json!(plan), v.clone(), true, None),
+                .log(ctx.session_id, None, "plan", json!(plan), v.clone(), true, None),
             Err(e) => ctx.he.log(
                 ctx.session_id,
+                None,
                 "plan",
                 json!(plan),
                 json!(null),

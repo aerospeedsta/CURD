@@ -31,7 +31,7 @@ impl ProfileEngine {
         let sampling_capabilities = self.sampling_capabilities();
         let runtime = if let Some(cmd) = command {
             let shell_engine = crate::ShellEngine::new(&self.workspace_root);
-            let shell_res = shell_engine.shell(cmd, None).await?;
+            let shell_res = shell_engine.shell(cmd, None, false).await?;
 
             Some(json!({
                 "command": cmd,

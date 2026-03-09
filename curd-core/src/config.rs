@@ -11,6 +11,16 @@ pub struct ConfigFinding {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct BudgetConfig {
+    /// Maximum tokens the agent is allowed to consume in one session (0 = unlimited)
+    pub max_tokens: Option<u64>,
+    /// Maximum time in seconds a session is allowed to remain active
+    pub max_session_secs: Option<u64>,
+    /// Maximum number of hazardous tool calls (edit, shell) allowed per session
+    pub max_hazardous_calls: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CurdConfig {
     #[serde(default)]
     pub edit: EditConfig,
@@ -26,35 +36,69 @@ pub struct CurdConfig {
     pub reference: ReferenceConfig,
     #[serde(default)]
     pub shell: ShellConfig,
+    #[serde(default)]
+    pub budget: BudgetConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EditConfig {
     #[serde(default = "default_churn_limit")]
     pub churn_limit: f64,
+    #[serde(default = "default_churn_small_limit")]
+    pub churn_small_limit: f64,
+    #[serde(default = "default_churn_large_limit")]
+    pub churn_large_limit: f64,
+    #[serde(default = "default_churn_massive_limit")]
+    pub churn_massive_limit: f64,
+    #[serde(default = "default_small_file_nodes")]
+    pub small_file_nodes: usize,
+    #[serde(default = "default_large_file_nodes")]
+    pub large_file_nodes: usize,
+    #[serde(default = "default_massive_file_nodes")]
+    pub massive_file_nodes: usize,
+    #[serde(default = "default_enforce_transactional")]
+    pub enforce_transactional: bool,
 }
 
-fn default_churn_limit() -> f64 {
-    0.3
+fn default_churn_limit() -> f64 { 0.3 }
+fn default_churn_small_limit() -> f64 { 1.0 }
+fn default_churn_large_limit() -> f64 { 0.15 }
+fn default_churn_massive_limit() -> f64 { 0.05 }
+fn default_small_file_nodes() -> usize { 100 }
+fn default_large_file_nodes() -> usize { 500 }
+fn default_massive_file_nodes() -> usize { 2000 }
+
+fn default_enforce_transactional() -> bool {
+    true
 }
 
 impl Default for EditConfig {
     fn default() -> Self {
         Self {
             churn_limit: default_churn_limit(),
+            churn_small_limit: default_churn_small_limit(),
+            churn_large_limit: default_churn_large_limit(),
+            churn_massive_limit: default_churn_massive_limit(),
+            small_file_nodes: default_small_file_nodes(),
+            large_file_nodes: default_large_file_nodes(),
+            massive_file_nodes: default_massive_file_nodes(),
+            enforce_transactional: default_enforce_transactional(),
         }
     }
 }
 
 impl CurdConfig {
     pub fn load_from_workspace(root: &Path) -> Self {
-        // Prioritize hidden .curd/settings.toml
-        let primary = root.join(".curd").join("settings.toml");
-        if primary.exists()
-            && let Ok(content) = fs::read_to_string(&primary)
-            && let Ok(config) = toml::from_str(&content)
-        {
-            return config;
+        // Prioritize state directory (e.g. .curd or CURD_STATE_DIR)
+        let curd_dir = crate::workspace::get_curd_dir(root);
+        for file in ["curd.toml", "settings.toml"] {
+            let primary = curd_dir.join(file);
+            if primary.exists()
+                && let Ok(content) = fs::read_to_string(&primary)
+                && let Ok(config) = toml::from_str(&content)
+            {
+                return config;
+            }
         }
 
         // Fallback to legacy root files
@@ -75,6 +119,7 @@ impl CurdConfig {
             storage: StorageConfig::default(),
             reference: ReferenceConfig::default(),
             shell: ShellConfig::default(),
+            budget: BudgetConfig::default(),
         }
     }
 
@@ -388,10 +433,35 @@ impl Default for StorageConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ShellConfig {
     #[serde(default)]
     pub allowlist: Vec<String>,
+    #[serde(default)]
+    pub docker_enabled: bool,
+    #[serde(default = "default_container_engine")]
+    pub container_engine: String,
+    #[serde(default = "default_docker_image")]
+    pub docker_image: String,
+}
+
+fn default_container_engine() -> String {
+    "docker".to_string()
+}
+
+fn default_docker_image() -> String {
+    "ubuntu:latest".to_string()
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            allowlist: Vec::new(),
+            docker_enabled: false,
+            container_engine: default_container_engine(),
+            docker_image: default_docker_image(),
+        }
+    }
 }
 
 #[cfg(test)]
