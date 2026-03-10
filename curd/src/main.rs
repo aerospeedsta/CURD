@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use serde_json::json;
 use curd_core::{BuildRequest, DoctorIndexConfig, DoctorProfile, DoctorThresholds};
 #[cfg(feature = "mcp")]
 use curd_core::McpServer;
@@ -40,6 +41,7 @@ enum Commands {
     },
     /// Initialize and authorize a new agent keypair, auto-configuring a specified harness
     #[cfg(feature = "mcp")]
+    #[command(visible_alias = "ina", visible_alias = "agt")]
     InitAgent {
         /// Optional: Identifier for the agent (e.g., 'alpha', 'claude_coder'). Use commas for multiple names.
         #[arg(short, long)]
@@ -55,9 +57,11 @@ enum Commands {
     },
     /// Run built-in self diagnostics for indexing and regressions
     #[cfg(feature = "core")]
+    #[command(visible_alias = "dct")]
     Doctor(Box<DoctorArgs>),
     /// Build via CURD control plane (adapter-based dry-run/execute)
     #[cfg(feature = "core")]
+    #[command(visible_alias = "bld", visible_alias = "b")]
     Build {
         /// Optional build target/task to execute (or directory if no target is specified)
         target_or_dir: Option<String>,
@@ -93,6 +97,7 @@ enum Commands {
     },
     /// Print a shell hook to implicitly route standard commands (like 'make') through CURD
     #[cfg(feature = "core")]
+    #[command(visible_alias = "hok")]
     Hook {
         /// The target shell (zsh, bash, fish, powershell)
         #[arg(value_parser = ["zsh", "bash", "fish", "powershell"])]
@@ -100,6 +105,7 @@ enum Commands {
     },
     /// Compare symbols at AST level
     #[cfg(feature = "core")]
+    #[command(visible_alias = "dif")]
     Diff {
         /// Semantic AST-level diff
         #[arg(long)]
@@ -113,6 +119,7 @@ enum Commands {
     },
     /// Semantic refactoring engine
     #[cfg(feature = "core")]
+    #[command(visible_alias = "ref")]
     Refactor {
         /// Path to the workspace root
         #[arg(long, default_value = ".")]
@@ -123,6 +130,7 @@ enum Commands {
     },
     /// Manage external workspace contexts (Read-Only or Semantic linking)
     #[cfg(feature = "core")]
+    #[command(visible_alias = "ctx")]
     Context {
         /// Path to the primary workspace root
         #[arg(long, default_value = ".")]
@@ -133,13 +141,25 @@ enum Commands {
     },
     /// Initialize CURD workspace: auto-detect build system, create .curd/ directory
     #[cfg(feature = "core")]
+    #[command(visible_alias = "ini")]
     Init {
         /// Path to the workspace root
         #[arg(default_value = ".")]
         root: PathBuf,
     },
+    /// Manage CURD configuration and policies
+    #[cfg(feature = "core")]
+    #[command(visible_alias = "cfg")]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+        /// Path to the workspace root
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Soft detach CURD from the current workspace (removes git hooks and scrubs scripts)
     #[cfg(feature = "core")]
+    #[command(visible_alias = "det")]
     Detach {
         /// Path to the workspace root
         #[arg(default_value = ".")]
@@ -150,6 +170,7 @@ enum Commands {
     },
     /// Permanently delete CURD from the current workspace by removing the .curd/ directory
     #[cfg(feature = "core")]
+    #[command(visible_alias = "del")]
     Delete {
         /// Path to the workspace root
         #[arg(default_value = ".")]
@@ -163,6 +184,7 @@ enum Commands {
     },
     /// Print a summary of the current workspace state (index stats, shadow changes, etc.)
     #[cfg(feature = "core")]
+    #[command(visible_alias = "st", visible_alias = "sts")]
     Status {
         /// Path to the workspace root
         #[arg(default_value = ".")]
@@ -180,6 +202,7 @@ enum Commands {
     },
     /// Start the interactive CURD REPL for semantic exploration
     #[cfg(feature = "core")]
+    #[command(visible_alias = "rpl")]
     Repl {
         /// Path to the workspace root
         #[arg(default_value = ".")]
@@ -187,6 +210,7 @@ enum Commands {
     },
     /// Semantic search across the indexed graph
     #[cfg(feature = "core")]
+    #[command(visible_alias = "sch", visible_alias = "s")]
     Search {
         /// The query string
         query: String,
@@ -199,6 +223,7 @@ enum Commands {
     },
     /// Explore the caller/callee dependency graph of a symbol
     #[cfg(feature = "core")]
+    #[command(visible_alias = "g")]
     Graph {
         /// The symbol URI to map
         uri: String,
@@ -211,6 +236,7 @@ enum Commands {
     },
     /// Read a file or semantic symbol exactly as the engine parses it
     #[cfg(feature = "core")]
+    #[command(visible_alias = "red")]
     Read {
         /// The URI to read (e.g., 'src/main.rs' or 'src/main.rs::my_function')
         uri: String,
@@ -220,6 +246,7 @@ enum Commands {
     },
     /// Manually mutate a file or symbol via the AST-aware EditEngine
     #[cfg(feature = "core")]
+    #[command(visible_alias = "edt", visible_alias = "e")]
     Edit {
         /// The URI to edit
         uri: String,
@@ -236,8 +263,26 @@ enum Commands {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Generate diagrams from the symbol graph
+    #[cfg(feature = "core")]
+    #[command(visible_alias = "dia")]
+    Diagram {
+        /// Symbol URIs to include as roots
+        #[arg(short, long)]
+        uris: Vec<String>,
+        /// Path to the workspace root
+        #[arg(short, long, default_value = ".")]
+        root: PathBuf,
+        /// Output format (ascii, svg, dot, mermaid)
+        #[arg(short, long, default_value = "ascii")]
+        format: String,
+        /// Traversal depth for dependencies
+        #[arg(long, default_value = "1")]
+        depth: u8,
+    },
     /// Manage manual ShadowStore transaction sessions
     #[cfg(feature = "core")]
+    #[command(visible_alias = "ses")]
     Session {
         #[command(subcommand)]
         command: SessionCommands,
@@ -247,6 +292,7 @@ enum Commands {
     },
     #[cfg(feature = "mcp")]
     /// Manage, inspect, and execute saved AI plans
+    #[command(visible_alias = "pln", visible_alias = "p")]
     Plan {
         #[command(subcommand)]
         command: PlanCommands,
@@ -263,13 +309,35 @@ enum Commands {
     },
     /// Alias for curd doctor indexing
     #[cfg(feature = "core")]
+    #[command(visible_alias = "idx")]
     Index(Box<DoctorArgs>),
     #[command(external_subcommand)]
     External(Vec<String>),
+    /// Show help for CURD
+    #[command(name = "h")]
+    H,
 }
 
 #[derive(Subcommand)]
-pub enum RefactorCommands {
+enum ConfigCommands {
+    /// Show current workspace configuration
+    Show,
+    /// Set a configuration value (e.g. `set index.mode fast`)
+    Set {
+        /// Key in dotted notation (e.g. build.tasks.test)
+        key: String,
+        /// Value to set
+        value: String,
+    },
+    /// Remove a configuration value
+    Unset {
+        /// Key in dotted notation
+        key: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RefactorCommands {
     /// Rename a function/class/variable
     Rename {
         symbol: String,
@@ -912,6 +980,64 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             workspace_init::run_init(&resolved)
         }
         #[cfg(feature = "core")]
+        Some(Commands::Config { command, root }) => {
+            let resolved = resolve_workspace_root(root);
+            let mut cfg = curd_core::CurdConfig::load_from_workspace(&resolved);
+            
+            match command {
+                ConfigCommands::Show => {
+                    println!("{}", toml::to_string_pretty(&cfg)?);
+                }
+                ConfigCommands::Set { key, value } => {
+                    // Simple surgical update via Value conversion to avoid complex reflection
+                    let mut json_val = serde_json::to_value(&cfg)?;
+                    let parts: Vec<&str> = key.split('.').collect();
+                    let mut current = &mut json_val;
+                    
+                    for (i, part) in parts.iter().enumerate() {
+                        if i == parts.len() - 1 {
+                            // Try to parse as JSON first (to handle numbers/bools), fallback to string
+                            let parsed_val = serde_json::from_str::<serde_json::Value>(&value).unwrap_or(serde_json::Value::String(value.clone()));
+                            current[part] = parsed_val;
+                        } else {
+                            if current.get(part).is_none() {
+                                current[part] = serde_json::json!({});
+                            }
+                            current = current.get_mut(part).unwrap();
+                        }
+                    }
+                    
+                    cfg = serde_json::from_value(json_val)?;
+                    cfg.save_to_workspace()?;
+                    println!("Updated configuration key: {}", key);
+                }
+                ConfigCommands::Unset { key } => {
+                    let mut json_val = serde_json::to_value(&cfg)?;
+                    let parts: Vec<&str> = key.split('.').collect();
+                    let mut current = &mut json_val;
+                    
+                    for (i, part) in parts.iter().enumerate() {
+                        if i == parts.len() - 1 {
+                            if let Some(obj) = current.as_object_mut() {
+                                obj.remove(*part);
+                            }
+                        } else {
+                            if let Some(next) = current.get_mut(part) {
+                                current = next;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    
+                    cfg = serde_json::from_value(json_val)?;
+                    cfg.save_to_workspace()?;
+                    println!("Removed configuration key: {}", key);
+                }
+            }
+            Ok(())
+        }
+        #[cfg(feature = "core")]
         Some(Commands::Detach { root, shadow }) => {
             let resolved = resolve_workspace_root(root);
             println!("Performing soft detach...");
@@ -968,6 +1094,24 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                 }
             } else {
                 println!("CURD is not initialized in this workspace.");
+            }
+            Ok(())
+        }
+        #[cfg(feature = "core")]
+        Some(Commands::Diagram { uris, root, format, depth }) => {
+            let resolved = resolve_workspace_root(root);
+            enforce_workspace_config(&resolved)?;
+            
+            let res = curd_core::context::dispatch_tool("diagram", &json!({
+                "uris": uris,
+                "format": format,
+                "depth": depth
+            }), &curd_core::EngineContext::new(&resolved.to_string_lossy())).await;
+            
+            if let Some(diag) = res.get("diagram").and_then(|d| d.get("diagram")).and_then(|v| v.as_str()) {
+                println!("{}", diag);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&res)?);
             }
             Ok(())
         }
@@ -1332,10 +1476,15 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             Ok(())
         }
         Some(Commands::External(args)) => {
-            let cmd = args.join(" ");
-            eprintln!("\x1b[31merror\x1b[0m: unrecognized subroutine '\x1b[33m{}\x1b[0m'", cmd);
+            let _cmd = args.join(" ");
+            eprintln!("\x1b[31merror\x1b[0m: unrecognized subroutine '\x1b[33m{}\x1b[0m'", _cmd);
             eprintln!("\x1b[2mRun `curd help` for a list of available commands.\x1b[0m");
             std::process::exit(1);
+        }
+        Some(Commands::H) => {
+            use clap::CommandFactory;
+            Cli::command().print_help()?;
+            Ok(())
         }
         None => {
             // If legacy path provided, use MCP (only when mcp feature enabled)
@@ -1351,7 +1500,7 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                 let server = McpServer::new(&resolved.to_string_lossy());
                 return server.run().await;
             }
-            // Otherwise, show help instead of silent hang
+            
             use clap::CommandFactory;
             Cli::command().print_help()?;
             #[cfg(not(feature = "mcp"))]

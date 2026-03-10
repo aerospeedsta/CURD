@@ -406,6 +406,7 @@ pub struct EngineContext {
     pub he: Arc<HistoryEngine>,
     pub ce: Arc<crate::history::ContributionLedger>,
     pub mu: Arc<MutationEngine>,
+    pub policy_engine: Arc<crate::policy::PolicyEngine>,
     pub tx_events: broadcast::Sender<SystemEvent>,
     pub global_state: Arc<Mutex<ReplState>>,
     pub connections: Arc<Mutex<HashMap<String, ConnectionEntry>>>,
@@ -485,6 +486,7 @@ impl EngineContext {
             he: Arc::clone(&self.he),
             ce: Arc::clone(&self.ce),
             mu: Arc::clone(&self.mu),
+            policy_engine: Arc::clone(&self.policy_engine),
             tx_events: self.tx_events.clone(),
             global_state: Arc::clone(&self.global_state),
             connections: Arc::clone(&self.connections),
@@ -594,12 +596,12 @@ impl EngineContext {
             ee: Arc::new(EditEngine::new(root).with_watchdog(watchdog.clone())),
             ge: Arc::new(GraphEngine::new(root)),
             we: Arc::new(WorkspaceEngine::new(root)),
-            she: Arc::new(ShellEngine::new(root)),
+            she: Arc::new(ShellEngine::new(root, config.shell.clone(), config.policy.clone())),
             fe: Arc::new(FindEngine::new(root)),
             de: Arc::new(DiagramEngine::new(root)),
             fie: Arc::new(FileEngine::new(root)),
             le: Arc::new(LspEngine::new(root)),
-            pe: Arc::new(ProfileEngine::new(root)),
+            pe: Arc::new(ProfileEngine::new(root, config.shell.clone(), config.policy.clone())),
             dbe: Arc::new(DebugEngine::new(root)),
             rce: Arc::new(ReviewCycleEngine::new(root)),
             doce: Arc::new(DocEngine::new()),
@@ -614,6 +616,7 @@ impl EngineContext {
                 config.provenance.clone(),
             )),
             mu: Arc::new(MutationEngine::new(root)),
+            policy_engine: Arc::new(crate::policy::PolicyEngine::new(config.policy.clone())),
             tx_events,
             global_state: Arc::new(Mutex::new(ReplState::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
@@ -704,11 +707,66 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
         }
     }
 
-    // 3. Resource Budget Enforcement
     let connection_token = params
         .get("connection_token")
         .or_else(|| params.get("session_token"))
         .and_then(|v| v.as_str());
+
+    let mut is_human = false;
+    if let Some(token) = connection_token {
+        let connections = ctx.connections.lock().await;
+        if let Some(entry) = connections.get(token) {
+            if entry.agent_id == "human" {
+                is_human = true;
+            }
+        }
+    } else {
+        // If no token, assume human for CLI/REPL local calls
+        is_human = true;
+    }
+
+    // 1. Policy Enforcement
+    match ctx.policy_engine.evaluate(name, params, is_human, &ctx.workspace_root) {
+        crate::policy::PolicyDecision::Deny(err) => {
+            return json!({"status": "policy_rejected", "error": err});
+        }
+        crate::policy::PolicyDecision::Audit(msg) => {
+            ctx.he.log(
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None,
+                None,
+                name,
+                params.clone(),
+                json!({"status": "audit", "message": msg}),
+                None,
+                None,
+                true,
+                None,
+                None,
+            );
+        }
+        crate::policy::PolicyDecision::Allow => {}
+    }
+
+    // 1b. Plan Gating (Mandatory Planning)
+    if !is_human && risky_tool(name) && ctx.config.policy.require_plan_for_mutations {
+        let is_executing = if let Some(token) = connection_token {
+            let connections = ctx.connections.lock().await;
+            connections.get(token).map(|e| e.state.is_executing_plan).unwrap_or(false)
+        } else {
+            false
+        };
+        
+        if !is_executing {
+            return json!({
+                "status": "policy_rejected", 
+                "error": "PLAN_REQUIRED: Your organization requires all mutations to be part of a registered plan. Register a plan first, then call execute_plan."
+            });
+        }
+    }
+
+    // 2. Budget Enforcement
     if let Some(token) = connection_token {
         let mut connections = ctx.connections.lock().await;
         if let Some(entry) = connections.get_mut(token) {
@@ -1108,17 +1166,34 @@ pub async fn handle_propose_plan(params: &Value, ctx: &EngineContext) -> Value {
     };
 
     let mut state = ctx.global_state.lock().await;
-    match ctx.ple.register_plan(plan, ctx, &mut state) {
+    match ctx.ple.register_plan(plan, ctx, &mut state, true) {
         Ok(res) => res,
         Err(e) => json!({"error": e.to_string()}),
     }
 }
 
 pub async fn handle_register_plan(params: &Value, ctx: &EngineContext) -> Value {
+    let connection_token = params
+        .get("connection_token")
+        .or_else(|| params.get("session_token"))
+        .and_then(|v| v.as_str());
+
+    let mut is_human = false;
+    if let Some(token) = connection_token {
+        let connections = ctx.connections.lock().await;
+        if let Some(entry) = connections.get(token) {
+            if entry.agent_id == "human" {
+                is_human = true;
+            }
+        }
+    } else {
+        is_human = true;
+    }
+
     match serde_json::from_value::<crate::Plan>(params.clone()) {
         Ok(plan) => {
             let mut state = ctx.global_state.lock().await;
-            match ctx.ple.register_plan(plan, ctx, &mut state) {
+            match ctx.ple.register_plan(plan, ctx, &mut state, is_human) {
                 Ok(res) => res,
                 Err(e) => json!({"error": e.to_string()}),
             }
@@ -1232,11 +1307,44 @@ pub async fn handle_contract(params: &Value, ctx: &EngineContext) -> Value {
     })
 }
 
-pub async fn handle_execute_active_plan(_params: &Value, ctx: &EngineContext) -> Value {
-    let mut state = ctx.global_state.lock().await;
-    match ctx.ple.execute_active_plan(ctx, &mut state).await {
-        Ok(res) => res,
-        Err(e) => json!({"error": e.to_string()}),
+pub async fn handle_execute_active_plan(params: &Value, ctx: &EngineContext) -> Value {
+    let connection_token = params
+        .get("connection_token")
+        .or_else(|| params.get("session_token"))
+        .and_then(|v| v.as_str());
+
+    if let Some(token) = connection_token {
+        let mut connections = ctx.connections.lock().await;
+        if let Some(entry) = connections.get_mut(token) {
+            entry.state.is_executing_plan = true;
+            // Note: We don't want to hold the lock during execution, 
+            // but execute_active_plan needs &mut state.
+            // This is a bit tricky with the current architecture.
+            // For now, we'll just set the flag and rely on the fact that
+            // execute_active_plan in plan.rs also sets it on its local state.
+        }
+    }
+
+    let mut state_guard = ctx.global_state.lock().await;
+    match ctx.ple.execute_active_plan(ctx, &mut state_guard).await {
+        Ok(res) => {
+            if let Some(token) = connection_token {
+                let mut connections = ctx.connections.lock().await;
+                if let Some(entry) = connections.get_mut(token) {
+                    entry.state.is_executing_plan = false;
+                }
+            }
+            res
+        }
+        Err(e) => {
+            if let Some(token) = connection_token {
+                let mut connections = ctx.connections.lock().await;
+                if let Some(entry) = connections.get_mut(token) {
+                    entry.state.is_executing_plan = false;
+                }
+            }
+            json!({"error": e.to_string()})
+        }
     }
 }
 

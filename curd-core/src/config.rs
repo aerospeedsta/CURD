@@ -48,6 +48,10 @@ pub struct CurdConfig {
     pub provenance: ProvenanceConfig,
     #[serde(default)]
     pub plugins: PluginConfig,
+    #[serde(default)]
+    pub policy: crate::policy::PolicyConfig,
+    #[serde(skip)]
+    pub source_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -311,43 +315,53 @@ impl Default for EditConfig {
 
 impl CurdConfig {
     pub fn load_from_workspace(root: &Path) -> Self {
-        // Prioritize state directory (e.g. .curd or CURD_STATE_DIR)
         let curd_dir = crate::workspace::get_curd_dir(root);
         for file in ["curd.toml", "settings.toml"] {
             let primary = curd_dir.join(file);
             if primary.exists()
                 && let Ok(content) = fs::read_to_string(&primary)
-                && let Ok(config) = toml::from_str(&content)
+                && let Ok(mut config) = toml::from_str::<Self>(&content)
             {
+                config.source_path = Some(primary);
                 return config;
             }
         }
 
-        // Fallback to legacy root files
         for file in ["settings.toml", "curd.toml", "CURD.toml"] {
             let config_path = root.join(file);
             if config_path.exists()
                 && let Ok(content) = fs::read_to_string(&config_path)
-                && let Ok(config) = toml::from_str(&content)
+                && let Ok(mut config) = toml::from_str::<Self>(&content)
             {
+                config.source_path = Some(config_path);
                 return config;
             }
         }
-        Self {
-            workspace: WorkspacePolicyConfig::default(),
-            edit: EditConfig::default(),
-            index: IndexConfig::default(),
-            doctor: DoctorConfig::default(),
-            build: BuildConfig::default(),
-            storage: StorageConfig::default(),
-            reference: ReferenceConfig::default(),
-            shell: ShellConfig::default(),
-            budget: BudgetConfig::default(),
-            collaboration: CollaborationConfig::default(),
-            variants: VariantsConfig::default(),
-            provenance: ProvenanceConfig::default(),
-            plugins: PluginConfig::default(),
+        Self::default()
+    }
+
+    pub fn save_to_workspace(&self) -> anyhow::Result<()> {
+        let path = self.source_path.as_ref().cloned().unwrap_or_else(|| {
+            let root = std::path::PathBuf::from(".");
+            crate::workspace::get_curd_dir(&root).join("curd.toml")
+        });
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
         }
+
+        let content = toml::to_string_pretty(self)?;
+        fs::write(path, content)?;
+        Ok(())
+    }
+
+    pub fn compute_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        if let Ok(content) = toml::to_string(self) {
+            hasher.update(content.as_bytes());
+        }
+        format!("{:x}", hasher.finalize())
     }
 
     pub fn validate(&self) -> Vec<ConfigFinding> {
@@ -785,8 +799,6 @@ impl Default for StorageConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ShellConfig {
     #[serde(default)]
-    pub allowlist: Vec<String>,
-    #[serde(default)]
     pub docker_enabled: bool,
     #[serde(default = "default_container_engine")]
     pub container_engine: String,
@@ -805,7 +817,6 @@ fn default_docker_image() -> String {
 impl Default for ShellConfig {
     fn default() -> Self {
         Self {
-            allowlist: Vec::new(),
             docker_enabled: false,
             container_engine: default_container_engine(),
             docker_image: default_docker_image(),

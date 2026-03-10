@@ -1,0 +1,48 @@
+{
+  "manifest": {
+    "schema_version": 1,
+    "package_id": "acme-language-pack",
+    "version": "0.1.0",
+    "kind": "language",
+    "signer_pubkey_hex": "REPLACE_WITH_ED25519_PUBKEY_HEX",
+    "description": "Signed CURD language ecosystem package",
+    "files": [
+      {
+        "path": "lib/tree-sitter-acme.dylib",
+        "sha256": "REPLACE_WITH_SHA256",
+        "size": 45678,
+        "executable": false
+      },
+      {
+        "path": "queries/acme.scm",
+        "sha256": "REPLACE_WITH_SHA256",
+        "size": 2048,
+        "executable": false
+      }
+    ],
+    "tool": null,
+    "language": {
+      "language_id": "acme",
+      "extensions": ["acme"],
+      "grammar_library_path": "lib/tree-sitter-acme.dylib",
+      "grammar_symbol": "tree_sitter_acme",
+      "query_path": "queries/acme.scm",
+      "build_system": "acme-build",
+      "lsp_adapter": "acme-lsp",
+      "debug_adapter": "acme-dap"
+    }
+  },
+  "payload_files": [
+    {
+      "path": "lib/tree-sitter-acme.dylib",
+      "content_b64": "REPLACE_WITH_BASE64_PAYLOAD",
+      "executable": false
+    },
+    {
+      "path": "queries/acme.scm",
+      "content_b64": "REPLACE_WITH_BASE64_QUERY",
+      "executable": false
+    }
+  ],
+  "signature_hex": "REPLACE_WITH_SIGNATURE_OVER_MANIFEST_JSON"
+}

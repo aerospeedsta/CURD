@@ -27,6 +27,7 @@ pub mod parser;
 pub mod plan;
 pub mod plugin_client;
 pub mod plugin_packages;
+pub mod policy;
 pub mod profile;
 pub mod read;
 pub mod refactor;
@@ -94,6 +95,7 @@ pub use search::{
     IndexBuildStats, IndexWorkerRequest, IndexWorkerResponse, SearchEngine, run_index_worker,
 };
 pub use review_cycle::ReviewCycleEngine;
+pub use policy::{PolicyEngine, PolicyConfig};
 pub use shell::ShellEngine;
 pub use storage::{IndexRunRecord, Storage, read_recent_index_runs, record_index_run};
 pub use symbols::{Symbol, SymbolIndex, SymbolKind};

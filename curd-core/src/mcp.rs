@@ -7,7 +7,7 @@ use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub const API_VERSION: &str = "0.3.0";
+pub const API_VERSION: &str = "0.7.0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpServerMode {
@@ -716,9 +716,9 @@ pub async fn handle_connection_verify(params: &Value, ctx: &EngineContext) -> Va
                 "connection_token": connection_token,
                 "session_token": connection_token,
                 "agent_id": agent_id,
-                "restored_state": restored
-            });
-            ctx.he.log(
+                "restored_state": restored,
+                "config_hash": ctx.config.compute_hash()
+            });            ctx.he.log(
                 Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
                 ctx.collaboration_id,
                 Some(pubkey_hex.to_string()),
@@ -775,59 +775,63 @@ async fn handle_execute_dsl(params: &Value, ctx: &EngineContext) -> Value {
     }
 
     let mut local_state = {
-        let connections_guard = ctx.connections.lock().await;
-        if let Some(entry) = connections_guard.get(connection_token) {
+        let mut connections_guard = ctx.connections.lock().await;
+        if let Some(entry) = connections_guard.get_mut(connection_token) {
+            entry.state.is_executing_plan = true;
             ReplState::from_variables(entry.state.variables.clone())
         } else {
             return json!({"error": "Unauthorized: Invalid or expired connection_token."});
         }
     };
 
+    let res = ctx.ple.execute_dsl(&nodes, ctx, &mut local_state).await;
     
-    match ctx.ple.execute_dsl(&nodes, ctx, &mut local_state).await {
-        Ok(res) => {
-            let mut connections_guard = ctx.connections.lock().await;
-            if let Some(entry) = connections_guard.get_mut(connection_token) {
+    let mut connections_guard = ctx.connections.lock().await;
+    if let Some(entry) = connections_guard.get_mut(connection_token) {
+        entry.state.is_executing_plan = false;
+        match res {
+            Ok(results) => {
                 entry.state.variables.extend(local_state.variables);
                 entry.last_touched_secs = now_secs();
+                let val = json!({"status": "ok", "results": results});
+                ctx.he.log(
+                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                    ctx.collaboration_id,
+                    None, // agent_id
+                    None, // transaction_id
+                    "dsl",
+                    json!(nodes),
+                    val.clone(),
+                    None, // base_hash
+                    None, // post_hash
+                    true,
+                    None,
+                    None, // verification_result
+                );
+                val
             }
-
-            let val = json!({"status": "ok", "results": res});
-            ctx.he.log(
-                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                ctx.collaboration_id,
-                None, // agent_id
-                None, // transaction_id
-                "dsl",
-                json!(nodes),
-                val.clone(),
-                None, // base_hash
-                None, // post_hash
-                true,
-                None,
-                None, // verification_result
-            );
-            val
+            Err(e) => {
+                let err_msg = e.to_string();
+                let val = json!({"error": err_msg.clone()});
+                ctx.he.log(
+                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                    ctx.collaboration_id,
+                    None, // agent_id
+                    None, // transaction_id
+                    "dsl",
+                    json!(nodes),
+                    val.clone(),
+                    None, // base_hash
+                    None, // post_hash
+                    false,
+                    Some(err_msg),
+                    None, // verification_result
+                );
+                val
+            }
         }
-        Err(e) => {
-            let err_msg = e.to_string();
-            let val = json!({"error": err_msg.clone()});
-            ctx.he.log(
-                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                ctx.collaboration_id,
-                None, // agent_id
-                None, // transaction_id
-                "dsl",
-                json!(nodes),
-                val.clone(),
-                None, // base_hash
-                None, // post_hash
-                false,
-                Some(err_msg),
-                None, // verification_result
-            );
-            val
-        }
+    } else {
+        json!({"error": "Connection lost during DSL execution"})
     }
 }
 
@@ -850,58 +854,63 @@ async fn handle_execute_plan(params: &Value, ctx: &EngineContext) -> Value {
     }
 
     let mut local_state = {
-        let connections_guard = ctx.connections.lock().await;
-        if let Some(entry) = connections_guard.get(connection_token) {
+        let mut connections_guard = ctx.connections.lock().await;
+        if let Some(entry) = connections_guard.get_mut(connection_token) {
+            entry.state.is_executing_plan = true;
             ReplState::from_variables(entry.state.variables.clone())
         } else {
             return json!({"error": "Unauthorized: Invalid or expired connection_token."});
         }
     };
 
+    let res = ctx.ple.execute_plan(&plan, ctx, &mut local_state).await;
     
-    match ctx.ple.execute_plan(&plan, ctx, &mut local_state).await {
-        Ok(res) => {
-            let mut connections_guard = ctx.connections.lock().await;
-            if let Some(entry) = connections_guard.get_mut(connection_token) {
+    let mut connections_guard = ctx.connections.lock().await;
+    if let Some(entry) = connections_guard.get_mut(connection_token) {
+        entry.state.is_executing_plan = false;
+        match res {
+            Ok(ref results) => {
                 entry.state.variables.extend(local_state.variables);
                 entry.last_touched_secs = now_secs();
+                let val = json!({"status": "ok", "results": results});
+                ctx.he.log(
+                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                    ctx.collaboration_id,
+                    None, // agent_id
+                    None, // transaction_id
+                    "plan",
+                    json!(plan),
+                    val.clone(),
+                    None, // base_hash
+                    None, // post_hash
+                    true,
+                    None,
+                    None, // verification_result
+                );
+                val
             }
-            let val = json!({"status": "ok", "results": res});
-            ctx.he.log(
-                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                ctx.collaboration_id,
-                None, // agent_id
-                None, // transaction_id
-                "plan",
-                json!(plan),
-                val.clone(),
-                None, // base_hash
-                None, // post_hash
-                true,
-                None,
-                None, // verification_result
-            );
-            val
+            Err(ref e) => {
+                let err_msg = e.to_string();
+                let val = json!({"error": err_msg.clone()});
+                ctx.he.log(
+                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                    ctx.collaboration_id,
+                    None, // agent_id
+                    None, // transaction_id
+                    "plan",
+                    json!(plan),
+                    val.clone(),
+                    None, // base_hash
+                    None, // post_hash
+                    false,
+                    Some(err_msg),
+                    None, // verification_result
+                );
+                val
+            }
         }
-        Err(e) => {
-            let err_msg = e.to_string();
-            let val = json!({"error": err_msg.clone()});
-            ctx.he.log(
-                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                ctx.collaboration_id,
-                None, // agent_id
-                None, // transaction_id
-                "plan",
-                json!(plan),
-                val.clone(),
-                None, // base_hash
-                None, // post_hash
-                false,
-                Some(err_msg),
-                None, // verification_result
-            );
-            val
-        }
+    } else {
+        json!({"error": "Connection lost during plan execution"})
     }
 }
 

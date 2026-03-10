@@ -1,0 +1,5 @@
+* -ai-training
+README.md -ai-training
+Cargo.toml -ai-training
+curd-core/** -ai-training
+curd/** -ai-training

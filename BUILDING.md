@@ -24,10 +24,10 @@ make build
 For adapter-aware build planning/execution through CURD itself:
 ```bash
 # dry-run plan
-cargo run -q -p curd -- build .
+cargo run -q -p curd -- build release --plan
 
 # execute
-cargo run -q -p curd -- build . --execute
+cargo run -q -p curd -- build release
 ```
 
 ### 2. Debug Build (All Bindings)

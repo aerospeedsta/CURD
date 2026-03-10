@@ -176,7 +176,7 @@ dist-nix:
   in { \
     packages.$${system}.default = pkgs.rustPlatform.buildRustPackage { \
       pname = "curd"; \
-      version = "0.6.0-beta"; \
+      version = "0.7.0-beta"; \
       src = ./.; \
       cargoLock.lockFile = ./Cargo.lock; \
     }; \

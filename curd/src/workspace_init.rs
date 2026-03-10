@@ -33,36 +33,57 @@ fn detect_vcs(root: &Path) -> Option<String> {
 fn detect_languages(root: &Path) -> Vec<String> {
     let mut langs = Vec::new();
 
-    let checks: &[(&str, &[&str])] = &[
-        ("Rust", &["Cargo.toml"]),
-        ("Python", &["pyproject.toml", "setup.py", "setup.cfg"]),
-        ("JavaScript", &["package.json"]),
-        ("TypeScript", &["tsconfig.json"]),
-        ("Go", &["go.mod"]),
-        ("Java", &["pom.xml", "build.gradle", "build.gradle.kts"]),
-        ("C/C++", &["CMakeLists.txt", "Makefile", "meson.build"]),
-        ("Swift", &["Package.swift"]),
-        ("Zig", &["build.zig"]),
-        ("Elixir", &["mix.exs"]),
-        ("C#/.NET", &["*.csproj", "*.sln"]),
+    let checks: &[(&str, &[&str], &[&str])] = &[
+        ("Rust", &["Cargo.toml"], &["rs"]),
+        ("Python", &["pyproject.toml", "setup.py", "requirements.txt"], &["py"]),
+        ("JavaScript", &["package.json"], &["js", "jsx", "mjs"]),
+        ("TypeScript", &["tsconfig.json"], &["ts", "tsx"]),
+        ("Go", &["go.mod"], &["go"]),
+        ("Java", &["pom.xml", "build.gradle"], &["java"]),
+        ("C/C++", &["CMakeLists.txt", "Makefile", "meson.build"], &["c", "cpp", "cc", "h", "hpp"]),
+        ("Swift", &["Package.swift"], &["swift"]),
+        ("Zig", &["build.zig"], &["zig"]),
+        ("C#/.NET", &["*.csproj", "*.sln"], &["cs"]),
     ];
 
-    for (lang, markers) in checks {
+    for (lang, markers, extensions) in checks {
+        let mut found = false;
         for marker in *markers {
             if let Some(ext) = marker.strip_prefix('*') {
-                // Glob check in root dir only
-                // e.g. ".csproj"
                 if let Ok(entries) = fs::read_dir(root) {
                     for entry in entries.flatten() {
                         if entry.path().to_string_lossy().ends_with(ext) {
                             langs.push(lang.to_string());
+                            found = true;
                             break;
                         }
                     }
                 }
             } else if root.join(marker).exists() {
                 langs.push(lang.to_string());
+                found = true;
                 break;
+            }
+        }
+
+        if !found && !extensions.is_empty() {
+            // Scan src/ or root/ for extensions
+            for dir in ["src", "lib", "."] {
+                let search_dir = root.join(dir);
+                if search_dir.exists() {
+                    if let Ok(entries) = fs::read_dir(search_dir) {
+                        for entry in entries.flatten() {
+                            if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                                if extensions.contains(&ext) {
+                                    langs.push(lang.to_string());
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if found { break; }
             }
         }
     }
@@ -299,6 +320,19 @@ pub fn run_init(root: &Path) -> Result<()> {
         let _ = manager.bootstrap_core_grammars();
     }
 
+    // Initial Indexing Pass
+    println!("  🔍 Performing initial semantic indexing...");
+    let se = curd_core::SearchEngine::new(root);
+    match se.search("", None) {
+        Ok(results) => {
+            println!("  ✅ Indexed {} symbols across the workspace.", results.len());
+        }
+        Err(e) => {
+            println!("  ⚠️  Initial indexing completed with issues: {}", e);
+            println!("     (You may need to run 'curd doctor' to troubleshoot specific files)");
+        }
+    }
+
     // Show config status
     if root.join("curd.toml").exists() || root.join("settings.toml").exists() || root.join("CURD.toml").exists() {
         println!("  ✅ Workspace config found.");
@@ -425,12 +459,17 @@ mod tests {
     fn test_scaffold_curd_dir() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        
+
         fs::create_dir(root.join(".git")).unwrap();
         fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
-        
-        scaffold_curd_dir(root).unwrap();
-        
+
+        let info = WorkspaceInfo {
+            vcs: Some("git".to_string()),
+            languages: vec![],
+            build_systems: vec![],
+        };
+
+        scaffold_curd_dir(root, &info).unwrap();        
         assert!(root.join(".curd/builds").exists());
         assert!(root.join(".curd/feedback").exists());
         assert!(root.join(".curd/wiki").exists());

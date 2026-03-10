@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "curd"
-version = "0.6.0-beta"
+version = "0.7.0-beta"
 dependencies = [
  "anyhow",
  "clap",
@@ -624,6 +624,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "uuid",
 ]
 
@@ -639,6 +640,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-intrusive",
  "getrandom 0.4.2",
+ "glob",
  "ignore",
  "libloading 0.9.0",
  "log",
@@ -670,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "curd-gpu-worker"
-version = "0.6.0-beta"
+version = "0.7.0-beta"
 dependencies = [
  "anyhow",
  "curd-core",
@@ -681,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "curd-node"
-version = "0.6.0-beta"
+version = "0.7.0-beta"
 dependencies = [
  "anyhow",
  "curd-core",
@@ -694,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "curd-python"
-version = "0.6.0-beta"
+version = "0.7.0-beta"
 dependencies = [
  "anyhow",
  "curd-core",
@@ -1065,6 +1067,12 @@ dependencies = [
  "log",
  "xml-rs",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "globset"

@@ -62,6 +62,7 @@ pub enum DslNode {
 pub struct ReplState {
     pub variables: HashMap<String, Value>,
     pub active_plan: Option<Plan>,
+    pub is_executing_plan: bool,
 }
 
 impl Default for ReplState {
@@ -75,6 +76,7 @@ impl ReplState {
         Self {
             variables: HashMap::new(),
             active_plan: None,
+            is_executing_plan: false,
         }
     }
 
@@ -82,6 +84,7 @@ impl ReplState {
         Self {
             variables,
             active_plan: None,
+            is_executing_plan: false,
         }
     }
 
@@ -602,7 +605,31 @@ impl PlanEngine {
         plan: Plan,
         ctx: &EngineContext,
         state: &mut ReplState,
+        is_human: bool,
     ) -> Result<Value> {
+        // --- POLICY CHECK ---
+        match ctx.policy_engine.validate_plan(&plan, is_human, &self.workspace_root) {
+            crate::policy::PolicyDecision::Deny(reason) => {
+                anyhow::bail!("{}", reason);
+            }
+            crate::policy::PolicyDecision::Audit(msg) => {
+                ctx.ce.log(
+                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                    ctx.collaboration_id,
+                    None, // actor_id
+                    "system", // actor_kind
+                    "policy_engine", // actor_surface
+                    None, // transaction_id
+                    "plan_policy_audit",
+                    vec![plan.id.to_string()], // resources
+                    true,
+                    Some(msg), // error/message
+                );
+            }
+            crate::policy::PolicyDecision::Allow => {}
+        }
+        // --------------------
+
         let plan_id = plan.id;
         let node_views: Vec<(NodeId, String)> = plan
             .nodes
@@ -648,7 +675,11 @@ impl PlanEngine {
             .active_plan
             .take()
             .ok_or_else(|| anyhow::anyhow!("No active plan registered"))?;
-        self.execute_plan(&plan, ctx, state).await
+
+        state.is_executing_plan = true;
+        let res = self.execute_plan(&plan, ctx, state).await;
+        state.is_executing_plan = false;
+        res
     }
 
     pub async fn execute_dsl(
@@ -657,6 +688,7 @@ impl PlanEngine {
         ctx: &EngineContext,
         state: &mut ReplState,
     ) -> Result<Value> {
+        state.is_executing_plan = true;
         let mut results = Vec::new();
 
         let final_res = (async {
@@ -747,6 +779,7 @@ impl PlanEngine {
             Ok(Value::Array(results))
         })
         .await;
+        state.is_executing_plan = false;
 
         match &final_res {
             Ok(v) => ctx.he.log(
@@ -832,6 +865,7 @@ impl PlanEngine {
             .map_err(|_| anyhow::anyhow!("Cycle detected in plan dependencies"))?;
 
         let mut results = HashMap::new();
+        state.is_executing_plan = true;
         let final_res = (async {
             for idx in sorted_indices {
                 let node_idx = graph[idx];
@@ -973,6 +1007,7 @@ impl PlanEngine {
             Ok(json!(results))
         })
         .await;
+        state.is_executing_plan = false;
 
         run_state.status = if final_res.is_ok() {
             "completed".to_string()

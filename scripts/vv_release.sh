@@ -20,7 +20,7 @@ fi
 # 2. Basic Responsiveness
 echo "[1/1] Checking binary version and responsiveness..."
 VERSION_OUT=$($CURD_BIN --version)
-if echo "$VERSION_OUT" | grep -q "curd 0.6.0-beta"; then
+if echo "$VERSION_OUT" | grep -q "curd 0.7.0-beta"; then
     echo "  SUCCESS: Binary is responsive and reports correct version ($VERSION_OUT)."
 else
     echo "  FAILED: Binary produced unexpected output: $VERSION_OUT"

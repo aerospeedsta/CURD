@@ -1,0 +1,60 @@
+{
+  "manifest": {
+    "schema_version": 1,
+    "package_id": "acme-proprietary-toolkit",
+    "version": "0.1.0",
+    "kind": "tool",
+    "signer_pubkey_hex": "REPLACE_WITH_ED25519_PUBKEY_HEX",
+    "description": "Signed proprietary CURD tool package",
+    "files": [
+      {
+        "path": "bin/acme-tool",
+        "sha256": "REPLACE_WITH_SHA256",
+        "size": 12345,
+        "executable": true
+      }
+    ],
+    "tool": {
+      "tool_name": "acme_tool",
+      "executable_path": "bin/acme-tool",
+      "default_args": [],
+      "protocol": "json_stdio_v1",
+      "agent_usage": "Send a JSON object on stdin. Return exactly one JSON object on stdout. Use this tool when interacting with Acme's proprietary deployment control plane.",
+      "review_guidance": "Human reviewers should inspect deployment target, blast radius, and safety flags before approving use in plans.",
+      "downstream_impact": "May trigger deployment-oriented downstream automation and environment-specific rollouts.",
+      "description": "Acme deployment tool exposed to CURD as a signed sandboxed tool plugin.",
+      "parameters": [
+        {
+          "name": "environment",
+          "kind": "string",
+          "description": "Deployment environment identifier.",
+          "required": true
+        },
+        {
+          "name": "action",
+          "kind": "string",
+          "description": "Requested deployment action.",
+          "required": true
+        }
+      ],
+      "examples": [
+        {
+          "label": "Queue a staging deploy",
+          "arguments": {
+            "environment": "staging",
+            "action": "deploy"
+          }
+        }
+      ]
+    },
+    "language": null
+  },
+  "payload_files": [
+    {
+      "path": "bin/acme-tool",
+      "content_b64": "REPLACE_WITH_BASE64_PAYLOAD",
+      "executable": true
+    }
+  ],
+  "signature_hex": "REPLACE_WITH_SIGNATURE_OVER_MANIFEST_JSON"
+}

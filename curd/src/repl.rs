@@ -11,6 +11,12 @@ pub async fn run_repl(workspace_root: &Path) -> Result<()> {
     let ctx = curd_core::EngineContext::new(&workspace_root.to_string_lossy());
     let mut state = ReplState::new();
 
+    let curd_dir = workspace_root.join(".curd");
+    if !curd_dir.exists() {
+        println!("\x1b[1;31m⚠️  WARNING: CURD is not initialized in this workspace.\x1b[0m");
+        println!("\x1b[2mRun 'ini' or 'curd init' to bootstrap the index and safety barriers.\x1b[0m\n");
+    }
+
     println!("\x1b[1;36m=== CURD Interactive REPL ===\x1b[0m");
     if ctx.read_only {
         println!("\x1b[1;33m[READ-ONLY MODE] Another CURD session is active. Mutations are disabled.\x1b[0m");
@@ -42,7 +48,9 @@ pub async fn run_repl(workspace_root: &Path) -> Result<()> {
 
                 if input == "help" {
                     println!("Available commands:");
-                    println!("  search, read, edit, graph, diagram, lsp, doctor, shell, workspace, diff, index");
+                    println!("  search (s, sch), read (red), edit (e, edt), graph (g), diagram (dia)");
+                    println!("  doctor (dct), shell (shl), workspace (wsp), diff (dif), index (idx)");
+                    println!("  config (cfg), session (ses), plan (p, pln)");
                     println!("  detach                   (Soft detach CURD from this workspace)");
                     println!("  delete                   (Hard delete CURD from this workspace)");
                     println!("  let <var> = <tool> ...   (Variable assignment)");
@@ -53,6 +61,58 @@ pub async fn run_repl(workspace_root: &Path) -> Result<()> {
                     println!("  plan graph               (Show the active plan's DAG)");
                     println!("  plan deny                (Delete the active plan from disk)");
                     println!("  plan impl --session <id> (Execute the active plan)");
+                    println!("  config show              (Show current workspace configuration)");
+                    println!("  config set <key> <val>   (Update a configuration value)");
+                    continue;
+                }
+
+                // Handle Config command
+                if input.starts_with("config") || input.starts_with("cfg") {
+                    let parts: Vec<&str> = input.split_whitespace().collect();
+                    let action = parts.get(1).unwrap_or(&"");
+                    
+                    let mut cfg = curd_core::CurdConfig::load_from_workspace(&ctx.workspace_root);
+                    
+                    match *action {
+                        "show" => {
+                            println!("{}", toml::to_string_pretty(&cfg)?);
+                        }
+                        "set" if parts.len() >= 4 => {
+                            let key = parts[2];
+                            let value = parts[3..].join(" ");
+                            
+                            let mut json_val = serde_json::to_value(&cfg)?;
+                            let key_parts: Vec<&str> = key.split('.').collect();
+                            let mut current = &mut json_val;
+                            
+                            for (i, part) in key_parts.iter().enumerate() {
+                                if i == key_parts.len() - 1 {
+                                    let parsed_val = serde_json::from_str::<serde_json::Value>(&value).unwrap_or(serde_json::Value::String(value.clone()));
+                                    current[part] = parsed_val;
+                                } else {
+                                    if current.get(part).is_none() {
+                                        current[part] = serde_json::json!({});
+                                    }
+                                    current = current.get_mut(part).unwrap();
+                                }
+                            }
+                            
+                            match serde_json::from_value(json_val) {
+                                Ok(new_cfg) => {
+                                    cfg = new_cfg;
+                                    if let Err(e) = cfg.save_to_workspace() {
+                                        println!("\x1b[31mFailed to save config: {}\x1b[0m", e);
+                                    } else {
+                                        println!("\x1b[32mUpdated configuration key: {}\x1b[0m", key);
+                                    }
+                                }
+                                Err(e) => println!("\x1b[31mInvalid configuration value: {}\x1b[0m", e),
+                            }
+                        }
+                        _ => {
+                            println!("Usage: config show | config set <key> <value>");
+                        }
+                    }
                     continue;
                 }
 
@@ -295,8 +355,26 @@ pub async fn run_repl(workspace_root: &Path) -> Result<()> {
 
                 // Parse tool and args
                 let parts: Vec<&str> = cmd_str.splitn(2, ' ').collect();
-                let tool = parts[0];
+                let mut tool = parts[0];
                 let arg_str = parts.get(1).unwrap_or(&"");
+
+                // Alias Resolution
+                tool = match tool {
+                    "s" | "sch" => "search",
+                    "red" => "read",
+                    "e" | "edt" => "edit",
+                    "g" => "graph",
+                    "dia" => "diagram",
+                    "dct" => "doctor",
+                    "shl" => "shell",
+                    "wsp" => "workspace",
+                    "dif" => "diff",
+                    "idx" => "index",
+                    "cfg" => "config",
+                    "ses" => "session",
+                    "p" | "pln" => "plan",
+                    _ => tool,
+                };
 
                 // Heuristic Parser: Convert 'key=value' and 'key=[a,b]' to JSON
                 let mut args_map = serde_json::Map::new();
@@ -365,14 +443,22 @@ pub async fn run_repl(workspace_root: &Path) -> Result<()> {
                         println!("{}", diag_val);
                     } else if tool == "graph" && res.get("status").and_then(|v| v.as_str()) == Some("ok") {
                         if let Some(nodes) = res.get("graph").and_then(|g| g.get("nodes")).and_then(|v| v.as_array()) {
-                            println!("\n\x1b[1;36m┌── Symbol Graph Summary\x1b[0m");
-                            for node in nodes {
-                                let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                                println!("│  \x1b[33m•\x1b[0m [{}] {}", kind, id);
+                            if nodes.is_empty() {
+                                println!("\x1b[31mResult: Symbol(s) not found in index.\x1b[0m");
+                            } else {
+                                println!("\n\x1b[1;36m┌── Symbol Graph Summary\x1b[0m");
+                                for node in nodes {
+                                    let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                                    if kind == "?" {
+                                        println!("│  \x1b[31m•\x1b[0m [Not Found] {}", id);
+                                    } else {
+                                        println!("│  \x1b[33m•\x1b[0m [{}] {}", kind, id);
+                                    }
+                                }
+                                println!("\x1b[1;36m└───────────────────────────\x1b[0m");
+                                println!("\x1b[2mHint: Use 'diagram uris=[\"...\"] format=\"ascii\"' for a visual tree.\x1b[0m\n");
                             }
-                            println!("\x1b[1;36m└───────────────────────────\x1b[0m");
-                            println!("\x1b[2mHint: Use 'diagram uris=[\"...\"] format=\"ascii\"' for a visual tree.\x1b[0m\n");
                         }
                     } else {
                         // Pretty print output with basic coloring for errors

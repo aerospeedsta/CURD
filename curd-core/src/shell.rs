@@ -34,6 +34,8 @@ pub struct ShellTaskStatus {
 /// Securely runs subprocess shell commands for the MCP Agent Sandbox
 pub struct ShellEngine {
     pub workspace_root: PathBuf,
+    pub config: crate::config::ShellConfig,
+    pub policy: crate::policy::PolicyConfig,
     sandbox: crate::Sandbox,
     pub active_tasks: Arc<Mutex<HashMap<Uuid, ShellTaskState>>>,
 }
@@ -47,11 +49,13 @@ pub struct ShellTaskState {
 }
 
 impl ShellEngine {
-    pub fn new(workspace_root: impl AsRef<Path>) -> Self {
+    pub fn new(workspace_root: impl AsRef<Path>, config: crate::config::ShellConfig, policy: crate::policy::PolicyConfig) -> Self {
         let root = std::fs::canonicalize(workspace_root.as_ref())
             .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
         Self {
             workspace_root: root.clone(),
+            config,
+            policy,
             sandbox: crate::Sandbox::new(root),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -241,16 +245,23 @@ impl ShellEngine {
             }
         }
 
-        // ── Strict Binary Allowlist ──
-        let allowed_binaries = [
-            "cargo", "npm", "yarn", "pnpm", "bun", "python", "python3", "pytest",
-            "node", "make", "ninja", "cmake", "go", "gcc", "clang", "g++", "clang++",
-            "rustc", "tsc", "jest", "vitest", "npx", "echo", "sleep", "cat", "ls", "grep"
-        ];
-
+        // ── Binary Allowlist (Enforced via Policy) ──
         let program = command.split_whitespace().next().unwrap_or("");
-        if !allowed_binaries.contains(&program) {
-            anyhow::bail!("Command '{}' is not in the allowed binaries list.", program);
+        
+        if !self.policy.allowed_binaries.is_empty() {
+            if !self.policy.allowed_binaries.iter().any(|b| b == program) {
+                anyhow::bail!("Command '{}' is not in the allowed binaries list.", program);
+            }
+        } else {
+            // Fallback to a safe default if no allowlist is configured
+            let default_allowed = [
+                "cargo", "npm", "yarn", "pnpm", "bun", "python", "python3", "pytest",
+                "node", "make", "ninja", "cmake", "go", "gcc", "clang", "g++", "clang++",
+                "rustc", "tsc", "jest", "vitest", "npx", "echo", "sleep", "cat", "ls", "grep", "curd"
+            ];
+            if !default_allowed.contains(&program) {
+                anyhow::bail!("Command '{}' is not in the default allowed binaries list.", program);
+            }
         }
 
         // ── Block dangerous patterns ──
@@ -316,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn test_shell_basic() {
         let dir = tempdir().unwrap();
-        let engine = ShellEngine::new(dir.path());
+        let engine = ShellEngine::new(dir.path(), Default::default(), Default::default());
         let res = engine.shell("echo hello", None, false).await.unwrap();
         println!("test_shell_basic res: {:?}", res);
         assert_eq!(res.get("exit_code").unwrap().as_i64().unwrap(), 0);
@@ -326,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn test_shell_background() {
         let dir = tempdir().unwrap();
-        let engine = ShellEngine::new(dir.path());
+        let engine = ShellEngine::new(dir.path(), Default::default(), Default::default());
         let res = engine.shell("sleep 1", None, true).await.unwrap();
         assert_eq!(res.get("status").unwrap().as_str().unwrap(), "background");
         let task_id = Uuid::parse_str(res.get("task_id").unwrap().as_str().unwrap()).unwrap();
@@ -343,7 +354,7 @@ mod tests {
     #[tokio::test]
     async fn test_shell_validation() {
         let dir = tempdir().unwrap();
-        let engine = ShellEngine::new(dir.path());
+        let engine = ShellEngine::new(dir.path(), Default::default(), Default::default());
         assert!(engine.validate_command("rm -rf /").is_err());
         assert!(engine.validate_command("echo test > /etc/passwd").is_err());
         assert!(
@@ -407,7 +418,7 @@ mod tests {
             }])
             .unwrap();
 
-        let engine = ShellEngine::new(root);
+        let engine = ShellEngine::new(root, Default::default(), Default::default());
         let res = engine.shell("echo caller", None, false).await.unwrap();
         assert!(res["graph_context"]["seed_nodes"].as_array().is_some());
         assert!(res["graph_context"]["graph"]["detailed_edges"].as_array().is_some());

@@ -8,14 +8,18 @@ use crate::{GraphEngine, Sandbox};
 
 pub struct ProfileEngine {
     pub workspace_root: PathBuf,
+    pub config: crate::config::ShellConfig,
+    pub policy: crate::policy::PolicyConfig,
     sandbox: Sandbox,
 }
 
 impl ProfileEngine {
-    pub fn new(workspace_root: impl AsRef<Path>) -> Self {
+    pub fn new(workspace_root: impl AsRef<Path>, config: crate::config::ShellConfig, policy: crate::policy::PolicyConfig) -> Self {
         let root = workspace_root.as_ref().to_path_buf();
         Self {
             workspace_root: std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()),
+            config,
+            policy,
             sandbox: Sandbox::new(root),
         }
     }
@@ -30,7 +34,7 @@ impl ProfileEngine {
     ) -> Result<Value> {
         let sampling_capabilities = self.sampling_capabilities();
         let runtime = if let Some(cmd) = command {
-            let shell_engine = crate::ShellEngine::new(&self.workspace_root);
+            let shell_engine = crate::ShellEngine::new(&self.workspace_root, self.config.clone(), self.policy.clone());
             let shell_res = shell_engine.shell(cmd, None, false).await?;
 
             Some(json!({
@@ -166,7 +170,7 @@ impl ProfileEngine {
     }
 
     async fn profile_with_py_spy(&self, command: &str, format: &str) -> Result<Value> {
-        let shell_engine = crate::ShellEngine::new(&self.workspace_root);
+        let shell_engine = crate::ShellEngine::new(&self.workspace_root, self.config.clone(), self.policy.clone());
         shell_engine.validate_command(command)?;
         shell_engine.check_package_manager_policy(command)?;
 

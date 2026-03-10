@@ -123,8 +123,8 @@ async fn test_auth_handshake_and_isolation() -> anyhow::Result<()> {
     assert!(root.join("42").exists());
 
     // 6. Verify State Isolation
-    let sessions = ctx.sessions.lock().await;
-    let entry = sessions.get(session_token).unwrap();
+    let connections = ctx.connections.lock().await;
+    let entry = connections.get(session_token).unwrap();
     assert_eq!(
         entry
             .state
@@ -135,7 +135,7 @@ async fn test_auth_handshake_and_isolation() -> anyhow::Result<()> {
             .unwrap(),
         "42"
     );
-    drop(sessions);
+    drop(connections);
 
     // 7. Execute DSL without Token (Should Fail)
     let fail_res = call_tool!(
