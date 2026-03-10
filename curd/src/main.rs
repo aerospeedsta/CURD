@@ -888,6 +888,12 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         #[cfg(feature = "core")]
         Some(Commands::Detach { root }) => {
             let resolved = resolve_workspace_root(root);
+            
+            let shadow = curd_core::ShadowStore::new(&resolved);
+            if shadow.is_active() {
+                anyhow::bail!("Cannot detach CURD while an active shadow session exists. Run `curd session commit` or `curd session rollback` first.");
+            }
+            
             println!("Performing soft detach...");
             // 1. Remove pre-push hook if we installed one
             let hook_path = resolved.join(".git/hooks/pre-push");
@@ -909,6 +915,11 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         Some(Commands::Delete { root, yes }) => {
             let resolved = resolve_workspace_root(root);
             let curd_dir = resolved.join(".curd");
+            
+            let shadow = curd_core::ShadowStore::new(&resolved);
+            if shadow.is_active() {
+                anyhow::bail!("Cannot delete CURD while an active shadow session exists. Run `curd session commit` or `curd session rollback` first.");
+            }
             
             if !yes {
                 let confirmation = dialoguer::Confirm::new()

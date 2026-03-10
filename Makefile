@@ -5,6 +5,9 @@
 LOCAL_PY := $(CURDIR)/curd-python/.venv/bin/python
 export PYO3_PYTHON := $(if $(wildcard $(LOCAL_PY)),$(LOCAL_PY),python3)
 
+# VERSION extraction for packaging
+VERSION := $(shell grep '^version' curd/Cargo.toml | head -1 | cut -d '"' -f 2)
+
 # Global PATH injection for Zig cross-compilation wrappers
 export PATH := $(CURDIR)/scripts/bin:$(PATH)
 
@@ -176,7 +179,7 @@ dist-nix:
   in { \
     packages.$${system}.default = pkgs.rustPlatform.buildRustPackage { \
       pname = "curd"; \
-      version = "0.6.0-beta"; \
+      version = "0.6.1-beta"; \
       src = ./.; \
       cargoLock.lockFile = ./Cargo.lock; \
     }; \
@@ -287,6 +290,22 @@ dist-prep:
 		echo "\033[33mWarning: Low file descriptor limit ($$(ulimit -n)). Linker might fail with ProcessFdQuotaExceeded.\033[0m"; \
 		echo "\033[33mRun 'ulimit -n 10000' in your shell to fix.\033[0m"; \
 	fi
+
+dist-darwin-arm: release-darwin-arm
+	@echo "Packaging ARM64 CLI for macOS..."
+	@mkdir -p $(DIST_DIR)/cli/macos
+	@cp target/aarch64-apple-darwin/release/curd $(DIST_DIR)/cli/macos/curd-arm64
+	@scripts/package_macos.sh $(DIST_DIR)/cli/macos/curd-arm64
+	@mv curd-*.pkg $(DIST_DIR)/cli/macos/curd-$(VERSION)-arm64.pkg
+
+dist-darwin: release-darwin-x86 release-darwin-arm
+	@echo "Packaging Universal CLI for macOS..."
+	@mkdir -p $(DIST_DIR)/cli/macos
+	@lipo -create target/x86_64-apple-darwin/release/curd \
+	             target/aarch64-apple-darwin/release/curd \
+	             -output $(DIST_DIR)/cli/macos/curd
+	@scripts/package_macos.sh $(DIST_DIR)/cli/macos/curd
+	@mv curd-*.pkg $(DIST_DIR)/cli/macos/curd-$(VERSION)-universal.pkg
 
 dist-cli: release-darwin-x86 release-darwin-arm release-linux-x86 release-linux-arm release-linux-musl-x86 release-linux-musl-arm
 	@echo "Packaging CLI for Darwin and Linux..."

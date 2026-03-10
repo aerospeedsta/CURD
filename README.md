@@ -1,5 +1,8 @@
 # CURD
 
+> [!TIP]
+> **Get started quickly at [curd.aerospeedsta.dev](https://curd.aerospeedsta.dev)**
+
 CURD is a high-performance, developer friendly engine enclosed in a Model Context Protocol (MCP) server designed for deep codebase analysis and manipulation. It treats code functions and classes as first-class objects, providing a unified interface for symbol indexing, dependency graph analysis, and semantic editing. CURD makes Git reasonable in an agentic world - makes the latter more human, whilst being able to keep track with the speed of agentic commits.
 
 > [!NOTE]

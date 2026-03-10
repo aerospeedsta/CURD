@@ -34,6 +34,7 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+mkdir -p "$SCRIPTS_DIR"
 COMPONENT_PKG="curd-core.pkg"
 pkgbuild --root "$PAYLOAD_DIR" \
          --identifier "$IDENTIFIER" \

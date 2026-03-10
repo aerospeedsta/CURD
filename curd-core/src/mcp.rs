@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub const API_VERSION: &str = "0.3.0";
+pub const API_VERSION: &str = "0.6.1";
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -267,7 +267,7 @@ pub fn handle_initialize(_req: &Value) -> Value {
             "apiVersion": API_VERSION,
             "protocolVersion": "2024-11-05",
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "curd", "version": "0.1.0" }
+            "serverInfo": { "name": "curd", "version": env!("CARGO_PKG_VERSION") }
         }
     })
 }
