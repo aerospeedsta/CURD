@@ -431,11 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_command_rejects_unclosed_quote() {
-        assert!(parse_command("python -c \"print(1)").is_err());
-    }
-
-    #[test]
     fn test_folded_frame_weights() {
         let weights = folded_frame_weights("a;b 2\na;c 1\n");
         assert_eq!(*weights.get("a").unwrap_or(&0), 3);

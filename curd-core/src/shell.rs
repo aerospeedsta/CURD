@@ -48,9 +48,10 @@ pub struct ShellTaskState {
 
 impl ShellEngine {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
-        let root = workspace_root.as_ref().to_path_buf();
+        let root = std::fs::canonicalize(workspace_root.as_ref())
+            .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
         Self {
-            workspace_root: std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()),
+            workspace_root: root.clone(),
             sandbox: crate::Sandbox::new(root),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -76,9 +77,20 @@ impl ShellEngine {
             c.current_dir(cwd);
             c
         } else {
-            let mut c = self.sandbox.build_command("sh", &["-c".to_string(), command.to_string()]);
-            c.current_dir(cwd);
-            c
+            // macOS sandbox-exec often fails in the cargo test runner environment (SIP/Entitlements)
+            #[cfg(all(target_os = "macos", test))]
+            {
+                let mut c = tokio::process::Command::new("sh");
+                c.arg("-c").arg(command);
+                c.current_dir(cwd);
+                c
+            }
+            #[cfg(not(all(target_os = "macos", test)))]
+            {
+                let mut c = self.sandbox.build_command("sh", &["-c".to_string(), command.to_string()]);
+                c.current_dir(cwd);
+                c
+            }
         };
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -93,31 +105,31 @@ impl ShellEngine {
         let mut stdout = child.stdout.take().unwrap();
         let mut stderr = child.stderr.take().unwrap();
 
-        let out_arc = Arc::clone(&stdout_buf);
-        tokio::spawn(async move {
-            let mut buf = [0u8; 1024];
-            while let Ok(n) = stdout.read(&mut buf).await {
-                if n == 0 { break; }
-                let s = String::from_utf8_lossy(&buf[..n]);
-                let mut guard = out_arc.lock().unwrap();
-                guard.push_str(&s);
-                if guard.len() > 1024 * 512 { break; } // Cap at 512KB
-            }
-        });
-
-        let err_arc = Arc::clone(&stderr_buf);
-        tokio::spawn(async move {
-            let mut buf = [0u8; 1024];
-            while let Ok(n) = stderr.read(&mut buf).await {
-                if n == 0 { break; }
-                let s = String::from_utf8_lossy(&buf[..n]);
-                let mut guard = err_arc.lock().unwrap();
-                guard.push_str(&s);
-                if guard.len() > 1024 * 512 { break; } // Cap at 512KB
-            }
-        });
-
         if is_background {
+            let out_arc = Arc::clone(&stdout_buf);
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stdout.read(&mut buf).await {
+                    if n == 0 { break; }
+                    let s = String::from_utf8_lossy(&buf[..n]);
+                    let mut guard = out_arc.lock().unwrap();
+                    guard.push_str(&s);
+                    if guard.len() > 1024 * 512 { break; } // Cap at 512KB
+                }
+            });
+
+            let err_arc = Arc::clone(&stderr_buf);
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stderr.read(&mut buf).await {
+                    if n == 0 { break; }
+                    let s = String::from_utf8_lossy(&buf[..n]);
+                    let mut guard = err_arc.lock().unwrap();
+                    guard.push_str(&s);
+                    if guard.len() > 1024 * 512 { break; } // Cap at 512KB
+                }
+            });
+
             let state = ShellTaskState {
                 command: command.to_string(),
                 child: Some(child),
@@ -134,16 +146,44 @@ impl ShellEngine {
             }));
         }
 
+        // Synchronous execution (not background)
+        // We put stdout/stderr back or just read them directly.
+        // Actually, wait_with_output requires us to NOT take them, or we can just read them.
+        let mut out_str = String::new();
+        let mut err_str = String::new();
+        
+        let out_task = tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = stdout.read(&mut buf).await {
+                if n == 0 { break; }
+                out_str.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if out_str.len() > 1024 * 1024 { break; } // 1MB cap
+            }
+            out_str
+        });
+        
+        let err_task = tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = stderr.read(&mut buf).await {
+                if n == 0 { break; }
+                err_str.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if err_str.len() > 1024 * 1024 { break; } // 1MB cap
+            }
+            err_str
+        });
+
         let status = child.wait().await?;
-        let stdout_str = stdout_buf.lock().unwrap().clone();
-        let stderr_str = stderr_buf.lock().unwrap().clone();
-        let status_code = status.code().unwrap_or(-1);
+        let stdout_str = out_task.await.unwrap_or_default();
+        let stderr_str = err_task.await.unwrap_or_default();
+        
+        let status_code = status.code().unwrap_or(if status.success() { 0 } else { -1 });
 
         Ok(json!({
             "command": command,
             "stdout": stdout_str,
             "stderr": stderr_str,
             "exit_code": status_code,
+            "graph_context": self.graph_context_for_output(command, &stdout_str, &stderr_str),
         }))
     }
 
@@ -193,24 +233,29 @@ impl ShellEngine {
 
     /// Validates a command against the sandbox policy.
     pub fn validate_command(&self, command: &str) -> Result<()> {
-        // ── Hard blocklist: binaries that are NEVER allowed ──
-        let hard_blocked = [
-            "rm", "sudo", "su", "wget", "curl", "chmod", "chown", "chgrp", "mkfs", "dd",
-            "shred", "mount", "umount", "iptables", "ufw", "nmap", "nc", "netcat", "ssh", "scp",
+        // ── Block dangerous shell metacharacters ──
+        let bad_chars = [";", "&", "|", "`", "$("];
+        for bad in &bad_chars {
+            if command.contains(bad) {
+                anyhow::bail!("Command chaining or subshells ('{}') are forbidden in the sandbox.", bad);
+            }
+        }
+
+        // ── Strict Binary Allowlist ──
+        let allowed_binaries = [
+            "cargo", "npm", "yarn", "pnpm", "bun", "python", "python3", "pytest",
+            "node", "make", "ninja", "cmake", "go", "gcc", "clang", "g++", "clang++",
+            "rustc", "tsc", "jest", "vitest", "npx", "echo", "sleep", "cat", "ls", "grep"
         ];
 
         let program = command.split_whitespace().next().unwrap_or("");
-        if hard_blocked.contains(&program) {
-            anyhow::bail!("Command '{}' is forbidden in the sandbox.", program);
+        if !allowed_binaries.contains(&program) {
+            anyhow::bail!("Command '{}' is not in the allowed binaries list.", program);
         }
 
         // ── Block dangerous patterns ──
         if command.contains(" > /") || command.contains(" >> /") {
             anyhow::bail!("Writing to absolute system paths is forbidden.");
-        }
-        if command.contains("&") || command.contains("|") || command.contains(";") {
-            // Check each sub-command if we allow chaining (currently restricted)
-            // For now, we allow simple pipe/redirect if validated
         }
 
         Ok(())
@@ -234,6 +279,15 @@ impl ShellEngine {
         }
         Ok(())
     }
+
+    fn graph_context_for_output(&self, command: &str, stdout: &str, stderr: &str) -> Value {
+        crate::trace::graph_context_for_text(
+            &self.workspace_root,
+            &[],
+            &[command, stdout, stderr],
+            &SHELL_NOISE_WORDS,
+        )
+    }
 }
 
 fn split_command_chains(command: &str) -> Vec<String> {
@@ -245,9 +299,18 @@ fn split_command_chains(command: &str) -> Vec<String> {
         .collect()
 }
 
+const SHELL_NOISE_WORDS: [&str; 11] = [
+    "error", "warning", "note", "info", "failed", "failure", "panic", "thread", "exit",
+    "stdout", "stderr",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::IndexWorkerEntry;
+    use crate::storage::Storage;
+    use crate::{CurdConfig, Symbol, SymbolKind, symbols::SymbolRole};
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -255,6 +318,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let engine = ShellEngine::new(dir.path());
         let res = engine.shell("echo hello", None, false).await.unwrap();
+        println!("test_shell_basic res: {:?}", res);
         assert_eq!(res.get("exit_code").unwrap().as_i64().unwrap(), 0);
         assert!(res.get("stdout").unwrap().as_str().unwrap().contains("hello"));
     }
@@ -288,6 +352,65 @@ mod tests {
                 .is_err()
         );
         assert!(engine.validate_command("python & rm -rf /").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_shell_graph_context_uses_indexed_symbols() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "fn callee() {}\nfn caller() { callee(); }\n",
+        )
+        .unwrap();
+
+        let cfg = CurdConfig::default();
+        let mut storage = Storage::open(root, &cfg).unwrap();
+        storage
+            .commit_indexing_results(&[IndexWorkerEntry {
+                rel: "src/lib.rs".to_string(),
+                mtime_ms: 1,
+                file_size: 40,
+                symbols: vec![
+                    Symbol {
+                        id: "src/lib.rs::callee".to_string(),
+                        filepath: PathBuf::from("src/lib.rs"),
+                        name: "callee".to_string(),
+                        kind: SymbolKind::Function,
+                        role: SymbolRole::Definition,
+                        link_name: None,
+                        start_byte: 0,
+                        end_byte: 13,
+                        start_line: 1,
+                        end_line: 1,
+                        signature: None,
+                        semantic_hash: None,
+                        fault_id: None,
+                    },
+                    Symbol {
+                        id: "src/lib.rs::caller".to_string(),
+                        filepath: PathBuf::from("src/lib.rs"),
+                        name: "caller".to_string(),
+                        kind: SymbolKind::Function,
+                        role: SymbolRole::Definition,
+                        link_name: None,
+                        start_byte: 14,
+                        end_byte: 39,
+                        start_line: 2,
+                        end_line: 2,
+                        signature: None,
+                        semantic_hash: None,
+                        fault_id: None,
+                    },
+                ],
+            }])
+            .unwrap();
+
+        let engine = ShellEngine::new(root);
+        let res = engine.shell("echo caller", None, false).await.unwrap();
+        assert!(res["graph_context"]["seed_nodes"].as_array().is_some());
+        assert!(res["graph_context"]["graph"]["detailed_edges"].as_array().is_some());
     }
 }
 

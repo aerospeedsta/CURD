@@ -98,18 +98,17 @@ pub async fn run_repl(workspace_root: &Path) -> Result<()> {
 
                 if input == "detach" {
                     println!("\x1b[2mPerforming soft detach...\x1b[0m");
-                    let hook_path = ctx.workspace_root.join(".git/hooks/pre-push");
-                    if hook_path.exists() {
-                        if let Ok(content) = std::fs::read_to_string(&hook_path) {
-                            if content.contains("curd detach") {
-                                let _ = std::fs::remove_file(&hook_path);
-                                println!("Removed CURD git pre-push hook.");
-                            }
-                        }
+                    let outcome = crate::workspace_lifecycle::resolve_workspace_exit(
+                        &ctx.workspace_root,
+                        "detach",
+                        None,
+                        false,
+                    )?;
+                    println!("{}", outcome.message);
+                    if !outcome.proceeded {
+                        continue;
                     }
-                    
-                    crate::workspace_init::cleanup_agent_configs(&ctx.workspace_root);
-                    
+                    crate::workspace_lifecycle::cleanup_detach_artifacts(&ctx.workspace_root);
                     println!("\x1b[32mCURD workspace soft-detached. Local `.curd/` data is preserved.\x1b[0m");
                     continue;
                 }
@@ -127,17 +126,17 @@ pub async fn run_repl(workspace_root: &Path) -> Result<()> {
                     
                     if confirmation {
                         println!("\x1b[2mCleaning hooks and forcefully removing `.curd/`...\x1b[0m");
-                        
-                        // Soft detach execution
-                        let hook_path = ctx.workspace_root.join(".git/hooks/pre-push");
-                        if hook_path.exists() {
-                            if let Ok(content) = std::fs::read_to_string(&hook_path) {
-                                if content.contains("curd detach") {
-                                    let _ = std::fs::remove_file(&hook_path);
-                                }
-                            }
+                        let outcome = crate::workspace_lifecycle::resolve_workspace_exit(
+                            &ctx.workspace_root,
+                            "delete",
+                            None,
+                            false,
+                        )?;
+                        println!("{}", outcome.message);
+                        if !outcome.proceeded {
+                            continue;
                         }
-                        crate::workspace_init::cleanup_agent_configs(&ctx.workspace_root);
+                        crate::workspace_lifecycle::cleanup_detach_artifacts(&ctx.workspace_root);
                         
                         // Delete data
                         let curd_dir = ctx.workspace_root.join(".curd");
@@ -257,7 +256,7 @@ pub async fn run_repl(workspace_root: &Path) -> Result<()> {
                                     if let Ok(session_uuid) = Uuid::parse_str(&session_id) {
                                         // Update ctx with the session ID
                                         let mut local_ctx = ctx.clone_for_repl();
-                                        local_ctx.session_id = session_uuid;
+                                        local_ctx.collaboration_id = session_uuid;
                                         match local_ctx.ple.execute_plan(&plan, &local_ctx, &mut state).await {
                                             Ok(res) => println!("Plan completed:\n{}", serde_json::to_string_pretty(&res).unwrap_or_default()),
                                             Err(e) => println!("\x1b[31mExecution failed: {}\x1b[0m", e),

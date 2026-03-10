@@ -170,17 +170,17 @@ impl DocEngine {
         registry.insert(
             "shell".to_string(),
             ToolDoc {
-                description: "Execute a shell command safely within the workspace sandbox."
+                description: "Execute a shell command safely within the workspace sandbox. When building, use `curd build <target>` instead of direct build commands (e.g., `make`) to leverage predefined settings.toml hooks and capture semantic backtraces."
                     .to_string(),
                 parameters: vec![ParameterDoc {
                     name: "command".into(),
                     kind: "string".into(),
-                    description: "The bash command to run.".into(),
+                    description: "The bash command to run. Use `curd build <target>` for builds.".into(),
                     required: true,
                 }],
                 examples: vec![ExampleDoc {
-                    label: "Run project tests".into(),
-                    arguments: json!({"command": "npm test"}),
+                    label: "Run project tests via CURD tasks".into(),
+                    arguments: json!({"command": "curd build test"}),
                 }],
             },
         );
@@ -264,18 +264,50 @@ impl DocEngine {
                 ParameterDoc { name: "action".into(), kind: "string (enum)".into(), description: "'execute', 'backends', 'start', 'send', 'recv', 'stop'.".into(), required: true },
                 ParameterDoc { name: "language".into(), kind: "string".into(), description: "Target language (e.g. 'python', 'javascript') for 'execute' or 'start'.".into(), required: false },
                 ParameterDoc { name: "snippet".into(), kind: "string".into(), description: "Code snippet to run or send.".into(), required: false },
-                ParameterDoc { name: "session_id".into(), kind: "integer".into(), description: "ID of the interactive session.".into(), required: false },
+                ParameterDoc { name: "debug_session_id".into(), kind: "integer".into(), description: "ID of the interactive debug session.".into(), required: false },
+                ParameterDoc { name: "session_id".into(), kind: "integer".into(), description: "Deprecated alias for debug_session_id.".into(), required: false },
             ],
             examples: vec![
                 ExampleDoc { label: "Run a Python snippet for validation".into(), arguments: json!({"action": "execute", "language": "python", "snippet": "print(1 + 1)"}) },
             ],
         });
 
-        // --- session ---
+        // --- review_cycle / legacy session alias ---
+        registry.insert(
+            "review_cycle".to_string(),
+            ToolDoc {
+                description: "Manage review-cycle baselines and tracked changes.".to_string(),
+                parameters: vec![
+                    ParameterDoc {
+                        name: "action".into(),
+                        kind: "string (enum)".into(),
+                        description: "'begin', 'status', 'changes', 'review', 'end'.".into(),
+                        required: true,
+                    },
+                    ParameterDoc {
+                        name: "label".into(),
+                        kind: "string".into(),
+                        description: "Optional review-cycle label.".into(),
+                        required: false,
+                    },
+                    ParameterDoc {
+                        name: "limit".into(),
+                        kind: "integer".into(),
+                        description: "Optional max number of changed files to return.".into(),
+                        required: false,
+                    },
+                ],
+                examples: vec![
+                    ExampleDoc { label: "Start a review cycle".into(), arguments: json!({"action": "begin", "label": "refactor pass"}) },
+                    ExampleDoc { label: "Review current changes".into(), arguments: json!({"action": "review"}) },
+                ],
+            },
+        );
+
         registry.insert(
             "session".to_string(),
             ToolDoc {
-                description: "Manage session-scoped review baselines and tracked changes."
+                description: "Deprecated alias for review_cycle. Manage review-cycle baselines and tracked changes."
                     .to_string(),
                 parameters: vec![
                     ParameterDoc {

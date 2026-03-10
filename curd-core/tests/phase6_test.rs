@@ -20,6 +20,7 @@ async fn search_delegation_respects_local_first_provenance() {
     let mut config = CurdConfig::default();
     config.reference.enable_delegation = true;
     config.reference.instances.insert("test_ref".to_string(), "http://localhost:12345/nonexistent".to_string());
+    config.index.execution = Some("singlethreaded".to_string());
     
     fs::write(
         root.join(".curd/settings.toml"),
@@ -38,6 +39,7 @@ async fn search_delegation_respects_local_first_provenance() {
     assert_eq!(local_resp["status"], "ok");
     assert_eq!(local_resp["provenance"], "local");
     let syms = local_resp["symbols"].as_array().unwrap();
+    println!("SYMBOLS: {:#?}", syms);
     assert_eq!(syms.len(), 1);
     assert_eq!(syms[0]["name"], "local_func");
 

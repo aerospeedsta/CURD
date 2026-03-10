@@ -1,21 +1,13 @@
-use crate::context::{SessionEntry, handle_benchmark};
-use crate::plan::SystemEvent;
+use crate::context::{ConnectionEntry, PendingChallenge, handle_benchmark};
+use crate::plan::{SystemEvent, SystemEventEnvelope, now_secs};
 use crate::{DslNode, EngineContext, Plan, ReplState, dispatch_tool};
 use anyhow::Result;
 use serde_json::{Value, json};
 use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use std::path::PathBuf;
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub const API_VERSION: &str = "0.3.0";
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpServerMode {
@@ -189,7 +181,7 @@ impl McpServer {
                     ctx.watchdog.heartbeat();
 
                     let response = match method.as_str() {
-                        "tools/list" => handle_tools_list(mode),
+                        "tools/list" => handle_tools_list_with_ctx(&ctx, mode),
                         "tools/call" => handle_tools_call(&req, &ctx, mode).await,
                         _ => json!({"error": {"code": -32601, "message": format!("Method not found: {}", method)}}),
                     };
@@ -200,9 +192,9 @@ impl McpServer {
             }
 
             // Bridge events if we have a context now
-            if let Some(ref mut rx) = rx_events {
+            if let (Some(ref mut rx), Some(ctx)) = (rx_events.as_mut(), shared_ctx.as_ref()) {
                 while let Ok(event) = rx.try_recv() {
-                    if let Some(msg) = system_event_to_notification(event) {
+                    if let Some(msg) = system_event_to_notification(ctx.next_event_envelope(event)) {
                         let _ = tx_events_out.send(msg).await;
                     }
                 }
@@ -232,10 +224,10 @@ impl McpServer {
         // --- FREEZE HOOK ---
         if let Some(ctx) = shared_ctx {
             log::info!("EOF detected. Triggering freeze hook...");
-            let sessions_guard = ctx.sessions.lock().await;
-            let mut latest_by_pubkey: std::collections::HashMap<&str, (&SessionEntry, &str)> =
+            let connections_guard = ctx.connections.lock().await;
+            let mut latest_by_pubkey: std::collections::HashMap<&str, (&ConnectionEntry, &str)> =
                 std::collections::HashMap::new();
-            for (token, entry) in sessions_guard.iter() {
+            for (token, entry) in connections_guard.iter() {
                 let k = entry.pubkey_hex.as_str();
                 match latest_by_pubkey.get(k) {
                     Some((existing, _)) if existing.last_touched_secs >= entry.last_touched_secs => {}
@@ -306,8 +298,8 @@ fn parse_index_stall_summary(summary: &str) -> Option<(usize, usize, u64)> {
     Some((processed_files, total_files, no_progress_ms))
 }
 
-fn system_event_to_notification(event: SystemEvent) -> Option<Value> {
-    match event {
+fn system_event_to_notification(envelope: SystemEventEnvelope) -> Option<Value> {
+    match envelope.event.clone() {
         SystemEvent::NodeCompleted {
             summary,
             duration_ms,
@@ -323,6 +315,10 @@ fn system_event_to_notification(event: SystemEvent) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "method": "notifications/progress",
                     "params": {
+                        "event_id": envelope.event_id,
+                        "collaboration_id": envelope.collaboration_id,
+                        "session_id": envelope.collaboration_id,
+                        "ts_secs": envelope.ts_secs,
                         "phase": "indexing",
                         "processed_files": processed_files,
                         "total_files": total_files,
@@ -339,6 +335,10 @@ fn system_event_to_notification(event: SystemEvent) -> Option<Value> {
                     "jsonrpc": "2.0",
                     "method": "notifications/progress",
                     "params": {
+                        "event_id": envelope.event_id,
+                        "collaboration_id": envelope.collaboration_id,
+                        "session_id": envelope.collaboration_id,
+                        "ts_secs": envelope.ts_secs,
                         "phase": "stall_detected",
                         "processed_files": processed_files,
                         "total_files": total_files,
@@ -352,15 +352,27 @@ fn system_event_to_notification(event: SystemEvent) -> Option<Value> {
                 stats.insert("phase".to_string(), json!("indexing_stats"));
                 stats.insert("duration_ms".to_string(), json!(duration_ms));
                 stats.insert("summary".to_string(), json!(summary));
+                stats.insert("event_id".to_string(), json!(envelope.event_id));
+                stats.insert("collaboration_id".to_string(), json!(envelope.collaboration_id));
+                stats.insert("session_id".to_string(), json!(envelope.collaboration_id));
+                stats.insert("ts_secs".to_string(), json!(envelope.ts_secs));
                 return Some(json!({
                     "jsonrpc": "2.0",
                     "method": "notifications/progress",
                     "params": stats
                 }));
             }
-            None
+            Some(json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/system_event",
+                "params": envelope
+            }))
         }
-        _ => None,
+        _ => Some(json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/system_event",
+            "params": envelope
+        })),
     }
 }
 
@@ -377,6 +389,103 @@ pub fn handle_tools_list(mode: McpServerMode) -> Value {
         });
     }
     json!({ "result": { "tools": tools } })
+}
+
+pub fn handle_tools_list_with_ctx(ctx: &EngineContext, mode: McpServerMode) -> Value {
+    let mut tools = get_all_tools();
+    tools.extend(dynamic_tool_entries(ctx));
+    if mode == McpServerMode::Lite {
+        tools.retain(|t| {
+            let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            name == "search"
+                || name == "read"
+                || name == "edit"
+                || name == "graph"
+                || name == "workspace"
+        });
+    }
+    json!({ "result": { "tools": tools } })
+}
+
+fn dynamic_tool_entries(ctx: &EngineContext) -> Vec<Value> {
+    let mut out = Vec::new();
+    if let Ok(plugins) = ctx.tpe.list() {
+        for record in plugins {
+            let Some(tool) = record.tool else { continue };
+            let mut properties = serde_json::Map::new();
+            let mut required = Vec::new();
+            for param in &tool.parameters {
+                properties.insert(
+                    param.name.clone(),
+                    json!({"type": json_type_for_kind(&param.kind), "description": param.description}),
+                );
+                if param.required {
+                    required.push(Value::String(param.name.clone()));
+                }
+            }
+            out.push(json!({
+                "name": tool.tool_name,
+                "description": tool.description.unwrap_or_else(|| "Installed signed tool plugin".to_string()),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": Value::Object(properties),
+                    "required": required,
+                },
+                "annotations": {
+                    "title": "Signed Tool Plugin",
+                    "readOnlyHint": false,
+                    "openWorldHint": false,
+                },
+                "x-curd": {
+                    "source": "tool_plugin",
+                    "package_id": record.package_id,
+                    "agent_usage": tool.agent_usage,
+                    "review_guidance": tool.review_guidance,
+                    "downstream_impact": tool.downstream_impact,
+                    "examples": tool.examples,
+                }
+            }));
+        }
+    }
+    if let Ok(groups) = ctx.tge.list() {
+        for group in groups {
+            for tool in group.tools {
+                out.push(json!({
+                    "name": tool.name,
+                    "description": tool.description.unwrap_or_else(|| format!("Adopted MCP tool from group '{}'", group.group_id)),
+                    "inputSchema": tool.input_schema,
+                    "annotations": {
+                        "title": "Adopted MCP Tool",
+                        "readOnlyHint": false,
+                        "openWorldHint": true,
+                    },
+                    "x-curd": {
+                        "source": "tool_group",
+                        "group_id": group.group_id,
+                        "group_source": "external_mcp",
+                        "allow_tools": group.allow_tools,
+                        "deny_tools": group.deny_tools,
+                    }
+                }));
+            }
+        }
+    }
+    out
+}
+
+fn json_type_for_kind(kind: &str) -> &'static str {
+    let lower = kind.to_ascii_lowercase();
+    if lower.contains("array") {
+        "array"
+    } else if lower.contains("bool") {
+        "boolean"
+    } else if lower.contains("int") || lower.contains("number") {
+        "number"
+    } else if lower.contains("object") || lower.contains("map") {
+        "object"
+    } else {
+        "string"
+    }
 }
 
 pub async fn handle_tools_call(req: &Value, ctx: &EngineContext, mode: McpServerMode) -> Value {
@@ -414,10 +523,10 @@ pub async fn handle_tools_call(req: &Value, ctx: &EngineContext, mode: McpServer
 
     let result = if name == "batch" {
         handle_batch(tool_params, ctx).await
-    } else if name == "session_open" {
-        handle_session_open(tool_params, ctx).await
-    } else if name == "session_verify" {
-        handle_session_verify(tool_params, ctx).await
+    } else if name == "session_open" || name == "connection_open" {
+        handle_connection_open(tool_params, ctx).await
+    } else if name == "session_verify" || name == "connection_verify" {
+        handle_connection_verify(tool_params, ctx).await
     } else if name == "execute_dsl" {
         handle_execute_dsl(tool_params, ctx).await
     } else if name == "execute_plan" {
@@ -438,7 +547,7 @@ pub async fn handle_tools_call(req: &Value, ctx: &EngineContext, mode: McpServer
     json!({ "result": { "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| "Error serializing result".to_string()) }] } })
 }
 
-async fn handle_session_open(params: &Value, ctx: &EngineContext) -> Value {
+pub async fn handle_connection_open(params: &Value, ctx: &EngineContext) -> Value {
     let pubkey_hex = params
         .get("pubkey_hex")
         .and_then(|v| v.as_str())
@@ -455,7 +564,28 @@ async fn handle_session_open(params: &Value, ctx: &EngineContext) -> Value {
     let nonce_hex: String = nonce.iter().map(|b| format!("{:02x}", b)).collect();
 
     let mut pending = ctx.pending_challenges.lock().await;
-    pending.insert(pubkey_hex.to_string(), nonce_hex.clone());
+    pending.insert(
+        pubkey_hex.to_string(),
+        PendingChallenge {
+            nonce_hex: nonce_hex.clone(),
+            created_at_secs: now_secs(),
+        },
+    );
+
+    ctx.he.log(
+        Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+        ctx.collaboration_id,
+        Some(pubkey_hex.to_string()),
+        None,
+        "connection_open",
+        params.clone(),
+        json!({"status": "ok"}),
+        None,
+        None,
+        true,
+        None,
+        None,
+    );
 
     json!({
         "status": "ok",
@@ -463,7 +593,7 @@ async fn handle_session_open(params: &Value, ctx: &EngineContext) -> Value {
     })
 }
 
-async fn handle_session_verify(params: &Value, ctx: &EngineContext) -> Value {
+pub async fn handle_connection_verify(params: &Value, ctx: &EngineContext) -> Value {
     let pubkey_hex = params
         .get("pubkey_hex")
         .and_then(|v| v.as_str())
@@ -477,36 +607,87 @@ async fn handle_session_verify(params: &Value, ctx: &EngineContext) -> Value {
         return json!({"error": "pubkey_hex and signature_hex are required"});
     }
 
-    let nonce_hex = {
+    let challenge = {
         let mut pending = ctx.pending_challenges.lock().await;
         match pending.remove(pubkey_hex) {
             Some(n) => n,
             None => return json!({"error": "No pending challenge found for this pubkey"}),
         }
     };
+    if now_secs().saturating_sub(challenge.created_at_secs)
+        > ctx.config.collaboration.session_challenge_ttl_secs
+    {
+        let out = json!({"error": "Challenge expired"});
+        ctx.he.log(
+            Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+            ctx.collaboration_id,
+            Some(pubkey_hex.to_string()),
+            None,
+            "connection_verify",
+            params.clone(),
+            out.clone(),
+            None,
+            None,
+            false,
+            Some("Challenge expired".to_string()),
+            None,
+        );
+        return out;
+    }
 
     match crate::auth::IdentityManager::verify_signature(
         pubkey_hex,
-        nonce_hex.as_bytes(),
+        challenge.nonce_hex.as_bytes(),
         signature_hex,
     ) {
         Ok(true) => {
             // AUTHORIZATION CHECK: Ensure this pubkey is actually on the allowlist
             let auth_file = ctx.workspace_root.join(".curd").join("authorized_agents.json");
-            let is_authorized = if auth_file.exists() {
+            let (agent_id, is_authorized) = if auth_file.exists() {
                 if let Ok(content) = std::fs::read_to_string(&auth_file)
                     && let Ok(authorized) =
                         serde_json::from_str::<std::collections::HashMap<String, String>>(&content)
                     {
-                        authorized.values().any(|v| v == pubkey_hex)
-                    } else { false }
-            } else { false };
+                        let aid = authorized.iter().find(|(_, v)| *v == pubkey_hex).map(|(k, _)| k.clone());
+                        match aid {
+                            Some(id) => (id, true),
+                            None => ("unknown".to_string(), false)
+                        }
+                    } else { ("unknown".to_string(), false) }
+            } else if ctx.config.collaboration.require_authorized_agents_file {
+                ("unknown".to_string(), false)
+            } else {
+                ("anonymous".to_string(), true)
+            };
 
             if !is_authorized {
-                return json!({"error": "Unauthorized: Agent public key not found in authorized_agents.json"});
+                let out = json!({"error": "Unauthorized: Agent public key not found in authorized_agents.json"});
+                ctx.he.log(
+                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                    ctx.collaboration_id,
+                    Some(pubkey_hex.to_string()),
+                    None,
+                    "connection_verify",
+                    params.clone(),
+                    out.clone(),
+                    None,
+                    None,
+                    false,
+                    Some("Unauthorized public key".to_string()),
+                    None,
+                );
+                return out;
             }
 
-            let session_token = format!("sess_{}", Uuid::new_v4());
+            let auth_mgr = match crate::auth::IdentityManager::new() {
+                Ok(m) => m,
+                Err(e) => return json!({"error": format!("Failed to initialize IdentityManager: {}", e)}),
+            };
+
+            let connection_token = match auth_mgr.create_connection_token(&agent_id, pubkey_hex) {
+                Ok(t) => t,
+                Err(e) => return json!({"error": format!("Failed to create connection token: {}", e)}),
+            };
             let (state, restored) = if let Some(frozen_state) =
                 crate::auth::IdentityManager::thaw_session(&ctx.workspace_root, pubkey_hex)
             {
@@ -514,22 +695,63 @@ async fn handle_session_verify(params: &Value, ctx: &EngineContext) -> Value {
             } else {
                 (ReplState::new(), false)
             };
-            let entry = SessionEntry {
+            let entry = ConnectionEntry {
+                agent_id: agent_id.clone(),
                 pubkey_hex: pubkey_hex.to_string(),
                 state,
-                budget: crate::context::SessionBudget::default(),
+                budget: crate::context::ConnectionBudget::default(),
                 last_touched_secs: now_secs(),
             };
-            let mut sessions = ctx.sessions.lock().await;
-            sessions.insert(session_token.clone(), entry);
+            let mut connections = ctx.connections.lock().await;
+            connections.insert(connection_token.clone(), entry);
+            drop(connections);
+            let _ = ctx.tx_events.send(SystemEvent::ConnectionAuthenticated {
+                agent_id: agent_id.clone(),
+                pubkey_hex: pubkey_hex.to_string(),
+                restored_state: restored,
+            });
 
-            json!({
+            let out = json!({
                 "status": "authenticated",
-                "session_token": session_token,
+                "connection_token": connection_token,
+                "session_token": connection_token,
+                "agent_id": agent_id,
                 "restored_state": restored
-            })
+            });
+            ctx.he.log(
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                Some(pubkey_hex.to_string()),
+                None,
+                "connection_verify",
+                params.clone(),
+                out.clone(),
+                None,
+                None,
+                true,
+                None,
+                None,
+            );
+            out
         }
-        Ok(false) | Err(_) => json!({"error": "Invalid signature. Authentication failed."}),
+        Ok(false) | Err(_) => {
+            let out = json!({"error": "Invalid signature. Authentication failed."});
+            ctx.he.log(
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                Some(pubkey_hex.to_string()),
+                None,
+                "connection_verify",
+                params.clone(),
+                out.clone(),
+                None,
+                None,
+                false,
+                Some("Invalid signature".to_string()),
+                None,
+            );
+            out
+        }
     }
 }
 
@@ -542,49 +764,67 @@ async fn handle_execute_dsl(params: &Value, ctx: &EngineContext) -> Value {
         None => return json!({"error": "Invalid or missing 'nodes' for execute_dsl"}),
     };
 
-    // Check for authenticated session
-    let session_token = params
-        .get("session_token")
+    // Check for authenticated connection
+    let connection_token = params
+        .get("connection_token")
+        .or_else(|| params.get("session_token"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    if session_token.is_empty() {
-        return json!({"error": "Unauthorized: session_token is required for execute_dsl"});
+    if connection_token.is_empty() {
+        return json!({"error": "Unauthorized: connection_token is required for execute_dsl"});
     }
 
     let mut local_state = {
-        let sessions_guard = ctx.sessions.lock().await;
-        if let Some(entry) = sessions_guard.get(session_token) {
+        let connections_guard = ctx.connections.lock().await;
+        if let Some(entry) = connections_guard.get(connection_token) {
             ReplState::from_variables(entry.state.variables.clone())
         } else {
-            return json!({"error": "Unauthorized: Invalid or expired session_token."});
+            return json!({"error": "Unauthorized: Invalid or expired connection_token."});
         }
     };
 
     
     match ctx.ple.execute_dsl(&nodes, ctx, &mut local_state).await {
         Ok(res) => {
-            let mut sessions_guard = ctx.sessions.lock().await;
-            if let Some(entry) = sessions_guard.get_mut(session_token) {
+            let mut connections_guard = ctx.connections.lock().await;
+            if let Some(entry) = connections_guard.get_mut(connection_token) {
                 entry.state.variables.extend(local_state.variables);
                 entry.last_touched_secs = now_secs();
             }
 
             let val = json!({"status": "ok", "results": res});
-            ctx.he
-                .log(ctx.session_id, None, "dsl", json!(nodes), val.clone(), true, None);
+            ctx.he.log(
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None, // agent_id
+                None, // transaction_id
+                "dsl",
+                json!(nodes),
+                val.clone(),
+                None, // base_hash
+                None, // post_hash
+                true,
+                None,
+                None, // verification_result
+            );
             val
         }
         Err(e) => {
             let err_msg = e.to_string();
             let val = json!({"error": err_msg.clone()});
             ctx.he.log(
-                ctx.session_id,
-                None,
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None, // agent_id
+                None, // transaction_id
                 "dsl",
                 json!(nodes),
                 val.clone(),
+                None, // base_hash
+                None, // post_hash
                 false,
                 Some(err_msg),
+                None, // verification_result
             );
             val
         }
@@ -600,47 +840,65 @@ async fn handle_execute_plan(params: &Value, ctx: &EngineContext) -> Value {
         None => return json!({"error": "Invalid or missing 'plan' for execute_plan"}),
     };
 
-    let session_token = params
-        .get("session_token")
+    let connection_token = params
+        .get("connection_token")
+        .or_else(|| params.get("session_token"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    if session_token.is_empty() {
-        return json!({"error": "Unauthorized: session_token is required for execute_plan"});
+    if connection_token.is_empty() {
+        return json!({"error": "Unauthorized: connection_token is required for execute_plan"});
     }
 
     let mut local_state = {
-        let sessions_guard = ctx.sessions.lock().await;
-        if let Some(entry) = sessions_guard.get(session_token) {
+        let connections_guard = ctx.connections.lock().await;
+        if let Some(entry) = connections_guard.get(connection_token) {
             ReplState::from_variables(entry.state.variables.clone())
         } else {
-            return json!({"error": "Unauthorized: Invalid or expired session_token."});
+            return json!({"error": "Unauthorized: Invalid or expired connection_token."});
         }
     };
 
     
     match ctx.ple.execute_plan(&plan, ctx, &mut local_state).await {
         Ok(res) => {
-            let mut sessions_guard = ctx.sessions.lock().await;
-            if let Some(entry) = sessions_guard.get_mut(session_token) {
+            let mut connections_guard = ctx.connections.lock().await;
+            if let Some(entry) = connections_guard.get_mut(connection_token) {
                 entry.state.variables.extend(local_state.variables);
                 entry.last_touched_secs = now_secs();
             }
             let val = json!({"status": "ok", "results": res});
-            ctx.he
-                .log(ctx.session_id, None, "plan", json!(plan), val.clone(), true, None);
+            ctx.he.log(
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None, // agent_id
+                None, // transaction_id
+                "plan",
+                json!(plan),
+                val.clone(),
+                None, // base_hash
+                None, // post_hash
+                true,
+                None,
+                None, // verification_result
+            );
             val
         }
         Err(e) => {
             let err_msg = e.to_string();
             let val = json!({"error": err_msg.clone()});
             ctx.he.log(
-                ctx.session_id,
-                None,
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None, // agent_id
+                None, // transaction_id
                 "plan",
                 json!(plan),
                 val.clone(),
+                None, // base_hash
+                None, // post_hash
                 false,
                 Some(err_msg),
+                None, // verification_result
             );
             val
         }
@@ -649,8 +907,26 @@ async fn handle_execute_plan(params: &Value, ctx: &EngineContext) -> Value {
 
 async fn handle_history(params: &Value, ctx: &EngineContext) -> Value {
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
-    let history = ctx.he.get_history(limit);
-    json!({"status": "ok", "history": history})
+    let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("operations");
+    match mode {
+        "operations" => {
+            let history = ctx.he.get_history(limit);
+            json!({"status": "ok", "mode": "operations", "history": history})
+        }
+        "contributions" => {
+            let history = ctx.ce.get_history(limit);
+            json!({"status": "ok", "mode": "contributions", "history": history})
+        }
+        "checkpoints" => {
+            let checkpoints = ctx.ce.get_checkpoints(limit);
+            json!({"status": "ok", "mode": "checkpoints", "checkpoints": checkpoints})
+        }
+        "verify_contributions" => {
+            let verification = ctx.ce.verify_chain();
+            json!({"status": "ok", "mode": "verify_contributions", "verification": verification})
+        }
+        _ => json!({"error": format!("unsupported history mode: {}", mode)}),
+    }
 }
 
 async fn handle_batch(params: &Value, ctx: &EngineContext) -> Value {
@@ -728,8 +1004,31 @@ fn get_all_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "connection_open",
+            "description": "Request a cryptographic challenge to open a new authenticated connection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pubkey_hex": {"type": "string", "description": "The Ed25519 public key in hex format"}
+                },
+                "required": ["pubkey_hex"]
+            }
+        }),
+        json!({
+            "name": "connection_verify",
+            "description": "Verify the cryptographic challenge to receive a connection token.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pubkey_hex": {"type": "string"},
+                    "signature_hex": {"type": "string", "description": "Hex signature of the nonce provided by connection_open"}
+                },
+                "required": ["pubkey_hex", "signature_hex"]
+            }
+        }),
+        json!({
             "name": "session_open",
-            "description": "Request a cryptographic challenge to open a new agent session. Used for strict isolation.",
+            "description": "Deprecated alias for connection_open.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -740,12 +1039,12 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "session_verify",
-            "description": "Verify the cryptographic challenge to receive a session token.",
+            "description": "Deprecated alias for connection_verify.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "pubkey_hex": {"type": "string"},
-                    "signature_hex": {"type": "string", "description": "Hex signature of the nonce provided by session_open"}
+                    "signature_hex": {"type": "string", "description": "Hex signature of the nonce provided by connection_open"}
                 },
                 "required": ["pubkey_hex", "signature_hex"]
             }
@@ -843,7 +1142,7 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "shell",
-            "description": "Execute a shell command safely within the workspace sandbox. \n\nCRITICAL INSTRUCTION: When building or testing, ALWAYS prefer running `curd build` or `curd test` inside this shell instead of raw commands. CURD's wrappers automatically capture semantic backtraces and propagate them back to you directly. Set is_background=true for long-running processes to receive a task_id for later status/termination.",
+            "description": "Execute a shell command safely within the workspace sandbox. \n\nCRITICAL INSTRUCTION: When building or testing, ALWAYS prefer running `curd build <target>` or `curd test` inside this shell instead of raw commands. (e.g. `curd build release`). This uses predefined tasks in [build.tasks] from settings.toml. CURD's wrappers automatically capture semantic backtraces and propagate them back to you directly. Set is_background=true for long-running processes to receive a task_id for later status/termination.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -923,14 +1222,28 @@ fn get_all_tools() -> Vec<Value> {
                     "language": {"type": "string"},
                     "snippet": {"type": "string"},
                     "target": {"type": "string"},
-                    "session_id": {"type": "integer"}
+                    "debug_session_id": {"type": "integer"},
+                    "session_id": {"type": "integer", "description": "Deprecated alias for debug_session_id"}
                 },
                 "required": ["action"]
             }
         }),
         json!({
             "name": "session",
-            "description": "Manage session-scoped review baselines.",
+            "description": "Deprecated alias for review_cycle. Manage review-cycle baselines.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["begin", "status", "changes", "review", "end"]},
+                    "label": {"type": "string"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["action"]
+            }
+        }),
+        json!({
+            "name": "review_cycle",
+            "description": "Manage review-cycle baselines and change reviews.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -950,6 +1263,61 @@ fn get_all_tools() -> Vec<Value> {
                     "tool": {"type": "string"},
                 },
                 "required": ["tool"]
+            }
+        }),
+        json!({
+            "name": "plugin_tool",
+            "description": "Install, remove, or list signed proprietary tool plugins (.curdt). Installed tool plugins can extend CURD with sandboxed JSON-stdio handlers and ship agent-facing usage/docs metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                    "archive_path": {"type": "string"},
+                    "package_id": {"type": "string"}
+                },
+                "required": ["action"]
+            }
+        }),
+        json!({
+            "name": "plugin_language",
+            "description": "Install, remove, or list signed language ecosystem plugins (.curdl). These extend language parsing/build/LSP/debug capability through verified native plugin packages.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                    "archive_path": {"type": "string"},
+                    "package_id": {"type": "string"}
+                },
+                "required": ["action"]
+            }
+        }),
+        json!({
+            "name": "tool_group",
+            "description": "Adopt or remove an external MCP toolset as a CURD-managed ToolGroup. This lets CURD expose tools from a pre-existing MCP server without rewriting that server.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add_mcp", "remove", "list"]},
+                    "group_id": {"type": "string"},
+                    "command": {"type": "string"},
+                    "args": {"type": "array", "items": {"type": "string"}},
+                    "description": {"type": "string"}
+                },
+                "required": ["action"]
+            }
+        }),
+        json!({
+            "name": "plugin_trust",
+            "description": "Manage trusted signing keys for signed CURD plugin packages. Keys added here govern which .curdt and .curdl archives can be installed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                    "key_id": {"type": "string"},
+                    "pubkey_hex": {"type": "string"},
+                    "allowed_kinds": {"type": "array", "items": {"type": "string", "enum": ["tool", "language"]}}
+                },
+                "required": ["action"]
             }
         }),
         json!({
@@ -1154,7 +1522,8 @@ fn get_all_tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_token": {"type": "string", "description": "Token obtained from session_verify"},
+                    "connection_token": {"type": "string", "description": "Token obtained from connection_verify"},
+                    "session_token": {"type": "string", "description": "Deprecated alias for connection_token"},
                     "nodes": {
                         "type": "array",
                         "items": {"type": "object"}
@@ -1169,6 +1538,8 @@ fn get_all_tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "connection_token": {"type": "string", "description": "Token obtained from connection_verify"},
+                    "session_token": {"type": "string", "description": "Deprecated alias for connection_token"},
                     "plan": {"type": "object"}
                 },
                 "required": ["plan"]
@@ -1176,7 +1547,7 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "stamina",
-            "description": "Check the remaining resource budget (stamina) for the current session, including token consumption and time limits.",
+            "description": "Check the remaining resource budget (stamina) for the current authenticated connection, including token consumption and time limits.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -1247,56 +1618,20 @@ fn normalize_error_shape(resp: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::{
-        McpServerMode, handle_tools_call, handle_tools_list, system_event_to_notification,
+        McpServerMode, handle_tools_call, handle_tools_list, handle_tools_list_with_ctx,
+        system_event_to_notification,
     };
-    use crate::context::{EngineContext, SessionEntry};
-    use crate::plan::{ReplState, SystemEvent};
-    use crate::{
-        DebugEngine, DiagramEngine, DocEngine, EditEngine, FileEngine, FindEngine, GraphEngine,
-        HistoryEngine, LspEngine, ProfileEngine, ReadEngine, SearchEngine,
-        SessionReviewEngine, Watchdog, WorkspaceEngine,
-    };
+    use crate::context::EngineContext;
+    use crate::plugin_packages::{InstalledPluginRecord, ToolDocExample, ToolDocParameter, ToolPluginSpec};
+    use crate::plan::{SystemEvent, SystemEventEnvelope};
     use serde_json::{Value, json};
-    use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::Arc;
     use tempfile::tempdir;
-    use tokio::sync::Mutex;
     use uuid::Uuid;
 
     fn build_test_ctx(root: &Path) -> EngineContext {
-        let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        let watchdog = Arc::new(Watchdog::new(root.clone()));
-        let (tx_events, _) = tokio::sync::broadcast::channel(32);
-        EngineContext {
-            workspace_root: root.clone(),
-            session_id: Uuid::new_v4(),
-            read_only: false,
-            config: crate::CurdConfig::load_from_workspace(&root),
-            se: Arc::new(SearchEngine::new(&root)),
-            re: Arc::new(ReadEngine::new(&root)),
-            ee: Arc::new(EditEngine::new(&root)),
-            doctore: Arc::new(crate::doctor::DoctorEngine::new(&root)),
-            ge: Arc::new(GraphEngine::new(&root)),
-            ple: Arc::new(crate::PlanEngine::new(&root)),
-            she: Arc::new(crate::ShellEngine::new(&root)),
-            we: Arc::new(WorkspaceEngine::new(&root)),
-            mu: Arc::new(crate::MutationEngine::new(&root)),
-            fe: Arc::new(FindEngine::new(&root)),
-            de: Arc::new(DiagramEngine::new(&root)),
-            fie: Arc::new(FileEngine::new(&root)),
-            le: Arc::new(LspEngine::new(&root)),
-            pe: Arc::new(ProfileEngine::new(&root)),
-            dbe: Arc::new(DebugEngine::new(&root)),
-            sre: Arc::new(SessionReviewEngine::new(&root)),
-            doce: Arc::new(DocEngine::new()),
-            he: Arc::new(HistoryEngine::new(&root)),
-            tx_events,
-            global_state: Arc::new(Mutex::new(ReplState::new())),
-            sessions: Arc::new(Mutex::new(HashMap::<String, SessionEntry>::new())),
-            pending_challenges: Arc::new(Mutex::new(HashMap::<String, String>::new())),
-            watchdog,
-        }
+        let ctx_arc = EngineContext::new(root.to_str().unwrap());
+        ctx_arc.clone_for_repl()
     }
 
     #[test]
@@ -1307,7 +1642,13 @@ mod tests {
             summary: "IndexStall: 10/100 files no_progress_ms=16000".to_string(),
             artifact_path: None,
         };
-        let notif = system_event_to_notification(event).expect("stall notification");
+        let notif = system_event_to_notification(SystemEventEnvelope {
+            event_id: 1,
+            collaboration_id: Uuid::nil(),
+            ts_secs: 1,
+            event,
+        })
+        .expect("stall notification");
         assert_eq!(notif["method"], "notifications/progress");
         assert_eq!(notif["params"]["phase"], "stall_detected");
         assert_eq!(notif["params"]["processed_files"], 10);
@@ -1324,7 +1665,13 @@ mod tests {
             summary: summary.to_string(),
             artifact_path: None,
         };
-        let notif = system_event_to_notification(event).expect("stats notification");
+        let notif = system_event_to_notification(SystemEventEnvelope {
+            event_id: 2,
+            collaboration_id: Uuid::nil(),
+            ts_secs: 2,
+            event,
+        })
+        .expect("stats notification");
         assert_eq!(notif["method"], "notifications/progress");
         assert_eq!(notif["params"]["phase"], "indexing_stats");
         assert_eq!(notif["params"]["parser_backend_effective"], "mixed");
@@ -1383,5 +1730,89 @@ mod tests {
         assert_eq!(parsed["tiered"]["tier3"]["kind"], "local_db_index_runs");
         assert!(parsed["tiered"]["tier3"]["status"].is_string());
         assert!(parsed["tiered"]["tier3"]["rows"].is_array());
+    }
+
+    #[tokio::test]
+    async fn tools_list_with_ctx_includes_dynamic_plugins_and_groups() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let ctx = build_test_ctx(root);
+
+        let plugin_dir = root.join(".curd/plugins/tool/demo-tool");
+        std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
+        std::fs::write(
+            plugin_dir.join("installed.json"),
+            serde_json::to_vec_pretty(&InstalledPluginRecord {
+                package_id: "demo-tool".to_string(),
+                version: "0.1.0".to_string(),
+                kind: crate::PluginKind::Tool,
+                signer_pubkey_hex: "11".repeat(32),
+                install_dir: plugin_dir.clone(),
+                manifest_path: plugin_dir.join("manifest.json"),
+                tool: Some(ToolPluginSpec {
+                    tool_name: "demo_tool".to_string(),
+                    executable_path: "bin/demo-tool".to_string(),
+                    default_args: Vec::new(),
+                    protocol: "json_stdio_v1".to_string(),
+                    agent_usage: Some("Use for demo requests.".to_string()),
+                    review_guidance: Some("Review changed ids.".to_string()),
+                    downstream_impact: Some("Affects demo pipeline.".to_string()),
+                    description: Some("Demo plugin tool".to_string()),
+                    parameters: vec![ToolDocParameter {
+                        name: "query".to_string(),
+                        kind: "string".to_string(),
+                        description: "Query text".to_string(),
+                        required: true,
+                    }],
+                    examples: vec![ToolDocExample {
+                        label: "basic".to_string(),
+                        arguments: json!({"query": "hello"}),
+                    }],
+                }),
+                language: None,
+            })
+            .expect("installed.json"),
+        )
+        .expect("write installed plugin");
+
+        std::fs::create_dir_all(root.join(".curd/tool_groups")).expect("tool groups dir");
+        std::fs::write(
+            root.join(".curd/tool_groups/registry.json"),
+            serde_json::to_vec_pretty(&json!({
+                "groups": [{
+                    "group_id": "foreign",
+                    "source": "external_mcp",
+                    "command": "/bin/echo",
+                    "args": [],
+                    "allow_tools": ["foreign_tool"],
+                    "deny_tools": [],
+                    "tools": [{
+                        "name": "foreign_tool",
+                        "description": "Foreign tool",
+                        "input_schema": {"type":"object","properties":{"query":{"type":"string"}}}
+                    }]
+                }]
+            }))
+            .expect("registry json"),
+        )
+        .expect("write registry");
+
+        let listed = handle_tools_list_with_ctx(&ctx, McpServerMode::Full);
+        let tools = listed["result"]["tools"].as_array().expect("tools array");
+        let plugin_tool = tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some("demo_tool"))
+            .expect("plugin tool");
+        assert_eq!(plugin_tool["x-curd"]["source"], "tool_plugin");
+        assert_eq!(plugin_tool["x-curd"]["package_id"], "demo-tool");
+        assert!(plugin_tool["x-curd"]["examples"].is_array());
+
+        let group_tool = tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some("foreign_tool"))
+            .expect("group tool");
+        assert_eq!(group_tool["x-curd"]["source"], "tool_group");
+        assert_eq!(group_tool["x-curd"]["group_id"], "foreign");
+        assert_eq!(group_tool["x-curd"]["allow_tools"][0], "foreign_tool");
     }
 }

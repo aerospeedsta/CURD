@@ -717,7 +717,7 @@ impl PlanEngine {
                                 // Commit savepoint
                                 ctx.we.execute("commit")?;
                                 let _ = ctx.tx_events.send(SystemEvent::PlanCommitted {
-                                    session_id: ctx.session_id,
+                                    collaboration_id: ctx.collaboration_id,
                                 });
                                 results.push(json!({ "atomic": "committed", "results": res }));
                             }
@@ -749,17 +749,33 @@ impl PlanEngine {
         .await;
 
         match &final_res {
-            Ok(v) => ctx
-                .he
-                .log(ctx.session_id, None, "dsl", json!(nodes), v.clone(), true, None),
+            Ok(v) => ctx.he.log(
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None,
+                None,
+                "dsl",
+                json!(nodes),
+                v.clone(),
+                None,
+                None,
+                true,
+                None,
+                None,
+            ),
             Err(e) => ctx.he.log(
-                ctx.session_id,
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None,
                 None,
                 "dsl",
                 json!(nodes),
                 json!(null),
+                None,
+                None,
                 false,
                 Some(e.to_string()),
+                None,
             ),
         }
         final_res
@@ -977,17 +993,33 @@ impl PlanEngine {
         );
 
         match &final_res {
-            Ok(v) => ctx
-                .he
-                .log(ctx.session_id, None, "plan", json!(plan), v.clone(), true, None),
+            Ok(v) => ctx.he.log(
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None,
+                None,
+                "plan",
+                json!(plan),
+                v.clone(),
+                None,
+                None,
+                true,
+                None,
+                None,
+            ),
             Err(e) => ctx.he.log(
-                ctx.session_id,
+                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
+                ctx.collaboration_id,
+                None,
                 None,
                 "plan",
                 json!(plan),
                 json!(null),
+                None,
+                None,
                 false,
                 Some(e.to_string()),
+                None,
             ),
         }
         final_res
@@ -997,7 +1029,96 @@ impl PlanEngine {
 /// --- Observability (Ratatui TUI) ---
 /// Broadcast payload for the SystemEvent channel.
 #[derive(Debug, Clone, Serialize)]
+pub struct SystemEventEnvelope {
+    pub event_id: u64,
+    pub collaboration_id: Uuid,
+    pub ts_secs: u64,
+    pub event: SystemEvent,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub enum SystemEvent {
+    ConnectionAuthenticated {
+        agent_id: String,
+        pubkey_hex: String,
+        restored_state: bool,
+    },
+    ParticipantBound {
+        participant_id: String,
+        role: String,
+        is_human: bool,
+    },
+    HumanOverrideClaimed {
+        participant_id: String,
+        resource_key: String,
+    },
+    HumanOverrideReleased {
+        participant_id: String,
+        resource_key: String,
+    },
+    PlanSetCreated {
+        plan_set_id: Uuid,
+        title: String,
+    },
+    PlanVariantCreated {
+        plan_set_id: Uuid,
+        variant_id: Uuid,
+        title: String,
+    },
+    PlanVariantSimulated {
+        plan_set_id: Uuid,
+        variant_id: Uuid,
+    },
+    PlanVariantCompared {
+        plan_set_id: Uuid,
+        variant_ids: Vec<Uuid>,
+    },
+    PlanVariantReviewed {
+        plan_set_id: Uuid,
+        variant_id: Uuid,
+        decision: String,
+    },
+    PlanVariantPromoted {
+        plan_set_id: Uuid,
+        variant_id: Uuid,
+    },
+    PluginTrustedKeyAdded {
+        key_id: String,
+    },
+    PluginTrustedKeyRemoved {
+        key_id: String,
+    },
+    ToolPluginInstalled {
+        package_id: String,
+        version: String,
+        tool_name: String,
+    },
+    ToolPluginRemoved {
+        package_id: String,
+    },
+    LanguagePluginInstalled {
+        package_id: String,
+        version: String,
+        language_id: String,
+    },
+    LanguagePluginRemoved {
+        package_id: String,
+    },
+    ToolGroupRegistered {
+        group_id: String,
+        source: String,
+        tool_count: usize,
+    },
+    ToolGroupRemoved {
+        group_id: String,
+    },
+    PlanSetPruned {
+        plan_set_id: Uuid,
+    },
+    VariantWorkspacePruned {
+        plan_set_id: Uuid,
+        variant_id: Uuid,
+    },
     /// Dispatched when a plan is registered but not yet executed.
     PlanRegistered {
         plan_id: Uuid,
@@ -1025,6 +1146,13 @@ pub enum SystemEvent {
     },
     /// Explicit abort triggered by the REPL or a Node guard.
     PlanAborted { plan_id: Uuid, reason: String },
-    /// Final commit of a session to the main workspace.
-    PlanCommitted { session_id: Uuid },
+    /// Final commit of a collaboration-scoped transaction to the main workspace.
+    PlanCommitted { collaboration_id: Uuid },
+}
+
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

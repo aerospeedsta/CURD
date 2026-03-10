@@ -1,4 +1,4 @@
-use curd_core::{GraphEngine, SearchEngine, context::EngineContext, MutationEngine, context::handle_crawl};
+use curd_core::{GraphEngine, SearchEngine, context::EngineContext, context::handle_crawl};
 use std::time::Instant;
 use std::sync::Arc;
 use serde_json::json;
@@ -35,7 +35,7 @@ async fn test_vscode_stress_operations() {
     
     println!("Graph Tree Search for {}...", symbol_id);
     let start_tree = Instant::now();
-    let tree = ge.graph_tree_with_depths(vec![symbol_id.clone()], 3, 3).expect("Failed graph tree");
+    let tree = ge.graph_with_depths(vec![symbol_id.clone()], 3, 3).expect("Failed graph tree");
     println!("Tree Search (3 up, 3 down) completed in: {:?}", start_tree.elapsed());
     
     if let serde_json::Value::Object(map) = tree {
@@ -45,37 +45,10 @@ async fn test_vscode_stress_operations() {
     }
 
     // Set up context to test crawl and mutate
-    let (tx, _) = tokio::sync::broadcast::channel(10);
-    let ctx = EngineContext {
-        workspace_root: std::path::PathBuf::from(workspace_root),
-        session_id: uuid::Uuid::new_v4(),
-        read_only: false,
-        se: se.clone(),
-        re: Arc::new(curd_core::ReadEngine::new(workspace_root)),
-        ee: Arc::new(curd_core::EditEngine::new(workspace_root)),
-        doctore: Arc::new(curd_core::doctor::DoctorEngine::new(workspace_root)),
-        ge: ge.clone(),
-        we: Arc::new(curd_core::WorkspaceEngine::new(workspace_root)),
-        ple: Arc::new(curd_core::PlanEngine::new(workspace_root)),
-        mu: Arc::new(MutationEngine::new(workspace_root)),
-        fe: Arc::new(curd_core::FindEngine::new(workspace_root)),
-        de: Arc::new(curd_core::DiagramEngine::new(workspace_root)),
-        fie: Arc::new(curd_core::FileEngine::new(workspace_root)),
-        le: Arc::new(curd_core::LspEngine::new(workspace_root)),
-        pe: Arc::new(curd_core::ProfileEngine::new(workspace_root)),
-        dbe: Arc::new(curd_core::DebugEngine::new(workspace_root)),
-        sre: Arc::new(curd_core::SessionReviewEngine::new(workspace_root)),
-        doce: Arc::new(curd_core::DocEngine::new()),
-        he: Arc::new(curd_core::HistoryEngine::new(workspace_root)),
-        tx_events: tx,
-        global_state: Arc::new(tokio::sync::Mutex::new(curd_core::ReplState::new())),
-        sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        pending_challenges: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        watchdog: Arc::new(curd_core::Watchdog::new(workspace_root.into())),
-        she: Arc::new(curd_core::ShellEngine::new(workspace_root)),
-    };
+    let ctx_arc = EngineContext::new(workspace_root);
+    let ctx = ctx_arc.clone_for_repl();
 
-    println!("Testing handle_crawl in mutate mode...");
+    println!("3. Testing crawl heuristic...");
     let crawl_params = json!({
         "mode": "crawl_mutate",
         "roots": [symbol_id],
@@ -101,7 +74,7 @@ async fn test_vscode_stress_operations() {
                 // Let's copy a small file into a tmp dir inside the test and run the mutation engine there,
                 // or just accept we're mutating the /tmp/vscode_bench clone which is disposable.
                 
-                let res = ctx.mu.mutate_symbol(uri);
+                let res = ctx.mu.mutate_symbol(uri, None);
                 println!("  Mutation result: {:?}", res);
                 println!("Mutation completed in: {:?}", start_mutate.elapsed());
             }

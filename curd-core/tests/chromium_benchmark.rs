@@ -17,7 +17,7 @@ fn test_chromium_5_depth_tree() {
     
     println!("Searching for symbol: {}", symbol_id);
     let start_search = Instant::now();
-    let result = engine.graph_tree_with_depths(vec![symbol_id.to_string()], 5, 5)
+    let result = engine.graph_with_depths(vec![symbol_id.to_string()], 5, 5)
         .expect("Failed to search graph");
     let search_duration = start_search.elapsed();
     

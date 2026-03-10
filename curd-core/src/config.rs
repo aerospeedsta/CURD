@@ -23,6 +23,8 @@ pub struct BudgetConfig {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CurdConfig {
     #[serde(default)]
+    pub workspace: WorkspacePolicyConfig,
+    #[serde(default)]
     pub edit: EditConfig,
     #[serde(default)]
     pub index: IndexConfig,
@@ -38,6 +40,226 @@ pub struct CurdConfig {
     pub shell: ShellConfig,
     #[serde(default)]
     pub budget: BudgetConfig,
+    #[serde(default)]
+    pub collaboration: CollaborationConfig,
+    #[serde(default)]
+    pub variants: VariantsConfig,
+    #[serde(default)]
+    pub provenance: ProvenanceConfig,
+    #[serde(default)]
+    pub plugins: PluginConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WorkspacePolicyConfig {
+    #[serde(default = "default_workspace_require_open_for_all_tools")]
+    pub require_open_for_all_tools: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CollaborationConfig {
+    #[serde(default = "default_collaboration_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_require_bound_participants")]
+    pub require_bound_participants: bool,
+    #[serde(default = "default_require_session_token_for_agents")]
+    pub require_session_token_for_agents: bool,
+    #[serde(default = "default_bootstrap_owner_human_only")]
+    pub bootstrap_owner_human_only: bool,
+    #[serde(default = "default_human_override_ttl_secs")]
+    pub human_override_ttl_secs: u64,
+    #[serde(default = "default_default_human_role")]
+    pub default_human_role: String,
+    #[serde(default = "default_default_agent_role")]
+    pub default_agent_role: String,
+    #[serde(default = "default_editor_can_promote")]
+    pub editor_can_promote: bool,
+    #[serde(default = "default_session_challenge_ttl_secs")]
+    pub session_challenge_ttl_secs: u64,
+    #[serde(default = "default_require_authorized_agents_file")]
+    pub require_authorized_agents_file: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VariantsConfig {
+    #[serde(default = "default_variants_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_variant_backend")]
+    pub default_backend: String,
+    #[serde(default = "default_allow_worktree_backend")]
+    pub allow_worktree_backend: bool,
+    #[serde(default = "default_variant_materialization")]
+    pub materialization: String,
+    #[serde(default = "default_keep_workspaces")]
+    pub keep_workspaces: bool,
+    #[serde(default = "default_max_compare_files")]
+    pub max_compare_files: usize,
+    #[serde(default = "default_max_plan_bytes")]
+    pub max_plan_bytes: usize,
+    #[serde(default = "default_max_materialized_bytes")]
+    pub max_materialized_bytes: u64,
+    #[serde(default = "default_max_variants_per_plan_set")]
+    pub max_variants_per_plan_set: usize,
+    #[serde(default = "default_max_plan_sets")]
+    pub max_plan_sets: usize,
+    #[serde(default = "default_retain_plan_sets")]
+    pub retain_plan_sets: usize,
+    #[serde(default = "default_retain_variant_workspaces")]
+    pub retain_variant_workspaces: usize,
+    #[serde(default = "default_require_review_for_promotion")]
+    pub require_review_for_promotion: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProvenanceConfig {
+    #[serde(default = "default_provenance_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_provenance_hash_chain")]
+    pub hash_chain: bool,
+    #[serde(default = "default_provenance_checkpoint_every")]
+    pub checkpoint_every: usize,
+    #[serde(default = "default_provenance_local_only")]
+    pub local_only: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PluginConfig {
+    #[serde(default = "default_plugins_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_plugin_install_root")]
+    pub install_root: String,
+    #[serde(default = "default_plugin_trusted_keys_file")]
+    pub trusted_keys_file: String,
+    #[serde(default = "default_plugin_require_signatures")]
+    pub require_signatures: bool,
+    #[serde(default = "default_plugin_allow_unsigned_dev_plugins")]
+    pub allow_unsigned_dev_plugins: bool,
+    #[serde(default = "default_plugin_allow_native_language_dylibs")]
+    pub allow_native_language_dylibs: bool,
+    #[serde(default = "default_plugin_tool_runtime")]
+    pub tool_runtime: String,
+    #[serde(default = "default_plugin_allow_wasm_language_fallback")]
+    pub allow_wasm_language_fallback: bool,
+    #[serde(default = "default_plugin_allow_external_mcp_tool_groups")]
+    pub allow_external_mcp_tool_groups: bool,
+    #[serde(default = "default_plugin_external_mcp_timeout_secs")]
+    pub external_mcp_timeout_secs: u64,
+    #[serde(default = "default_plugin_external_mcp_max_output_bytes")]
+    pub external_mcp_max_output_bytes: usize,
+    #[serde(default = "default_plugin_external_mcp_max_restarts")]
+    pub external_mcp_max_restarts: u32,
+    #[serde(default = "default_plugin_external_mcp_restart_backoff_ms")]
+    pub external_mcp_restart_backoff_ms: u64,
+}
+
+fn default_collaboration_enabled() -> bool { true }
+fn default_workspace_require_open_for_all_tools() -> bool { false }
+fn default_require_bound_participants() -> bool { true }
+fn default_require_session_token_for_agents() -> bool { true }
+fn default_bootstrap_owner_human_only() -> bool { true }
+fn default_human_override_ttl_secs() -> u64 { 300 }
+fn default_default_human_role() -> String { "owner".to_string() }
+fn default_default_agent_role() -> String { "planner".to_string() }
+fn default_editor_can_promote() -> bool { false }
+fn default_session_challenge_ttl_secs() -> u64 { 120 }
+fn default_require_authorized_agents_file() -> bool { true }
+fn default_variants_enabled() -> bool { true }
+fn default_variant_backend() -> String { "shadow".to_string() }
+fn default_allow_worktree_backend() -> bool { false }
+fn default_variant_materialization() -> String { "workspace_copy".to_string() }
+fn default_keep_workspaces() -> bool { true }
+fn default_max_compare_files() -> usize { 200 }
+fn default_max_plan_bytes() -> usize { 512 * 1024 }
+fn default_max_materialized_bytes() -> u64 { 64 * 1024 * 1024 }
+fn default_max_variants_per_plan_set() -> usize { 12 }
+fn default_max_plan_sets() -> usize { 64 }
+fn default_retain_plan_sets() -> usize { 32 }
+fn default_retain_variant_workspaces() -> usize { 24 }
+fn default_require_review_for_promotion() -> bool { false }
+fn default_provenance_enabled() -> bool { true }
+fn default_provenance_hash_chain() -> bool { true }
+fn default_provenance_checkpoint_every() -> usize { 50 }
+fn default_provenance_local_only() -> bool { true }
+fn default_plugins_enabled() -> bool { true }
+fn default_plugin_install_root() -> String { ".curd/plugins".to_string() }
+fn default_plugin_trusted_keys_file() -> String { ".curd/plugins/trusted_keys.json".to_string() }
+fn default_plugin_require_signatures() -> bool { true }
+fn default_plugin_allow_unsigned_dev_plugins() -> bool { false }
+fn default_plugin_allow_native_language_dylibs() -> bool { true }
+fn default_plugin_tool_runtime() -> String { "sidecar_stdio".to_string() }
+fn default_plugin_allow_wasm_language_fallback() -> bool { false }
+fn default_plugin_allow_external_mcp_tool_groups() -> bool { true }
+fn default_plugin_external_mcp_timeout_secs() -> u64 { 15 }
+fn default_plugin_external_mcp_max_output_bytes() -> usize { 512 * 1024 }
+fn default_plugin_external_mcp_max_restarts() -> u32 { 2 }
+fn default_plugin_external_mcp_restart_backoff_ms() -> u64 { 250 }
+
+impl Default for CollaborationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_collaboration_enabled(),
+            require_bound_participants: default_require_bound_participants(),
+            require_session_token_for_agents: default_require_session_token_for_agents(),
+            bootstrap_owner_human_only: default_bootstrap_owner_human_only(),
+            human_override_ttl_secs: default_human_override_ttl_secs(),
+            default_human_role: default_default_human_role(),
+            default_agent_role: default_default_agent_role(),
+            editor_can_promote: default_editor_can_promote(),
+            session_challenge_ttl_secs: default_session_challenge_ttl_secs(),
+            require_authorized_agents_file: default_require_authorized_agents_file(),
+        }
+    }
+}
+
+impl Default for VariantsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_variants_enabled(),
+            default_backend: default_variant_backend(),
+            allow_worktree_backend: default_allow_worktree_backend(),
+            materialization: default_variant_materialization(),
+            keep_workspaces: default_keep_workspaces(),
+            max_compare_files: default_max_compare_files(),
+            max_plan_bytes: default_max_plan_bytes(),
+            max_materialized_bytes: default_max_materialized_bytes(),
+            max_variants_per_plan_set: default_max_variants_per_plan_set(),
+            max_plan_sets: default_max_plan_sets(),
+            retain_plan_sets: default_retain_plan_sets(),
+            retain_variant_workspaces: default_retain_variant_workspaces(),
+            require_review_for_promotion: default_require_review_for_promotion(),
+        }
+    }
+}
+
+impl Default for ProvenanceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_provenance_enabled(),
+            hash_chain: default_provenance_hash_chain(),
+            checkpoint_every: default_provenance_checkpoint_every(),
+            local_only: default_provenance_local_only(),
+        }
+    }
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_plugins_enabled(),
+            install_root: default_plugin_install_root(),
+            trusted_keys_file: default_plugin_trusted_keys_file(),
+            require_signatures: default_plugin_require_signatures(),
+            allow_unsigned_dev_plugins: default_plugin_allow_unsigned_dev_plugins(),
+            allow_native_language_dylibs: default_plugin_allow_native_language_dylibs(),
+            tool_runtime: default_plugin_tool_runtime(),
+            allow_wasm_language_fallback: default_plugin_allow_wasm_language_fallback(),
+            allow_external_mcp_tool_groups: default_plugin_allow_external_mcp_tool_groups(),
+            external_mcp_timeout_secs: default_plugin_external_mcp_timeout_secs(),
+            external_mcp_max_output_bytes: default_plugin_external_mcp_max_output_bytes(),
+            external_mcp_max_restarts: default_plugin_external_mcp_max_restarts(),
+            external_mcp_restart_backoff_ms: default_plugin_external_mcp_restart_backoff_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -112,6 +334,7 @@ impl CurdConfig {
             }
         }
         Self {
+            workspace: WorkspacePolicyConfig::default(),
             edit: EditConfig::default(),
             index: IndexConfig::default(),
             doctor: DoctorConfig::default(),
@@ -120,6 +343,10 @@ impl CurdConfig {
             reference: ReferenceConfig::default(),
             shell: ShellConfig::default(),
             budget: BudgetConfig::default(),
+            collaboration: CollaborationConfig::default(),
+            variants: VariantsConfig::default(),
+            provenance: ProvenanceConfig::default(),
+            plugins: PluginConfig::default(),
         }
     }
 
@@ -290,6 +517,126 @@ impl CurdConfig {
                 });
             }
         }
+        if !matches!(
+            self.collaboration.default_human_role.as_str(),
+            "owner" | "editor" | "planner" | "reviewer" | "observer"
+        ) {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_collaboration_default_human_role_invalid".to_string(),
+                message: format!(
+                    "Unsupported [collaboration].default_human_role='{}'",
+                    self.collaboration.default_human_role
+                ),
+            });
+        }
+        if !matches!(
+            self.collaboration.default_agent_role.as_str(),
+            "owner" | "editor" | "planner" | "reviewer" | "observer"
+        ) {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_collaboration_default_agent_role_invalid".to_string(),
+                message: format!(
+                    "Unsupported [collaboration].default_agent_role='{}'",
+                    self.collaboration.default_agent_role
+                ),
+            });
+        }
+        if !matches!(
+            self.variants.default_backend.as_str(),
+            "shadow" | "worktree"
+        ) {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_variants_default_backend_invalid".to_string(),
+                message: format!(
+                    "Unsupported [variants].default_backend='{}'",
+                    self.variants.default_backend
+                ),
+            });
+        }
+        if !matches!(self.variants.materialization.as_str(), "workspace_copy" | "shadow") {
+            out.push(ConfigFinding {
+                severity: "medium".to_string(),
+                code: "config_variants_materialization_invalid".to_string(),
+                message: format!(
+                    "Unsupported [variants].materialization='{}'",
+                    self.variants.materialization
+                ),
+            });
+        }
+        let install_root = self.plugins.install_root.trim();
+        if install_root.is_empty()
+            || install_root.starts_with('/')
+            || install_root.starts_with('~')
+            || install_root.contains("..")
+        {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_plugins_install_root_invalid".to_string(),
+                message: format!("Unsafe [plugins].install_root='{}'", self.plugins.install_root),
+            });
+        }
+        let trust_file = self.plugins.trusted_keys_file.trim();
+        if trust_file.is_empty()
+            || trust_file.starts_with('/')
+            || trust_file.starts_with('~')
+            || trust_file.contains("..")
+        {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_plugins_trusted_keys_file_invalid".to_string(),
+                message: format!(
+                    "Unsafe [plugins].trusted_keys_file='{}'",
+                    self.plugins.trusted_keys_file
+                ),
+            });
+        }
+        if !matches!(self.plugins.tool_runtime.as_str(), "sidecar_stdio") {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_plugins_tool_runtime_invalid".to_string(),
+                message: format!(
+                    "Unsupported [plugins].tool_runtime='{}'",
+                    self.plugins.tool_runtime
+                ),
+            });
+        }
+        if self.plugins.external_mcp_timeout_secs == 0 {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_plugins_external_mcp_timeout_invalid".to_string(),
+                message: "[plugins].external_mcp_timeout_secs must be > 0".to_string(),
+            });
+        }
+        if self.plugins.external_mcp_max_output_bytes == 0 {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_plugins_external_mcp_output_budget_invalid".to_string(),
+                message: "[plugins].external_mcp_max_output_bytes must be > 0".to_string(),
+            });
+        }
+        if self.plugins.external_mcp_restart_backoff_ms > 60_000 {
+            out.push(ConfigFinding {
+                severity: "medium".to_string(),
+                code: "config_plugins_external_mcp_restart_backoff_large".to_string(),
+                message: format!(
+                    "[plugins].external_mcp_restart_backoff_ms={} is unusually large",
+                    self.plugins.external_mcp_restart_backoff_ms
+                ),
+            });
+        }
+        if self.plugins.external_mcp_max_restarts > 32 {
+            out.push(ConfigFinding {
+                severity: "medium".to_string(),
+                code: "config_plugins_external_mcp_max_restarts_large".to_string(),
+                message: format!(
+                    "[plugins].external_mcp_max_restarts={} is unusually large",
+                    self.plugins.external_mcp_max_restarts
+                ),
+            });
+        }
         out
     }
 }
@@ -386,6 +733,8 @@ pub struct BuildConfig {
     pub default_target: Option<String>,
     #[serde(default)]
     pub adapters: HashMap<String, BuildAdapterConfig>,
+    #[serde(default)]
+    pub tasks: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -588,5 +937,12 @@ sqlite_path = "../escape.sqlite3"
             err.to_string()
                 .contains("config_storage_sqlite_path_invalid")
         );
+    }
+}
+impl Default for WorkspacePolicyConfig {
+    fn default() -> Self {
+        Self {
+            require_open_for_all_tools: default_workspace_require_open_for_all_tools(),
+        }
     }
 }

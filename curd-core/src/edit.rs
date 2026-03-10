@@ -23,11 +23,17 @@ impl EditEngine {
         self
     }
 
+    pub fn storage(&self) -> Result<crate::storage::Storage> {
+        let config = crate::config::CurdConfig::load_from_workspace(&self.workspace_root);
+        crate::storage::Storage::open(&self.workspace_root, &config)
+    }
+
     pub fn edit(
         &self,
         uri: &str,
         code: &str,
         action: &str,
+        base_state_hash: Option<&str>,
         cwd_override: Option<&Path>,
     ) -> Result<Value> {
         if let Some(ref wd) = self.watchdog {
@@ -36,6 +42,16 @@ impl EditEngine {
 
         let mut actual_uri = uri;
         let mut target_root = cwd_override.unwrap_or(&self.workspace_root).to_path_buf();
+
+        // 1. Optimistic Concurrency Control
+        if let Some(expected_hash) = base_state_hash {
+            let storage = self.storage()?;
+            let current_hash = storage.compute_state_hash()?;
+
+            if current_hash != expected_hash {
+                anyhow::bail!("STALE_STATE_CONFLICT: The workspace state has changed. Expected hash {}, but found {}. Please pull the latest graph.", expected_hash, current_hash);
+            }
+        }
 
         // Safety: If no cwd_override provided, check if we are modifying the real workspace root.
         // If another session has a lock, we must refuse direct edits.
@@ -376,7 +392,7 @@ fn b() {
         let engine = EditEngine::new(root);
 
         // 3. Try to replace func 'b' (likely > 10% of nodes)
-        let result = engine.edit("test.rs::b", "fn b() { }", "upsert", None);
+        let result = engine.edit("test.rs::b", "fn b() { }", "upsert", None, None);
 
         assert!(result.is_err());
         let err = result.err().unwrap().to_string();
@@ -399,7 +415,7 @@ fn b() {
 
         let engine = EditEngine::new(root);
         // Replace one small function out of 20 (5% churn) - should be allowed by 50% limit
-        let result = engine.edit("test.rs::a::1", "fn a() { println!(); }", "upsert", None);
+        let result = engine.edit("test.rs::a::1", "fn a() { println!(); }", "upsert", None, None);
         if let Err(ref e) = result {
             println!(
                 "test_churn_limit_allows_small_change FAILED. Error: {:?}",
@@ -426,7 +442,7 @@ fn b() {}
         std::fs::write(root.join("test.rs"), code).unwrap();
 
         let engine = EditEngine::new(root);
-        let result = engine.edit("test.rs::b", "", "delete", None);
+        let result = engine.edit("test.rs::b", "", "delete", None, None);
         assert!(result.is_ok());
 
         let new_code = std::fs::read_to_string(root.join("test.rs")).unwrap();
@@ -443,7 +459,7 @@ fn b() {}
         std::fs::write(root.join("test.rs"), code).unwrap();
 
         let engine = EditEngine::new(root);
-        let result = engine.edit("test.rs", "fn a() {}", "upsert", None);
+        let result = engine.edit("test.rs", "fn a() {}", "upsert", None, None);
         assert!(result.is_ok());
 
         let new_code = std::fs::read_to_string(root.join("test.rs")).unwrap();

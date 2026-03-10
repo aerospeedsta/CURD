@@ -14,6 +14,8 @@ pub mod init;
 #[cfg(feature = "core")]
 pub mod workspace_init;
 #[cfg(feature = "core")]
+pub mod workspace_lifecycle;
+#[cfg(feature = "core")]
 pub mod repl;
 
 #[derive(Parser)]
@@ -57,18 +59,16 @@ enum Commands {
     /// Build via CURD control plane (adapter-based dry-run/execute)
     #[cfg(feature = "core")]
     Build {
-        /// Path to workspace root
-        #[arg(default_value = ".")]
-        root: PathBuf,
+        /// Optional build target/task to execute (or directory if no target is specified)
+        target_or_dir: Option<String>,
+        /// Path to workspace root (if target is provided)
+        dir: Option<PathBuf>,
         /// Build adapter override (cargo|cmake|ninja|make)
         #[arg(long)]
         adapter: Option<String>,
         /// Build profile (debug|release)
         #[arg(long)]
         profile: Option<String>,
-        /// Optional build target
-        #[arg(long)]
-        target: Option<String>,
         /// Execute planned commands (default: true)
         #[arg(long, default_value = "true", action = clap::ArgAction::Set, allow_hyphen_values = true)]
         execute: bool,
@@ -144,6 +144,9 @@ enum Commands {
         /// Path to the workspace root
         #[arg(default_value = ".")]
         root: PathBuf,
+        /// How to handle an active shadow transaction before detaching
+        #[arg(long, value_enum)]
+        shadow: Option<workspace_lifecycle::ShadowDisposition>,
     },
     /// Permanently delete CURD from the current workspace by removing the .curd/ directory
     #[cfg(feature = "core")]
@@ -154,6 +157,9 @@ enum Commands {
         /// Force skip confirmation
         #[arg(short, long)]
         yes: bool,
+        /// How to handle an active shadow transaction before deleting CURD state
+        #[arg(long, value_enum)]
+        shadow: Option<workspace_lifecycle::ShadowDisposition>,
     },
     /// Print a summary of the current workspace state (index stats, shadow changes, etc.)
     #[cfg(feature = "core")]
@@ -223,6 +229,9 @@ enum Commands {
         /// The literal code to insert (ignored if action is 'delete')
         #[arg(short, long, default_value = "")]
         code: String,
+        /// Optional: The expected Merkle Root of the workspace state for optimistic concurrency control
+        #[arg(long)]
+        base_state_hash: Option<String>,
         /// Path to the workspace root
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -493,10 +502,10 @@ async fn main() -> Result<()> {
         }
         #[cfg(feature = "core")]
         Some(Commands::Build {
-            root,
+            target_or_dir,
+            dir,
             adapter,
             profile,
-            target,
             execute,
             plan,
             command,
@@ -505,15 +514,32 @@ async fn main() -> Result<()> {
             zig,
             trailing_args,
         }) => {
+            let mut resolved_target = None;
+            let mut resolved_root = PathBuf::from(".");
+
+            if let Some(first) = target_or_dir {
+                if let Some(second) = dir {
+                    resolved_target = Some(first);
+                    resolved_root = second;
+                } else {
+                    let path = PathBuf::from(&first);
+                    if path.is_dir() && !std::fs::metadata(&first).is_ok_and(|m| m.is_file()) {
+                        resolved_root = path;
+                    } else {
+                        resolved_target = Some(first);
+                    }
+                }
+            }
+
             let actual_execute = if plan { false } else { execute };
-            let resolved = resolve_workspace_root(root);
+            let resolved = resolve_workspace_root(resolved_root);
             enforce_workspace_config(&resolved)?;
             let mut out = curd_core::run_build(
                 &resolved,
                 BuildRequest {
                     adapter: adapter.clone(),
                     profile: profile.clone(),
-                    target: target.clone(),
+                    target: resolved_target.clone(),
                     execute: actual_execute,
                     zig,
                     command: command.clone(),
@@ -539,7 +565,7 @@ async fn main() -> Result<()> {
                         BuildRequest {
                             adapter: adapter.clone(),
                             profile: profile.clone(),
-                            target: target.clone(),
+                            target: resolved_target.clone(),
                             execute: actual_execute,
                             zig,
                             command,
@@ -886,27 +912,26 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             workspace_init::run_init(&resolved)
         }
         #[cfg(feature = "core")]
-        Some(Commands::Detach { root }) => {
+        Some(Commands::Detach { root, shadow }) => {
             let resolved = resolve_workspace_root(root);
             println!("Performing soft detach...");
-            // 1. Remove pre-push hook if we installed one
-            let hook_path = resolved.join(".git/hooks/pre-push");
-            if hook_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&hook_path) {
-                    if content.contains("curd detach") {
-                        let _ = std::fs::remove_file(&hook_path);
-                        println!("Removed CURD git pre-push hook.");
-                    }
-                }
+            let outcome = workspace_lifecycle::resolve_workspace_exit(
+                &resolved,
+                "detach",
+                shadow,
+                false,
+            )?;
+            println!("{}", outcome.message);
+            if !outcome.proceeded {
+                return Ok(());
             }
-            
-            workspace_init::cleanup_agent_configs(&resolved);
-            
+
+            workspace_lifecycle::cleanup_detach_artifacts(&resolved);
             println!("CURD workspace soft-detached. Local `.curd/` data is preserved.");
             Ok(())
         }
         #[cfg(feature = "core")]
-        Some(Commands::Delete { root, yes }) => {
+        Some(Commands::Delete { root, yes, shadow }) => {
             let resolved = resolve_workspace_root(root);
             let curd_dir = resolved.join(".curd");
             
@@ -922,11 +947,18 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                 }
             }
             
-            // Soft detach cleanup first
-            let _ = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "curd".into()))
-                .arg("detach")
-                .arg(&resolved)
-                .output();
+            let outcome = workspace_lifecycle::resolve_workspace_exit(
+                &resolved,
+                "delete",
+                shadow,
+                yes,
+            )?;
+            println!("{}", outcome.message);
+            if !outcome.proceeded {
+                return Ok(());
+            }
+
+            workspace_lifecycle::cleanup_detach_artifacts(&resolved);
 
             if curd_dir.exists() {
                 if let Err(e) = std::fs::remove_dir_all(&curd_dir) {
@@ -947,8 +979,9 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             println!("=== CURD Workspace Status ===\n");
             
             // 1. Index Status
-            let search = curd_core::SearchEngine::new(&resolved);
-            if let Some(stats) = search.last_index_stats() {
+            let config = curd_core::config::CurdConfig::load_from_workspace(&resolved);
+            if let Ok(recent_runs) = curd_core::storage::read_recent_index_runs(&resolved, &config, 1) && !recent_runs.is_empty() {
+                let stats = &recent_runs[0];
                 println!("[Index]");
                 println!("  Files Scanned: {}", stats.total_files);
                 println!("  Cache Hits:    {}", stats.cache_hits);
@@ -995,7 +1028,7 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             } else {
                 for entry in entries {
                     println!("Timestamp: {}", entry.timestamp_unix);
-                    println!("Session:   {}", entry.session_id);
+                    println!("Collab:    {}", entry.collaboration_id);
                     println!("Operation: {}", entry.operation);
                     if let Ok(pretty) = serde_json::to_string_pretty(&entry.input) {
                         println!("Input:\n{}\n", pretty);
@@ -1109,16 +1142,28 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             Ok(())
         }
         #[cfg(feature = "core")]
-        Some(Commands::Edit { uri, action, code, root }) => {
+        Some(Commands::Edit {
+            uri,
+            action,
+            code,
+            base_state_hash,
+            root,
+        }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
+
             let ee = curd_core::EditEngine::new(&resolved);
             let mut current_uri = uri.clone();
             let session_root = detect_active_session_root(&resolved);
-            
+
             loop {
-                match ee.edit(&current_uri, &code, &action, session_root.as_deref()) {
+                match ee.edit(
+                    &current_uri,
+                    &code,
+                    &action,
+                    base_state_hash.as_deref(),
+                    session_root.as_deref(),
+                ) {
                     Ok(result) => {
                         println!("Edit applied: {}", serde_json::to_string_pretty(&result)?);
                         break;
@@ -1162,18 +1207,18 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             match command {
                 SessionCommands::Begin => {
                     shadow.begin()?;
-                    let engine = curd_core::SessionReviewEngine::new(&resolved);
+                    let engine = curd_core::ReviewCycleEngine::new(&resolved);
                     engine.begin(None)?;
                     println!("Started new shadow transaction.");
                 }
                 SessionCommands::Review => {
-                    let engine = curd_core::SessionReviewEngine::new(&resolved);
+                    let engine = curd_core::ReviewCycleEngine::new(&resolved);
                     let res = engine.review().await?;
                     println!("{}", serde_json::to_string_pretty(&res)?);
                 }
                 SessionCommands::Log => {
                     let history = curd_core::HistoryEngine::new(&resolved);
-                    let shadow_id = shadow.get_session_id();
+                    let shadow_id = shadow.get_transaction_id();
                     let items = history.get_history(100);
                     let filtered: Vec<_> = items.into_iter()
                         .filter(|e| e.transaction_id == shadow_id)
@@ -1182,21 +1227,21 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                 }
                 SessionCommands::Commit => {
                     if !shadow.is_active() {
-                        anyhow::bail!("No active shadow session to commit.");
+                        anyhow::bail!("No active shadow transaction to commit.");
                     }
                     shadow.commit()?;
-                    let engine = curd_core::SessionReviewEngine::new(&resolved);
+                    let engine = curd_core::ReviewCycleEngine::new(&resolved);
                     engine.end()?;
-                    println!("Committed shadow changes to disk and ended session.");
+                    println!("Committed shadow changes to disk and ended review cycle.");
                 }
                 SessionCommands::Rollback => {
                     if !shadow.is_active() {
-                        anyhow::bail!("No active shadow session to rollback.");
+                        anyhow::bail!("No active shadow transaction to rollback.");
                     }
                     shadow.rollback();
-                    let engine = curd_core::SessionReviewEngine::new(&resolved);
+                    let engine = curd_core::ReviewCycleEngine::new(&resolved);
                     engine.end()?;
-                    println!("Discarded active shadow transaction and ended session.");
+                    println!("Discarded active shadow transaction and ended review cycle.");
                 }
             }
             Ok(())
@@ -1268,38 +1313,10 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                         // Real Execution requires full Context
                         println!("Executing Plan {} under Session {}...", id, session);
                         let plan: curd_core::Plan = serde_json::from_value(plan_json)?;
-                        let session_uuid = uuid::Uuid::parse_str(&session).map_err(|_| anyhow::anyhow!("Invalid session UUID"))?;
+                        let _session_uuid = uuid::Uuid::parse_str(&session).map_err(|_| anyhow::anyhow!("Invalid session UUID format"))?;
                         
-                        let (tx, _) = tokio::sync::broadcast::channel(100);
-                        let ctx = curd_core::context::EngineContext {
-                            workspace_root: resolved.clone(),
-                            session_id: session_uuid,
-                            read_only: false,
-                            config: curd_core::CurdConfig::load_from_workspace(&resolved),
-                            se: std::sync::Arc::new(curd_core::SearchEngine::new(&resolved)),
-                            re: std::sync::Arc::new(curd_core::ReadEngine::new(&resolved)),
-                            ee: std::sync::Arc::new(curd_core::EditEngine::new(&resolved)),
-                            ge: std::sync::Arc::new(curd_core::GraphEngine::new(&resolved)),
-                            we: std::sync::Arc::new(curd_core::WorkspaceEngine::new(&resolved)),
-                            ple: std::sync::Arc::new(curd_core::PlanEngine::new(&resolved)),
-                            mu: std::sync::Arc::new(curd_core::MutationEngine::new(&resolved)),
-                            fe: std::sync::Arc::new(curd_core::FindEngine::new(&resolved)),
-                            de: std::sync::Arc::new(curd_core::DiagramEngine::new(&resolved)),
-                            fie: std::sync::Arc::new(curd_core::FileEngine::new(&resolved)),
-                            le: std::sync::Arc::new(curd_core::LspEngine::new(&resolved)),
-                            pe: std::sync::Arc::new(curd_core::ProfileEngine::new(&resolved)),
-                            dbe: std::sync::Arc::new(curd_core::DebugEngine::new(&resolved)),
-                            doce: std::sync::Arc::new(curd_core::DocEngine::new()),
-                            doctore: std::sync::Arc::new(curd_core::doctor::DoctorEngine::new(&resolved)),
-                            sre: std::sync::Arc::new(curd_core::SessionReviewEngine::new(&resolved)),
-                            he: std::sync::Arc::new(curd_core::HistoryEngine::new(&resolved)),
-                            tx_events: tx,
-                            global_state: std::sync::Arc::new(tokio::sync::Mutex::new(curd_core::ReplState::new())),
-                            sessions: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-                            pending_challenges: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-                            watchdog: std::sync::Arc::new(curd_core::Watchdog::new(resolved.clone())),
-                            she: std::sync::Arc::new(curd_core::ShellEngine::new(&resolved)),
-                        };
+                        let ctx_arc = curd_core::context::EngineContext::new(resolved.to_str().unwrap());
+                        let ctx = ctx_arc.clone_for_repl();
                         
                         let mut state = curd_core::ReplState::new();
                         state.active_plan = Some(plan);

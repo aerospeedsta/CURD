@@ -130,10 +130,10 @@ console.log(results);
 ./target/release/curd doctor . --index-mode fast --report-out .curd/benchmarks/doctor_fast.json
 
 # Build planning via CURD control plane (dry-run)
-./target/release/curd build .
+./target/release/curd build release --plan
 
 # Execute planned build commands
-./target/release/curd build . --execute
+./target/release/curd build release
 ```
 
 ## 4c Diagnostics Shortcuts

@@ -48,6 +48,20 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
     }
     let profile = req.profile.unwrap_or_else(|| "debug".to_string());
 
+    // Task mapping: If the target matches a task, use the task's command
+    if let Some(ref t) = req.target {
+        if let Some(task_cmd) = cfg.build.tasks.get(t) {
+            if req.command.is_none() {
+                let mut full_cmd = task_cmd.clone();
+                if !req.trailing_args.is_empty() {
+                    full_cmd.push(' ');
+                    full_cmd.push_str(&req.trailing_args.join(" "));
+                }
+                req.command = Some(full_cmd);
+            }
+        }
+    }
+
     let mut untrusted_confirmation_required = false;
     
     let (mut steps, adapter) = if let Some(cmd) = req.command {

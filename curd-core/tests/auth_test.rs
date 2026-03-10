@@ -1,15 +1,7 @@
-use curd_core::{
-    DebugEngine, DiagramEngine, DocEngine, EditEngine, EngineContext, FileEngine, FindEngine,
-    GraphEngine, HistoryEngine, LspEngine, PlanEngine, ProfileEngine, ReadEngine, SearchEngine,
-    SessionReviewEngine, ShellEngine, Watchdog, WorkspaceEngine,
-    mcp::{McpServerMode, handle_tools_call},
-};
+use curd_core::{EngineContext, mcp::{McpServerMode, handle_tools_call}};
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
 
 macro_rules! call_tool {
@@ -36,39 +28,9 @@ async fn test_auth_handshake_and_isolation() -> anyhow::Result<()> {
     let dir = tempdir()?;
     let root = dir.path();
     std::fs::create_dir_all(root.join(".curd/identities"))?;
+    std::fs::write(root.join("curd.toml"), "[edit]\nenforce_transactional = false\n")?;
 
-    let root_path = PathBuf::from(root);
-    let (tx_events, _) = broadcast::channel(1024);
-    let session_id = Uuid::new_v4();
-    let watchdog = Arc::new(Watchdog::new(root_path.clone()));
-
-    let ctx = EngineContext {
-        workspace_root: root_path.clone(),
-        session_id, read_only: false,
-        se: Arc::new(SearchEngine::new(root).with_events(tx_events.clone())),
-        re: Arc::new(ReadEngine::new(root)),
-        ee: Arc::new(EditEngine::new(root).with_watchdog(watchdog.clone())),
-        ge: Arc::new(GraphEngine::new(root)),
-            ple: Arc::new(crate::PlanEngine::new(root)),
-            she: Arc::new(crate::ShellEngine::new(root)),
-        we: Arc::new(WorkspaceEngine::new(root)),
-        mu: Arc::new(curd_core::MutationEngine::new(root)),
-        fe: Arc::new(FindEngine::new(root)),
-        de: Arc::new(DiagramEngine::new(root)),
-        fie: Arc::new(FileEngine::new(root)),
-        le: Arc::new(LspEngine::new(root)),
-        pe: Arc::new(ProfileEngine::new(root)),
-        dbe: Arc::new(DebugEngine::new(root)),
-        sre: Arc::new(SessionReviewEngine::new(root)),
-        doce: Arc::new(DocEngine::new()),
-        doctore: Arc::new(curd_core::doctor::DoctorEngine::new(&root_path)),
-        he: Arc::new(HistoryEngine::new(root)),
-        tx_events,
-        global_state: Arc::new(Mutex::new(curd_core::ReplState::new())),
-        sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
-        pending_challenges: Arc::new(Mutex::new(std::collections::HashMap::new())),
-        watchdog,
-    };
+    let ctx = EngineContext::new(root.to_str().unwrap());
 
     // 1. Generate Keypair (simulating an agent)
     let mut secret_bytes = [0u8; 32];
@@ -80,6 +42,9 @@ async fn test_auth_handshake_and_isolation() -> anyhow::Result<()> {
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect::<String>();
+
+    let auth_file = root.join(".curd/authorized_agents.json");
+    std::fs::write(&auth_file, format!("{{\"test_agent\": \"{}\"}}", pub_hex)).unwrap();
 
     // 2. Open Session (Challenge)
     let open_res = call_tool!("session_open", json!({"pubkey_hex": pub_hex}), ctx);
@@ -153,6 +118,7 @@ async fn test_auth_handshake_and_isolation() -> anyhow::Result<()> {
         }),
         ctx
     );
+    println!("DEBUG: plan_res = {}", plan_res);
     assert_eq!(plan_res["status"], "ok");
     assert!(root.join("42").exists());
 

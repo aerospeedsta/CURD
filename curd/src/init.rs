@@ -187,7 +187,7 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
         if install_mcp {
             println!("Initializing MCP for harness: {}...", harness);
             let agent_name = name_override.unwrap_or(&harness);
-            let (_, priv_hex, pub_hex) = auth_manager.generate_keypair(agent_name)?;
+            let (_, _priv_hex, pub_hex) = auth_manager.generate_keypair(agent_name)?;
 
             // Save public key
             let auth_file = workspace_root.join(".curd").join("authorized_agents.json");
@@ -203,8 +203,7 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
                 "command": command_path.clone(),
                 "args": ["mcp", workspace_root.to_string_lossy().to_string()],
                 "env": {
-                    "CURD_AGENT_ID": agent_name,
-                    "CURD_PRIVATE_KEY": priv_hex
+                    "CURD_AGENT_ID": agent_name
                 }
             });
 

@@ -138,7 +138,7 @@ fn detect_build_systems(root: &Path) -> Vec<BuildSystemMatch> {
 }
 
 /// Scaffold the `.curd/` directory structure.
-fn scaffold_curd_dir(root: &Path) -> Result<()> {
+fn scaffold_curd_dir(root: &Path, info: &WorkspaceInfo) -> Result<()> {
     let curd_dir = root.join(".curd");
     fs::create_dir_all(curd_dir.join("builds"))?;
     fs::create_dir_all(curd_dir.join("feedback"))?;
@@ -154,11 +154,14 @@ fn scaffold_curd_dir(root: &Path) -> Result<()> {
         || root.join("CURD.toml").exists();
 
     if !has_config {
-        let default_config = r#"# CURD Workspace Configuration
+        let mut default_config = r#"# CURD Workspace Configuration
 # See https://github.com/curd-dev/curd for documentation.
 
 [index]
 mode = "full"                # full|fast|lazy|scoped
+
+[workspace]
+require_open_for_all_tools = false
 
 [edit]
 churn_limit = 0.30
@@ -166,7 +169,56 @@ enforce_transactional = true # Mandatory sessions for AI agents
 
 [doctor]
 strict = false
-"#;
+
+[build.tasks]
+"#
+        .to_string();
+
+        let mut added_tasks = false;
+        for bs in &info.build_systems {
+            match bs.name {
+                "Cargo" => {
+                    default_config.push_str("build = \"cargo build\"\n");
+                    default_config.push_str("release = \"cargo build --release\"\n");
+                    default_config.push_str("test = \"cargo test\"\n");
+                    added_tasks = true;
+                }
+                "CMake" | "Makefile" => {
+                    default_config.push_str("build = \"make\"\n");
+                    default_config.push_str("clean = \"make clean\"\n");
+                    added_tasks = true;
+                }
+                "npm" | "yarn" | "pnpm" | "bun" => {
+                    let pm = bs.name;
+                    default_config.push_str(&format!("dev = \"{} run dev\"\n", pm));
+                    default_config.push_str(&format!("build = \"{} run build\"\n", pm));
+                    added_tasks = true;
+                }
+                "Go" => {
+                    default_config.push_str("build = \"go build ./...\"\n");
+                    default_config.push_str("test = \"go test ./...\"\n");
+                    added_tasks = true;
+                }
+                "Poetry/uv" => {
+                    if root.join("uv.lock").exists() {
+                        default_config.push_str("install = \"uv sync\"\n");
+                        default_config.push_str("test = \"uv run pytest\"\n");
+                    } else {
+                        default_config.push_str("install = \"poetry install\"\n");
+                        default_config.push_str("test = \"poetry run pytest\"\n");
+                    }
+                    added_tasks = true;
+                }
+                _ => {}
+            }
+        }
+        
+        if !added_tasks {
+            default_config.push_str("# build = \"make build\"\n");
+            default_config.push_str("# release = \"make release\"\n");
+            default_config.push_str("# test = \"make test\"\n");
+        }
+
         fs::write(curd_dir.join("curd.toml"), default_config)?;
     }
 
@@ -230,9 +282,9 @@ pub fn run_init(root: &Path) -> Result<()> {
     let curd_dir = root.join(".curd");
     if curd_dir.exists() {
         println!("  .curd/ directory already exists — ensuring subdirectories...");
-        scaffold_curd_dir(root)?;
+        scaffold_curd_dir(root, &info)?;
     } else {
-        scaffold_curd_dir(root)?;
+        scaffold_curd_dir(root, &info)?;
         println!("  ✅ Created .curd/ directory:");
         println!("     ├── builds/      (build capture logs)");
         println!("     ├── feedback/    (annotation ledger)");
@@ -273,7 +325,7 @@ pub fn run_init(root: &Path) -> Result<()> {
     // Next steps
     println!("\n  Next steps:");
     println!("    curd doctor .        Run diagnostics on this workspace");
-    println!("    curd build .         Plan a build via CURD's adapters");
+    println!("    curd build release   Plan and execute a task defined in settings.toml");
     #[cfg(feature = "mcp")]
     println!("    curd mcp .           Start the MCP server");
     #[cfg(feature = "mcp")]

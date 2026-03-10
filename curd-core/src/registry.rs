@@ -11,6 +11,7 @@ pub struct LanguageDef {
     pub backend: String,
     pub query_file: Option<String>,
     pub wasm_file: Option<String>,
+    pub plugin_path: Option<String>,
     #[serde(skip)]
     pub embedded_query: Option<&'static str>,
 }
@@ -73,14 +74,18 @@ impl GrammarRegistry {
         if let Some(cpp) = registry.languages.get_mut("cpp") { cpp.embedded_query = Some(crate::symbols::CPP_QUERY); }
         if let Some(java) = registry.languages.get_mut("java") { java.embedded_query = Some(crate::symbols::JAVA_QUERY); }
 
-        let custom_toml = workspace_root.join(".curd/grammars/languages.toml");
-        if custom_toml.exists()
-            && let Ok(content) = fs::read_to_string(&custom_toml)
-                && let Ok(custom_reg) = toml::from_str::<GrammarRegistry>(&content) {
-                    for (name, def) in custom_reg.languages {
-                        registry.languages.insert(name, def);
+        for custom_toml in [
+            workspace_root.join(".curd/grammars/languages.toml"),
+            workspace_root.join(".curd/plugins/lang/languages.toml"),
+        ] {
+            if custom_toml.exists()
+                && let Ok(content) = fs::read_to_string(&custom_toml)
+                    && let Ok(custom_reg) = toml::from_str::<GrammarRegistry>(&content) {
+                        for (name, def) in custom_reg.languages {
+                            registry.languages.insert(name, def);
+                        }
                     }
-                }
+        }
         registry
     }
 
@@ -96,8 +101,13 @@ impl GrammarRegistry {
     pub fn get_query(&self, lang: &str, workspace_root: &Path) -> Option<String> {
         let def = self.languages.get(lang)?;
         if let Some(qf) = &def.query_file {
-            let path = workspace_root.join(".curd/grammars").join(qf);
-            if let Ok(content) = fs::read_to_string(path) {
+            let path = Path::new(qf);
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                workspace_root.join(".curd/grammars").join(qf)
+            };
+            if let Ok(content) = fs::read_to_string(resolved) {
                 return Some(content);
             }
         }

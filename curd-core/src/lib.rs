@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod build;
+pub mod collab;
 pub mod config;
 pub mod context;
 pub mod context_link;
@@ -21,25 +22,36 @@ pub mod lsp;
 pub mod lsp_client;
 pub mod mcp;
 pub mod mutation;
+pub mod lang_plugin;
 pub mod parser;
 pub mod plan;
+pub mod plugin_client;
+pub mod plugin_packages;
 pub mod profile;
 pub mod read;
 pub mod refactor;
 pub mod registry;
 pub mod sandbox;
 pub mod search;
-pub mod session_review;
+pub mod review_cycle;
 pub mod shell;
 pub mod storage;
 pub mod symbols;
+pub mod trace;
 pub mod transaction;
+pub mod tool_plugin;
+pub mod tool_group;
+pub mod variants;
 pub mod watchdog;
 pub mod workspace;
 
 // Re-export core items for easy access by downstream consumers
 pub use auth::IdentityManager;
 pub use build::{BuildRequest, BuildResponse, BuildStep, run_build};
+pub use collab::{
+    CollaborationCapability, CollaborationState, CollaborationStore, HumanOverrideLock,
+    ParticipantBinding, ParticipantRole, role_allows,
+};
 pub use config::{ConfigFinding, CurdConfig, check_workspace_config, validate_workspace_config};
 pub use context_link::{ContextLink, ContextMode, ContextRegistry};
 pub use diff::run_diff;
@@ -64,11 +76,16 @@ pub use find::FindEngine;
 pub use graph::{DependencyGraph, GraphEngine};
 pub use history::HistoryEngine;
 pub use lsp::LspEngine;
+pub use lang_plugin::LangPluginEngine;
 pub use mutation::MutationEngine;
 pub use mcp::{API_VERSION, McpServer, McpServerMode};
 pub use parser::ParserManager;
-pub use plan::{DslNode, Plan, PlanEngine, ReplState};
+pub use plan::{DslNode, Plan, PlanEngine, ReplState, SystemEvent, SystemEventEnvelope};
 pub use profile::ProfileEngine;
+pub use plugin_packages::{
+    InstalledPluginRecord, LanguagePluginSpec, PluginArchive, PluginFileManifest, PluginKind,
+    ToolDocExample, ToolDocParameter, ToolPluginSpec, TrustedPluginKey, TrustedPluginKeySet,
+};
 pub use read::ReadEngine;
 pub use refactor::{RefactorAction, run_refactor};
 pub use registry::{GrammarRegistry, LanguageDef};
@@ -76,11 +93,16 @@ pub use sandbox::Sandbox;
 pub use search::{
     IndexBuildStats, IndexWorkerRequest, IndexWorkerResponse, SearchEngine, run_index_worker,
 };
-pub use session_review::SessionReviewEngine;
+pub use review_cycle::ReviewCycleEngine;
 pub use shell::ShellEngine;
 pub use storage::{IndexRunRecord, Storage, read_recent_index_runs, record_index_run};
 pub use symbols::{Symbol, SymbolIndex, SymbolKind};
+pub use tool_plugin::ToolPluginEngine;
+pub use tool_group::{AdoptedToolDescriptor, ToolGroupEngine, ToolGroupRecord, ToolGroupSource};
 pub use transaction::ShadowStore;
+pub use variants::{
+    PlanSet, PlanVariant, PlanVariantStatus, VariantStore, VariantWorkspaceBackend,
+};
 pub use watchdog::Watchdog;
 pub use workspace::{WorkspaceEngine, list_workspace, scan_workspace};
 

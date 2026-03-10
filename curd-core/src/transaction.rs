@@ -127,7 +127,9 @@ impl ShadowStore {
     /// Start a new transaction or a nested savepoint.
     pub fn begin(&mut self) -> Result<()> {
         if !self.active && crate::workspace::is_workspace_locked(&self.workspace_root) {
-            anyhow::bail!("Cannot start session: Workspace is locked by another active session.");
+            anyhow::bail!(
+                "Cannot start transaction: Workspace is locked by another active transaction."
+            );
         }
 
         if self.active {
@@ -306,8 +308,8 @@ impl ShadowStore {
         self.shadow_root.as_ref()
     }
 
-    /// Returns the UUID of the active session, if any.
-    pub fn get_session_id(&self) -> Option<Uuid> {
+    /// Returns the UUID of the active transaction, if any.
+    pub fn get_transaction_id(&self) -> Option<Uuid> {
         self.shadow_root.as_ref().and_then(|root| {
             let name = root.file_name()?.to_string_lossy();
             if name.starts_with("curd_shadow_") {

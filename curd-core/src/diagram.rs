@@ -223,7 +223,7 @@ mod tests {
         let uris = vec!["a.py::x".to_string()];
         let edges = vec![("a.py::x".to_string(), "b.py::y".to_string())];
         let out = render_ascii(&uris, &edges);
-        assert!(out.contains("a.py::x -> b.py::y"));
+        assert!(out.contains("└── b.py::y"));
     }
 
     #[test]

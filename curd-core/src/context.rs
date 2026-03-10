@@ -1,10 +1,12 @@
 use crate::{
-    CurdConfig, DebugEngine, DiagramEngine, DocEngine, DslNode, EditEngine, FileEngine, FindEngine,
-    GraphEngine, HistoryEngine, IndexBuildStats, LspEngine, MutationEngine, Plan, PlanEngine, ProfileEngine,
-    ReadEngine, ReplState, SearchEngine, SessionReviewEngine, ShellEngine, SymbolKind, Watchdog,
-    WorkspaceEngine,
+    CollaborationStore, CurdConfig, DebugEngine, DiagramEngine, DocEngine, DslNode, EditEngine,
+    FileEngine, FindEngine, GraphEngine, HistoryEngine, IndexBuildStats, LspEngine,
+    LangPluginEngine, MutationEngine, ParticipantRole, Plan, PlanEngine, ProfileEngine,
+    ReadEngine, ReplState, ReviewCycleEngine, SearchEngine, ShellEngine, SymbolKind,
+    ToolGroupEngine, ToolPluginEngine, VariantStore,
+    VariantWorkspaceBackend, Watchdog, WorkspaceEngine,
     doctor::{DoctorEngine, DoctorIndexConfig, DoctorProfile, DoctorThresholds},
-    plan::SystemEvent,
+    plan::{SystemEvent, SystemEventEnvelope},
     read_recent_index_runs,
 };
 use std::str::FromStr;
@@ -14,16 +16,374 @@ use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
 
+use std::future::Future;
+use std::pin::Pin;
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn is_risky(&self) -> bool { false }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value>;
+}
+
+/// A macro to wrap simple stateless handlers into the Tool trait
+macro_rules! define_legacy_tool {
+    ($struct_name:ident, $name_str:expr, $handler_fn:ident, $risky:expr) => {
+        pub struct $struct_name;
+        impl Tool for $struct_name {
+            fn name(&self) -> &'static str { $name_str }
+            fn is_risky(&self) -> bool { $risky }
+            fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+                Box::pin(async move {
+                    $handler_fn(params, ctx).await
+                })
+            }
+        }
+    };
+}
+
+macro_rules! define_stateless_tool {
+    ($struct_name:ident, $name_str:expr, $handler_fn:ident, $risky:expr) => {
+        pub struct $struct_name;
+        impl Tool for $struct_name {
+            fn name(&self) -> &'static str { $name_str }
+            fn is_risky(&self) -> bool { $risky }
+            fn call<'a>(&'a self, params: &'a Value, _ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+                Box::pin(async move {
+                    $handler_fn(params).await
+                })
+            }
+        }
+    };
+}
+
+// Wrap some of our basic stateless tools
+define_legacy_tool!(SearchTool, "search", handle_search, false);
+define_legacy_tool!(ContractTool, "contract", handle_contract, false);
+define_legacy_tool!(WorkspaceTool, "workspace", handle_workspace, false);
+define_legacy_tool!(StaminaTool, "stamina", handle_stamina, false);
+define_legacy_tool!(CheckpointTool, "checkpoint", handle_checkpoint, false);
+define_legacy_tool!(DelegateTool, "delegate", handle_delegate, false);
+define_legacy_tool!(FrontierTool, "frontier", handle_frontier, false);
+define_legacy_tool!(CrawlTool, "crawl", handle_crawl, false);
+define_legacy_tool!(RegisterPlanTool, "register_plan", handle_register_plan, false);
+define_legacy_tool!(BindParticipantRoleTool, "bind_participant_role", handle_bind_participant_role, false);
+define_legacy_tool!(ListSessionParticipantsTool, "list_session_participants", handle_list_session_participants, false);
+define_legacy_tool!(ListCollaborationParticipantsTool, "list_collaboration_participants", handle_list_session_participants, false);
+define_legacy_tool!(ClaimHumanOverrideTool, "claim_human_override", handle_claim_human_override, false);
+define_legacy_tool!(ReleaseHumanOverrideTool, "release_human_override", handle_release_human_override, false);
+define_legacy_tool!(CreatePlanSetTool, "create_plan_set", handle_create_plan_set, false);
+define_legacy_tool!(ListPlanSetsTool, "list_plan_sets", handle_list_plan_sets, false);
+define_legacy_tool!(CreatePlanVariantTool, "create_plan_variant", handle_create_plan_variant, false);
+define_legacy_tool!(ListPlanVariantsTool, "list_plan_variants", handle_list_plan_variants, false);
+define_legacy_tool!(SimulatePlanVariantTool, "simulate_plan_variant", handle_simulate_plan_variant, false);
+define_legacy_tool!(ComparePlanVariantsTool, "compare_plan_variants", handle_compare_plan_variants, false);
+define_legacy_tool!(ReviewPlanVariantTool, "review_plan_variant", handle_review_plan_variant, false);
+define_legacy_tool!(PromotePlanVariantTool, "promote_plan_variant", handle_promote_plan_variant, true);
+define_legacy_tool!(ToolPluginManageTool, "plugin_tool", handle_tool_plugin, false);
+define_legacy_tool!(LanguagePluginManageTool, "plugin_language", handle_language_plugin, false);
+define_legacy_tool!(ToolGroupManageTool, "tool_group", handle_tool_group, false);
+define_legacy_tool!(PluginTrustManageTool, "plugin_trust", handle_plugin_trust, false);
+
+use crate::mcp::{handle_connection_open, handle_connection_verify};
+
+pub struct SessionOpenTool;
+impl Tool for SessionOpenTool {
+    fn name(&self) -> &'static str { "session_open" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_connection_open(params, ctx).await
+        })
+    }
+}
+
+pub struct SessionVerifyTool;
+impl Tool for SessionVerifyTool {
+    fn name(&self) -> &'static str { "session_verify" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_connection_verify(params, ctx).await
+        })
+    }
+}
+
+pub struct ConnectionOpenTool;
+impl Tool for ConnectionOpenTool {
+    fn name(&self) -> &'static str { "connection_open" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_connection_open(params, ctx).await
+        })
+    }
+}
+
+pub struct ConnectionVerifyTool;
+impl Tool for ConnectionVerifyTool {
+    fn name(&self) -> &'static str { "connection_verify" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_connection_verify(params, ctx).await
+        })
+    }
+}
+
+pub struct ReadTool;
+impl Tool for ReadTool {
+    fn name(&self) -> &'static str { "read" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_read(params, Arc::clone(&ctx.re), shadow_root).await
+        })
+    }
+}
+
+pub struct EditTool;
+impl Tool for EditTool {
+    fn name(&self) -> &'static str { "edit" }
+    fn is_risky(&self) -> bool { true }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_edit(params, Arc::clone(&ctx.ee), shadow_root).await
+        })
+    }
+}
+
+pub struct ManageFileTool;
+impl Tool for ManageFileTool {
+    fn name(&self) -> &'static str { "manage_file" }
+    fn is_risky(&self) -> bool { true }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_manage_file(params, Arc::clone(&ctx.fie), shadow_root).await
+        })
+    }
+}
+
+pub struct MutateTool;
+impl Tool for MutateTool {
+    fn name(&self) -> &'static str { "mutate" }
+    fn is_risky(&self) -> bool { true }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_mutate(params, Arc::clone(&ctx.mu), shadow_root).await
+        })
+    }
+}
+
+pub struct ShellTool;
+impl Tool for ShellTool {
+    fn name(&self) -> &'static str { "shell" }
+    fn is_risky(&self) -> bool { true }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        })
+    }
+}
+
+pub struct ShellStatusTool;
+impl Tool for ShellStatusTool {
+    fn name(&self) -> &'static str { "shell_status" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        })
+    }
+}
+
+pub struct TerminateTool;
+impl Tool for TerminateTool {
+    fn name(&self) -> &'static str { "terminate" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
+        })
+    }
+}
+
+pub struct GraphTool;
+impl Tool for GraphTool {
+    fn name(&self) -> &'static str { "graph" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_graph(params, Arc::clone(&ctx.ge)).await
+        })
+    }
+}
+
+pub struct DiagramTool;
+impl Tool for DiagramTool {
+    fn name(&self) -> &'static str { "diagram" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_diagram(params, Arc::clone(&ctx.de)).await
+        })
+    }
+}
+
+pub struct LspTool;
+impl Tool for LspTool {
+    fn name(&self) -> &'static str { "lsp" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_lsp(params, &ctx.le).await
+        })
+    }
+}
+
+pub struct ProfileTool;
+impl Tool for ProfileTool {
+    fn name(&self) -> &'static str { "profile" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_profile(params, &ctx.pe).await
+        })
+    }
+}
+
+pub struct DebugTool;
+impl Tool for DebugTool {
+    fn name(&self) -> &'static str { "debug" }
+    fn is_risky(&self) -> bool { true }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_debug_dispatcher(params, &ctx.dbe).await
+        })
+    }
+}
+
+pub struct SessionTool;
+impl Tool for SessionTool {
+    fn name(&self) -> &'static str { "session" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_review_cycle_dispatcher(params, &ctx.rce).await
+        })
+    }
+}
+
+pub struct ReviewCycleTool;
+impl Tool for ReviewCycleTool {
+    fn name(&self) -> &'static str { "review_cycle" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_review_cycle_dispatcher(params, &ctx.rce).await
+        })
+    }
+}
+
+pub struct DoctorTool;
+impl Tool for DoctorTool {
+    fn name(&self) -> &'static str { "doctor" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_doctor(params, &ctx.doctore).await
+        })
+    }
+}
+
+pub struct RefactorTool;
+impl Tool for RefactorTool {
+    fn name(&self) -> &'static str { "refactor" }
+    fn is_risky(&self) -> bool { true }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let _ = params;
+            let _ = ctx;
+            json!({"error": "Refactor tool not implemented."})
+        })
+    }
+}
+
+pub struct TemplateTool;
+impl Tool for TemplateTool {
+    fn name(&self) -> &'static str { "template" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_template(params, ctx).await
+        })
+    }
+}
+
+pub struct ProposalTool;
+impl Tool for ProposalTool {
+    fn name(&self) -> &'static str { "proposal" }
+    fn is_risky(&self) -> bool { true }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_proposal(params, ctx).await
+        })
+    }
+}
+
+define_stateless_tool!(ResearchTool, "research", handle_research, false);
+define_stateless_tool!(SimulateTool, "simulate", handle_simulate, false);
+
+pub struct ProposePlanTool;
+impl Tool for ProposePlanTool {
+    fn name(&self) -> &'static str { "propose_plan" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_propose_plan(params, ctx).await
+        })
+    }
+}
+
+pub struct ExecuteActivePlanTool;
+impl Tool for ExecuteActivePlanTool {
+    fn name(&self) -> &'static str { "execute_active_plan" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_execute_active_plan(params, ctx).await
+        })
+    }
+}
+
+pub struct BenchmarkTool;
+impl Tool for BenchmarkTool {
+    fn name(&self) -> &'static str { "benchmark" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            let allow_bench = cfg!(debug_assertions) || std::env::var("CURD_ALLOW_BENCHMARK").is_ok();
+            if allow_bench {
+                handle_benchmark(params, ctx).await
+            } else {
+                json!({"error": "The benchmark tool is disabled in release builds for security and stability. Set CURD_ALLOW_BENCHMARK=1 to override."})
+            }
+        })
+    }
+}
+
+pub struct DocTool;
+impl Tool for DocTool {
+    fn name(&self) -> &'static str { "doc" }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move {
+            handle_doc(params, ctx).await
+        })
+    }
+}
+
 pub struct EngineContext {
     pub workspace_root: PathBuf,
-    pub session_id: Uuid,
+    pub collaboration_id: Uuid,
     pub read_only: bool,
     pub config: CurdConfig,
+    pub registry: Arc<HashMap<String, Arc<dyn Tool>>>,
     pub se: Arc<SearchEngine>,
     pub re: Arc<ReadEngine>,
     pub ee: Arc<EditEngine>,
@@ -36,27 +396,39 @@ pub struct EngineContext {
     pub le: Arc<LspEngine>,
     pub pe: Arc<ProfileEngine>,
     pub dbe: Arc<DebugEngine>,
-    pub sre: Arc<SessionReviewEngine>,
+    pub rce: Arc<ReviewCycleEngine>,
     pub doce: Arc<DocEngine>,
     pub doctore: Arc<DoctorEngine>,
     pub ple: Arc<PlanEngine>,
+    pub lpe: Arc<LangPluginEngine>,
+    pub tpe: Arc<ToolPluginEngine>,
+    pub tge: Arc<ToolGroupEngine>,
     pub he: Arc<HistoryEngine>,
+    pub ce: Arc<crate::history::ContributionLedger>,
     pub mu: Arc<MutationEngine>,
     pub tx_events: broadcast::Sender<SystemEvent>,
     pub global_state: Arc<Mutex<ReplState>>,
-    pub sessions: Arc<Mutex<HashMap<String, SessionEntry>>>,
-    pub pending_challenges: Arc<Mutex<HashMap<String, String>>>,
+    pub connections: Arc<Mutex<HashMap<String, ConnectionEntry>>>,
+    pub pending_challenges: Arc<Mutex<HashMap<String, PendingChallenge>>>,
     pub watchdog: Arc<Watchdog>,
+    pub locks: Arc<Mutex<HashMap<String, LockInfo>>>,
+    pub event_seq: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionBudget {
+pub struct LockInfo {
+    pub owner_id: String, // "human" or agent_id
+    pub expires_at_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionBudget {
     pub tokens_consumed: u64,
     pub hazardous_calls_made: u64,
     pub started_at_secs: u64,
 }
 
-impl Default for SessionBudget {
+impl Default for ConnectionBudget {
     fn default() -> Self {
         Self {
             tokens_consumed: 0,
@@ -69,20 +441,28 @@ impl Default for SessionBudget {
     }
 }
 
-pub struct SessionEntry {
+pub struct ConnectionEntry {
+    pub agent_id: String,
     pub pubkey_hex: String,
     pub state: ReplState,
-    pub budget: SessionBudget,
+    pub budget: ConnectionBudget,
     pub last_touched_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingChallenge {
+    pub nonce_hex: String,
+    pub created_at_secs: u64,
 }
 
 impl EngineContext {
     pub fn clone_for_repl(&self) -> Self {
         Self {
             workspace_root: self.workspace_root.clone(),
-            session_id: self.session_id,
+            collaboration_id: self.collaboration_id,
             read_only: self.read_only,
             config: self.config.clone(),
+            registry: Arc::clone(&self.registry),
             se: Arc::clone(&self.se),
             re: Arc::clone(&self.re),
             ee: Arc::clone(&self.ee),
@@ -95,17 +475,23 @@ impl EngineContext {
             le: Arc::clone(&self.le),
             pe: Arc::clone(&self.pe),
             dbe: Arc::clone(&self.dbe),
-            sre: Arc::clone(&self.sre),
+            rce: Arc::clone(&self.rce),
             doce: Arc::clone(&self.doce),
             doctore: Arc::clone(&self.doctore),
             ple: Arc::clone(&self.ple),
+            lpe: Arc::clone(&self.lpe),
+            tpe: Arc::clone(&self.tpe),
+            tge: Arc::clone(&self.tge),
             he: Arc::clone(&self.he),
+            ce: Arc::clone(&self.ce),
             mu: Arc::clone(&self.mu),
             tx_events: self.tx_events.clone(),
             global_state: Arc::clone(&self.global_state),
-            sessions: Arc::clone(&self.sessions),
+            connections: Arc::clone(&self.connections),
             pending_challenges: Arc::clone(&self.pending_challenges),
             watchdog: Arc::clone(&self.watchdog),
+            locks: Arc::clone(&self.locks),
+            event_seq: Arc::clone(&self.event_seq),
         }
     }
 
@@ -114,7 +500,7 @@ impl EngineContext {
         let watchdog = Arc::new(Watchdog::new(root_path.clone()));
         watchdog.start();
 
-        let session_id = Uuid::new_v4();
+        let collaboration_id = Uuid::new_v4();
         let (tx_events, _) = tokio::sync::broadcast::channel(1024);
 
         // Session Locking
@@ -126,19 +512,83 @@ impl EngineContext {
         }
 
         if crate::workspace::is_workspace_locked(&root_path) {
-            log::warn!("Workspace is locked by another session. Starting in READ-ONLY mode.");
+            log::warn!("Workspace is locked by another active transaction. Starting in READ-ONLY mode.");
             read_only = true;
         } else {
             let _ = fs::write(&lock_path, std::process::id().to_string());
         }
 
         let config = CurdConfig::load_from_workspace(&root_path);
+        
+        let mut registry_map: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(SearchTool),
+            Arc::new(ContractTool),
+            Arc::new(WorkspaceTool),
+            Arc::new(StaminaTool),
+            Arc::new(CheckpointTool),
+            Arc::new(DelegateTool),
+            Arc::new(FrontierTool),
+            Arc::new(CrawlTool),
+            Arc::new(RegisterPlanTool),
+            Arc::new(BindParticipantRoleTool),
+            Arc::new(ListSessionParticipantsTool),
+            Arc::new(ListCollaborationParticipantsTool),
+            Arc::new(ClaimHumanOverrideTool),
+            Arc::new(ReleaseHumanOverrideTool),
+            Arc::new(CreatePlanSetTool),
+            Arc::new(ListPlanSetsTool),
+            Arc::new(CreatePlanVariantTool),
+            Arc::new(ListPlanVariantsTool),
+            Arc::new(SimulatePlanVariantTool),
+            Arc::new(ComparePlanVariantsTool),
+            Arc::new(ReviewPlanVariantTool),
+            Arc::new(PromotePlanVariantTool),
+            Arc::new(ToolPluginManageTool),
+            Arc::new(LanguagePluginManageTool),
+            Arc::new(ToolGroupManageTool),
+            Arc::new(PluginTrustManageTool),
+            Arc::new(SessionOpenTool),
+            Arc::new(SessionVerifyTool),
+            Arc::new(ConnectionOpenTool),
+            Arc::new(ConnectionVerifyTool),
+            Arc::new(ReadTool),
+            Arc::new(EditTool),
+            Arc::new(ManageFileTool),
+            Arc::new(MutateTool),
+            Arc::new(ShellTool),
+            Arc::new(ShellStatusTool),
+            Arc::new(TerminateTool),
+            Arc::new(GraphTool),
+            Arc::new(DiagramTool),
+            Arc::new(LspTool),
+            Arc::new(ProfileTool),
+            Arc::new(DebugTool),
+            Arc::new(SessionTool),
+            Arc::new(ReviewCycleTool),
+            Arc::new(DoctorTool),
+            Arc::new(RefactorTool),
+            Arc::new(TemplateTool),
+            Arc::new(ProposalTool),
+            Arc::new(ResearchTool),
+            Arc::new(SimulateTool),
+            Arc::new(ProposePlanTool),
+            Arc::new(ExecuteActivePlanTool),
+            Arc::new(BenchmarkTool),
+            Arc::new(DocTool),
+        ];
+
+        for tool in tools {
+            registry_map.insert(tool.name().to_string(), tool);
+        }
 
         Arc::new(EngineContext {
             workspace_root: root_path.clone(),
-            session_id,
+            collaboration_id,
             read_only,
             config: config.clone(),
+            registry: Arc::new(registry_map),
             se: Arc::new(SearchEngine::new(root).with_events(tx_events.clone())),
             re: Arc::new(ReadEngine::new(root)),
             ee: Arc::new(EditEngine::new(root).with_watchdog(watchdog.clone())),
@@ -151,18 +601,36 @@ impl EngineContext {
             le: Arc::new(LspEngine::new(root)),
             pe: Arc::new(ProfileEngine::new(root)),
             dbe: Arc::new(DebugEngine::new(root)),
-            sre: Arc::new(SessionReviewEngine::new(root)),
+            rce: Arc::new(ReviewCycleEngine::new(root)),
             doce: Arc::new(DocEngine::new()),
             doctore: Arc::new(DoctorEngine::new(root)),
             ple: Arc::new(PlanEngine::new(root)),
+            lpe: Arc::new(LangPluginEngine::new(&root_path, config.plugins.clone())),
+            tpe: Arc::new(ToolPluginEngine::new(&root_path, config.plugins.clone())),
+            tge: Arc::new(ToolGroupEngine::new(&root_path, config.plugins.clone())),
             he: Arc::new(HistoryEngine::new(&root_path)),
+            ce: Arc::new(crate::history::ContributionLedger::new(
+                &root_path,
+                config.provenance.clone(),
+            )),
             mu: Arc::new(MutationEngine::new(root)),
             tx_events,
             global_state: Arc::new(Mutex::new(ReplState::new())),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            connections: Arc::new(Mutex::new(HashMap::new())),
             pending_challenges: Arc::new(Mutex::new(HashMap::new())),
             watchdog,
+            locks: Arc::new(Mutex::new(HashMap::new())),
+            event_seq: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    pub fn next_event_envelope(&self, event: SystemEvent) -> SystemEventEnvelope {
+        SystemEventEnvelope {
+            event_id: self.event_seq.fetch_add(1, Ordering::SeqCst) + 1,
+            collaboration_id: self.collaboration_id,
+            ts_secs: crate::plan::now_secs(),
+            event,
+        }
     }
 }
 
@@ -183,28 +651,67 @@ impl Drop for EngineContext {
 }
 
 pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> Value {
+    let workspace_active = ctx.we.shadow.lock().map(|s| s.is_active()).unwrap_or(false);
+
     // Enforcement of Read-Only mode for hazardous tools
     if ctx.read_only && risky_tool(name) {
         return json!({
-            "error": format!("Cannot execute tool '{}': Workspace is locked in READ-ONLY mode by another active session.", name)
+            "error": format!("Cannot execute tool '{}': Workspace is locked in READ-ONLY mode by another active transaction.", name)
         });
     }
 
-    // NEW: Session Enforcement Barrier for hazardous tools
+    if ctx.config.workspace.require_open_for_all_tools && !workspace_optional_tool(name) && !workspace_active {
+        return json!({
+            "error": format!(
+                "WORKSPACE_BARRIER: Cannot execute tool '{}': no active workspace transaction. Run workspace(action: 'begin') first or disable workspace.require_open_for_all_tools in settings.toml.",
+                name
+            )
+        });
+    }
+
+    // Enforcement Barrier for hazardous tools
     if ctx.config.edit.enforce_transactional && risky_tool(name) {
-        let is_active = ctx.we.shadow.lock().map(|s| s.is_active()).unwrap_or(false);
-        if !is_active {
+        if !workspace_active {
             return json!({
-                "error": format!("TRANS_BARRIER: Cannot execute hazardous tool '{}': No active session. All writes must be performed within a CURD session per AGENTS.md safety rules. Run workspace(action: 'begin') first.", name)
+                "error": format!("TRANS_BARRIER: Cannot execute hazardous tool '{}': No active transaction. All writes must be performed within a CURD workspace transaction per AGENTS.md safety rules. Run workspace(action: 'begin') first.", name)
             });
         }
     }
 
+    // 4. Human Override Logic (Lock Table)
+    if risky_tool(name) {
+        let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+        if !uri.is_empty() {
+             let mut locks = ctx.locks.lock().await;
+             let now = now_secs();
+             // Clean up expired locks
+             locks.retain(|_, v| v.expires_at_secs > now);
+             
+             let agent_id = params.get("agent_id").and_then(|v| v.as_str()).unwrap_or("agent");
+             if let Some(lock) = locks.get(uri) {
+                 if lock.owner_id == "human" && agent_id != "human" {
+                      return json!({
+                          "error": "HUMAN_OVERRIDE_CONFLICT: This symbol is currently being edited by a human in the REPL. Agent edits are rejected to prevent state corruption."
+                      });
+                 }
+             }
+             
+             // Auto-lock for current caller
+             locks.insert(uri.to_string(), LockInfo {
+                 owner_id: agent_id.to_string(),
+                 expires_at_secs: now + 300, // 5 minute lock
+             });
+        }
+    }
+
     // 3. Resource Budget Enforcement
-    let session_token = params.get("session_token").and_then(|v| v.as_str());
-    if let Some(token) = session_token {
-        let mut sessions = ctx.sessions.lock().await;
-        if let Some(entry) = sessions.get_mut(token) {
+    let connection_token = params
+        .get("connection_token")
+        .or_else(|| params.get("session_token"))
+        .and_then(|v| v.as_str());
+    if let Some(token) = connection_token {
+        let mut connections = ctx.connections.lock().await;
+        if let Some(entry) = connections.get_mut(token) {
             let now = now_secs();
             let elapsed = now.saturating_sub(entry.budget.started_at_secs);
             
@@ -230,69 +737,31 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
     }
 
     // Capture response for budget tracking (tokens)
-    let res = match name {
-        "search" => handle_search(params, ctx).await,
-        "contract" => handle_contract(params, ctx).await,
-        "read" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
-            handle_read(params, Arc::clone(&ctx.re), shadow_root).await
+    let res = if let Some(tool) = ctx.registry.get(name) {
+        // Apply global 60s timeout to prevent hanging the server
+        match tokio::time::timeout(std::time::Duration::from_secs(60), tool.call(params, ctx)).await {
+            Ok(r) => r,
+            Err(_) => json!({"error": format!("TOOL_TIMEOUT: Execution of '{}' exceeded the maximum allowed duration of 60s.", name)}),
         }
-        "edit" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
-            handle_edit(params, Arc::clone(&ctx.ee), shadow_root).await
+    } else {
+        match ctx.tpe.invoke(name, params).await {
+            Ok(Some(value)) => value,
+            Ok(None) => match ctx.tge.invoke(name, params).await {
+                Ok(Some(value)) => value,
+                Ok(None) => match name {
+                    "find" => json!({"error": "The 'find' tool has been merged into 'search'. Use 'search' with mode='text'."}),
+                    _ => json!({"error": format!("Tool not found: {}", name)}),
+                },
+                Err(err) => json!({"error": format!("Tool group '{}' failed: {}", name, err)}),
+            },
+            Err(err) => json!({"error": format!("Tool plugin '{}' failed: {}", name, err)}),
         }
-        "graph" => handle_graph(params, Arc::clone(&ctx.ge)).await,
-        "workspace" => handle_workspace(params, ctx).await,
-        "find" => {
-            json!({"error": "The 'find' tool has been merged into 'search'. Use 'search' with mode='text'."})
-        }
-        "shell" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
-            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
-        }
-        "shell_status" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
-            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
-        }
-        "terminate" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
-            handle_shell(params, &ctx.she, shadow_root.as_deref()).await
-        }
-        "diagram" => handle_diagram(params, Arc::clone(&ctx.de)).await,
-        "manage_file" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
-            handle_manage_file(params, Arc::clone(&ctx.fie), shadow_root).await
-        }
-        "lsp" => handle_lsp(params, &ctx.le).await,
-        "profile" => handle_profile(params, &ctx.pe).await,
-        "debug" => handle_debug_dispatcher(params, &ctx.dbe).await,
-        "session" => handle_session_dispatcher(params, &ctx.sre).await,
-        "doc" => handle_doc(params, Arc::clone(&ctx.doce)).await,
-        "doctor" => handle_doctor(params, &ctx.doctore).await,
-        "benchmark" => handle_benchmark(params, ctx).await,
-        "stamina" => handle_stamina(params, ctx).await,
-        "simulate" => handle_simulate(params).await,
-        "template" => handle_template(params, ctx).await,
-        "proposal" => handle_proposal(params, ctx).await,
-        "checkpoint" => handle_checkpoint(params, ctx).await,
-        "delegate" => handle_delegate(params, ctx).await,
-        "frontier" => handle_frontier(params, ctx).await,
-        "crawl" => handle_crawl(params, ctx).await,
-        "register_plan" => handle_register_plan(params, ctx).await,
-        "propose_plan" => handle_propose_plan(params, ctx).await,
-        "execute_active_plan" => handle_execute_active_plan(params, ctx).await,
-        "research" => handle_research(params).await,
-        "mutate" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
-            handle_mutate(params, Arc::clone(&ctx.mu), shadow_root).await
-        }
-        _ => json!({"error": format!("Tool not found: {}", name)}),
     };
 
     // Update token consumption (heuristic: 1 token per 4 chars of result)
-    if let Some(token) = session_token {
-        let mut sessions = ctx.sessions.lock().await;
-        if let Some(entry) = sessions.get_mut(token) {
+    if let Some(token) = connection_token {
+        let mut connections = ctx.connections.lock().await;
+        if let Some(entry) = connections.get_mut(token) {
             let res_str = res.to_string();
             let estimated_tokens = (res_str.len() / 4) as u64;
             entry.budget.tokens_consumed += estimated_tokens;
@@ -309,19 +778,52 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
     let error = res.get("error").and_then(|e| e.as_str()).map(|s| s.to_string());
     let success = error.is_none();
 
-    let transaction_id = ctx.we.shadow.lock().ok().and_then(|s| s.get_session_id());
+    let transaction_id = ctx.we.shadow.lock().ok().and_then(|s| s.get_transaction_id());
+
+    let base_hash = params.get("base_state_hash").and_then(|v| v.as_str()).map(|s| s.to_string());
+    
+    // 5. Compute Post-Hash for Traceability
+    let post_hash = if success && risky_tool(name) {
+        ctx.ge.storage().ok().and_then(|s: crate::storage::Storage| s.compute_state_hash().ok())
+    } else {
+        None
+    };
+
+    let agent_id = if let Some(token) = connection_token {
+        ctx.connections.lock().await.get(token).map(|e| e.pubkey_hex.clone())
+    } else {
+        params.get("agent_id").and_then(|v| v.as_str()).map(|s| s.to_string())
+    };
 
     ctx.he.log(
-        ctx.session_id,
+        Some(ctx.event_seq.load(Ordering::SeqCst)),
+        ctx.collaboration_id,
+        agent_id,
         transaction_id,
         name,
         params.clone(),
         res.clone(),
+        base_hash,
+        post_hash,
         success,
         error,
+        None, // verification_result
     );
 
     res
+}
+
+fn workspace_optional_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "workspace"
+            | "connection_open"
+            | "connection_verify"
+            | "session_open"
+            | "session_verify"
+            | "stamina"
+            | "plugin_trust"
+    )
 }
 
 
@@ -362,8 +864,9 @@ async fn execute_benchmark_target(operation: &str, params: &Value, ctx: &EngineC
         "lsp" => handle_lsp(params, &ctx.le).await,
         "profile" => handle_profile(params, &ctx.pe).await,
         "debug" => handle_debug_dispatcher(params, &ctx.dbe).await,
-        "session" => handle_session_dispatcher(params, &ctx.sre).await,
-        "doc" => handle_doc(params, Arc::clone(&ctx.doce)).await,
+        "session" => handle_review_cycle_dispatcher(params, &ctx.rce).await,
+        "review_cycle" => handle_review_cycle_dispatcher(params, &ctx.rce).await,
+        "doc" => handle_doc(params, ctx).await,
         "doctor" => handle_doctor(params, &ctx.doctore).await,
         "simulate" => handle_simulate(params).await,
         "template" => handle_template(params, ctx).await,
@@ -373,6 +876,23 @@ async fn execute_benchmark_target(operation: &str, params: &Value, ctx: &EngineC
         "frontier" => handle_frontier(params, ctx).await,
         "crawl" => handle_crawl(params, ctx).await,
         "register_plan" => handle_register_plan(params, ctx).await,
+        "bind_participant_role" => handle_bind_participant_role(params, ctx).await,
+        "list_session_participants" => handle_list_session_participants(params, ctx).await,
+        "list_collaboration_participants" => handle_list_session_participants(params, ctx).await,
+        "claim_human_override" => handle_claim_human_override(params, ctx).await,
+        "release_human_override" => handle_release_human_override(params, ctx).await,
+        "create_plan_set" => handle_create_plan_set(params, ctx).await,
+        "list_plan_sets" => handle_list_plan_sets(params, ctx).await,
+        "create_plan_variant" => handle_create_plan_variant(params, ctx).await,
+        "list_plan_variants" => handle_list_plan_variants(params, ctx).await,
+        "simulate_plan_variant" => handle_simulate_plan_variant(params, ctx).await,
+        "compare_plan_variants" => handle_compare_plan_variants(params, ctx).await,
+        "review_plan_variant" => handle_review_plan_variant(params, ctx).await,
+        "promote_plan_variant" => handle_promote_plan_variant(params, ctx).await,
+        "plugin_tool" => handle_tool_plugin(params, ctx).await,
+        "plugin_language" => handle_language_plugin(params, ctx).await,
+        "tool_group" => handle_tool_group(params, ctx).await,
+        "plugin_trust" => handle_plugin_trust(params, ctx).await,
         "execute_active_plan" => handle_execute_active_plan(params, ctx).await,
         "batch" => json!({"error": "Benchmark does not support operation: batch"}),
         "benchmark" => json!({"error": "Recursive benchmark operation is not allowed"}),
@@ -408,6 +928,23 @@ fn is_known_tool_name(name: &str) -> bool {
             | "frontier"
             | "crawl"
             | "register_plan"
+            | "bind_participant_role"
+            | "list_session_participants"
+            | "list_collaboration_participants"
+            | "claim_human_override"
+            | "release_human_override"
+            | "create_plan_set"
+            | "list_plan_sets"
+            | "create_plan_variant"
+            | "list_plan_variants"
+            | "simulate_plan_variant"
+            | "compare_plan_variants"
+            | "review_plan_variant"
+            | "promote_plan_variant"
+            | "plugin_tool"
+            | "plugin_language"
+            | "tool_group"
+            | "plugin_trust"
             | "propose_plan"
             | "execute_active_plan"
             | "execute_dsl"
@@ -415,12 +952,25 @@ fn is_known_tool_name(name: &str) -> bool {
             | "history"
             | "session_open"
             | "session_verify"
+            | "connection_open"
+            | "connection_verify"
             | "research"
     )
 }
 
 fn risky_tool(name: &str) -> bool {
-    matches!(name, "edit" | "manage_file" | "shell" | "mutate")
+    matches!(
+        name,
+        "edit"
+            | "manage_file"
+            | "shell"
+            | "mutate"
+            | "promote_plan_variant"
+            | "plugin_tool"
+            | "plugin_language"
+            | "tool_group"
+            | "plugin_trust"
+    )
 }
 
 fn extract_uri_path(uri: &str) -> &str {
@@ -686,6 +1236,691 @@ pub async fn handle_execute_active_plan(_params: &Value, ctx: &EngineContext) ->
     let mut state = ctx.global_state.lock().await;
     match ctx.ple.execute_active_plan(ctx, &mut state).await {
         Ok(res) => res,
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+fn parse_role(raw: &str) -> Option<ParticipantRole> {
+    match raw {
+        "owner" => Some(ParticipantRole::Owner),
+        "editor" => Some(ParticipantRole::Editor),
+        "planner" => Some(ParticipantRole::Planner),
+        "reviewer" => Some(ParticipantRole::Reviewer),
+        "observer" => Some(ParticipantRole::Observer),
+        _ => None,
+    }
+}
+
+fn participant_id_from_params<'a>(params: &'a Value) -> Option<&'a str> {
+    params.get("participant_id").and_then(|v| v.as_str())
+}
+
+async fn resolve_authenticated_actor(
+    params: &Value,
+    ctx: &EngineContext,
+) -> Result<Option<(String, Option<String>)>, Value> {
+    let connection_token = params
+        .get("connection_token")
+        .or_else(|| params.get("session_token"))
+        .and_then(|v| v.as_str());
+    if let Some(token) = connection_token {
+        let connections = ctx.connections.lock().await;
+        let Some(entry) = connections.get(token) else {
+            return Err(json!({"error": "invalid or expired connection_token"}));
+        };
+        return Ok(Some((entry.agent_id.clone(), Some(entry.pubkey_hex.clone()))));
+    }
+    Ok(None)
+}
+
+async fn require_bound_role(
+    params: &Value,
+    ctx: &EngineContext,
+) -> Result<(String, ParticipantRole, bool), Value> {
+    let authenticated = resolve_authenticated_actor(params, ctx).await?;
+    let participant_id_owned;
+    let participant_id = if let Some((agent_id, _pubkey)) = authenticated.as_ref() {
+        participant_id_owned = agent_id.clone();
+        participant_id_owned.as_str()
+    } else {
+        participant_id_from_params(params).unwrap_or("")
+    };
+    if participant_id.is_empty() {
+        return Err(json!({"error": "participant_id is required"}));
+    }
+    let store = CollaborationStore::new(&ctx.workspace_root);
+    let mut state = match store.load_or_create(ctx.collaboration_id) {
+        Ok(state) => state,
+        Err(e) => return Err(json!({"error": e.to_string()})),
+    };
+    store.prune_expired_locks(&mut state);
+    if let Some(binding) = store.find_participant(&state, participant_id) {
+        if authenticated.is_none()
+            && !binding.is_human
+            && ctx.config.collaboration.require_session_token_for_agents
+        {
+            return Err(json!({"error": "connection_token is required for bound agent participants"}));
+        }
+        if let Some((_, pubkey)) = authenticated
+            && let Some(expected) = binding.pubkey_hex.as_ref()
+            && pubkey.as_deref() != Some(expected.as_str())
+        {
+            return Err(json!({"error": "authenticated pubkey does not match bound participant"}));
+        }
+        Ok((
+            participant_id.to_string(),
+            binding.role.clone(),
+            binding.is_human,
+        ))
+    } else if ctx.config.collaboration.require_bound_participants {
+        Err(json!({"error": format!("participant is not bound to collaboration: {}", participant_id)}))
+    } else {
+        let inferred_human = params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !inferred_human && ctx.config.collaboration.require_session_token_for_agents {
+            return Err(json!({"error": format!("connection_token is required for agent participants: {}", participant_id)}));
+        }
+        let role_raw = if inferred_human {
+            ctx.config.collaboration.default_human_role.as_str()
+        } else {
+            ctx.config.collaboration.default_agent_role.as_str()
+        };
+        let role = parse_role(role_raw).unwrap_or(ParticipantRole::Observer);
+        Ok((participant_id.to_string(), role, inferred_human))
+    }
+}
+
+async fn require_capability(
+    params: &Value,
+    ctx: &EngineContext,
+    cap: crate::CollaborationCapability,
+) -> Result<(String, ParticipantRole, bool), Value> {
+    let (participant_id, role, is_human) = require_bound_role(params, ctx).await?;
+    if crate::role_allows(role.clone(), cap) {
+        Ok((participant_id, role, is_human))
+    } else {
+        Err(json!({"error": format!("participant role is not allowed to perform requested capability: {:?}", cap)}))
+    }
+}
+
+fn audit_action(
+    ctx: &EngineContext,
+    operation: &str,
+    input: Value,
+    output: Value,
+    success: bool,
+    error: Option<String>,
+    actor: Option<String>,
+    actor_kind: Option<&str>,
+) {
+    let transaction_id = ctx.we.shadow.lock().ok().and_then(|s| s.get_transaction_id());
+    let sequence_id = ctx.event_seq.load(Ordering::SeqCst);
+    let resources = collect_contribution_resources(&input, &output);
+    let kind = actor_kind
+        .map(str::to_string)
+        .unwrap_or_else(|| infer_actor_kind(&actor));
+    ctx.he.log(
+        Some(sequence_id),
+        ctx.collaboration_id,
+        actor.clone(),
+        transaction_id,
+        operation,
+        input,
+        output,
+        None,
+        None,
+        success,
+        error.clone(),
+        None,
+    );
+    ctx.ce.log(
+        Some(sequence_id),
+        ctx.collaboration_id,
+        actor,
+        &kind,
+        "tool_api",
+        transaction_id,
+        operation,
+        resources,
+        success,
+        error.clone(),
+    );
+}
+
+fn infer_actor_kind(actor: &Option<String>) -> String {
+    actor.as_deref()
+        .map(|value| {
+            if value.starts_with("human")
+                || value.contains("owner")
+                || value.contains("reviewer")
+                || value.contains("dev")
+            {
+                "human"
+            } else {
+                "agent"
+            }
+        })
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn collect_contribution_resources(input: &Value, output: &Value) -> Vec<String> {
+    let mut resources = Vec::new();
+    for value in [input, output] {
+        push_resource_field(&mut resources, value, "uri", "uri:");
+        push_resource_field(&mut resources, value, "path", "path:");
+        push_resource_field(&mut resources, value, "resource_key", "lock:");
+        push_resource_field(&mut resources, value, "variant_id", "variant:");
+        push_resource_field(&mut resources, value, "plan_set_id", "plan_set:");
+        push_resource_field(&mut resources, value, "proposal_id", "proposal:");
+        push_resource_field(&mut resources, value, "package_id", "plugin:");
+        push_resource_field(&mut resources, value, "group_id", "tool_group:");
+        push_resource_field(&mut resources, value, "key_id", "plugin_key:");
+    }
+    resources.sort();
+    resources.dedup();
+    resources
+}
+
+fn push_resource_field(out: &mut Vec<String>, value: &Value, field: &str, prefix: &str) {
+    if let Some(raw) = value.get(field).and_then(|v| v.as_str()) {
+        out.push(format!("{prefix}{raw}"));
+    }
+}
+
+fn validated_plan_path(params: &Value, ctx: &EngineContext) -> Result<Option<PathBuf>, Value> {
+    let Some(path) = params.get("plan_path").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+    match crate::workspace::validate_sandboxed_path(&ctx.workspace_root, path) {
+        Ok(p) => Ok(Some(p)),
+        Err(e) => Err(json!({"error": format!("unsafe plan_path: {}", e)})),
+    }
+}
+
+fn emit_system_event(ctx: &EngineContext, event: SystemEvent) {
+    let _ = ctx.tx_events.send(event);
+}
+
+pub async fn handle_bind_participant_role(params: &Value, ctx: &EngineContext) -> Value {
+    if !ctx.config.collaboration.enabled {
+        return json!({"error": "collaboration is disabled in settings.toml"});
+    }
+    let participant_id = params.get("participant_id").and_then(|v| v.as_str()).unwrap_or("");
+    if participant_id.is_empty() {
+        return json!({"error": "bind_participant_role requires: participant_id"});
+    }
+    let store = CollaborationStore::new(&ctx.workspace_root);
+    let existing_state = store.load_or_create(ctx.collaboration_id);
+    let authenticated = match resolve_authenticated_actor(params, ctx).await {
+        Ok(actor) => actor,
+        Err(err) => return err,
+    };
+    let binding_origin = if authenticated.is_some() { "remote_authenticated" } else { "local_direct" };
+    let bootstrap = existing_state
+        .as_ref()
+        .map(|s| s.participants.is_empty())
+        .unwrap_or(true);
+    if let Ok(existing) = &existing_state {
+        if existing.participants.is_empty() && ctx.config.collaboration.bootstrap_owner_human_only {
+            let is_human = params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false);
+            let role_raw = params.get("role").and_then(|v| v.as_str()).unwrap_or("observer");
+            if !(is_human && role_raw == "owner") {
+                let out = json!({"error": "first participant bootstrap must be a human owner per settings.toml"});
+                audit_action(ctx, "bind_participant_role", params.clone(), out.clone(), false, out.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id.to_string()), Some("human"));
+                return out;
+            }
+        } else if !existing.participants.is_empty() {
+            let Ok((_actor, _role, _is_human)) =
+            require_capability(params, ctx, crate::CollaborationCapability::RoleBind).await
+            else {
+                let out = json!({"error": "bind_participant_role requires a bound owner/editor with RoleBind"});
+                audit_action(ctx, "bind_participant_role", params.clone(), out.clone(), false, out.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id.to_string()), None);
+                return out;
+            };
+        }
+    }
+    let default_role = if params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false) {
+        ctx.config.collaboration.default_human_role.as_str()
+    } else {
+        ctx.config.collaboration.default_agent_role.as_str()
+    };
+    let role_raw = params.get("role").and_then(|v| v.as_str()).unwrap_or(default_role);
+    let Some(role) = parse_role(role_raw) else {
+        return json!({"error": format!("unsupported role: {role_raw}")});
+    };
+    let res = match store.bind_participant(
+        ctx.collaboration_id,
+        participant_id,
+        params.get("display_name").and_then(|v| v.as_str()),
+        role,
+        params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false),
+        params.get("pubkey_hex").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        authenticated.as_ref().map(|(id, _)| id.clone()),
+        binding_origin,
+        bootstrap,
+    ) {
+        Ok(state) => json!({"status": "ok", "session": state}),
+        Err(e) => json!({"error": e.to_string()}),
+    };
+    audit_action(
+        ctx,
+        "bind_participant_role",
+        params.clone(),
+        res.clone(),
+        res.get("error").is_none(),
+        res.get("error").and_then(|v| v.as_str()).map(str::to_string),
+        Some(participant_id.to_string()),
+        Some(if params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false) { "human" } else { "agent" }),
+    );
+    if res.get("error").is_none() {
+        emit_system_event(
+            ctx,
+            SystemEvent::ParticipantBound {
+                participant_id: participant_id.to_string(),
+                role: role_raw.to_string(),
+                is_human: params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false),
+            },
+        );
+    }
+    res
+}
+
+pub async fn handle_list_session_participants(_params: &Value, ctx: &EngineContext) -> Value {
+    let store = CollaborationStore::new(&ctx.workspace_root);
+    match store.load_or_create(ctx.collaboration_id) {
+        Ok(mut state) => {
+            store.prune_expired_locks(&mut state);
+            json!({"status": "ok", "collaboration_id": ctx.collaboration_id, "session_id": ctx.collaboration_id, "participants": state.participants, "locks": state.human_override_locks})
+        }
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+pub async fn handle_claim_human_override(params: &Value, ctx: &EngineContext) -> Value {
+    let Ok((participant_id, _role, is_human)) =
+        require_capability(params, ctx, crate::CollaborationCapability::WorkspaceMutate).await
+    else {
+        return json!({"error": "claim_human_override requires a bound participant with workspace mutation capability"});
+    };
+    if !is_human {
+        return json!({"error": "only human participants can claim human override"});
+    }
+    let resource_key = params.get("resource_key").and_then(|v| v.as_str()).unwrap_or("");
+    if resource_key.is_empty() {
+        return json!({"error": "claim_human_override requires: resource_key"});
+    }
+    if let Err(e) = crate::workspace::validate_sandboxed_path(&ctx.workspace_root, resource_key) {
+        return json!({"error": format!("resource_key must be a sandboxed workspace-relative path: {}", e)});
+    }
+    let ttl_secs = params
+        .get("ttl_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(ctx.config.collaboration.human_override_ttl_secs);
+    let store = CollaborationStore::new(&ctx.workspace_root);
+    let res = match store.claim_lock(ctx.collaboration_id, &participant_id, resource_key, ttl_secs) {
+        Ok(state) => {
+            ctx.locks.lock().await.insert(
+                resource_key.to_string(),
+                LockInfo {
+                    owner_id: "human".to_string(),
+                    expires_at_secs: now_secs() + ttl_secs,
+                },
+            );
+            json!({"status": "ok", "session": state})
+        }
+        Err(e) => json!({"error": e.to_string()}),
+    };
+    audit_action(ctx, "claim_human_override", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), Some("human"));
+    if res.get("error").is_none() {
+        emit_system_event(
+            ctx,
+            SystemEvent::HumanOverrideClaimed {
+                participant_id: params.get("participant_id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                resource_key: resource_key.to_string(),
+            },
+        );
+    }
+    res
+}
+
+pub async fn handle_release_human_override(params: &Value, ctx: &EngineContext) -> Value {
+    let Ok((participant_id, _role, is_human)) =
+        require_capability(params, ctx, crate::CollaborationCapability::WorkspaceMutate).await
+    else {
+        return json!({"error": "release_human_override requires a bound participant with workspace mutation capability"});
+    };
+    if !is_human {
+        return json!({"error": "only human participants can release human override"});
+    }
+    let resource_key = params.get("resource_key").and_then(|v| v.as_str()).unwrap_or("");
+    if resource_key.is_empty() {
+        return json!({"error": "release_human_override requires: resource_key"});
+    }
+    if let Err(e) = crate::workspace::validate_sandboxed_path(&ctx.workspace_root, resource_key) {
+        return json!({"error": format!("resource_key must be a sandboxed workspace-relative path: {}", e)});
+    }
+    let store = CollaborationStore::new(&ctx.workspace_root);
+    let res = match store.release_lock(ctx.collaboration_id, &participant_id, resource_key) {
+        Ok(state) => {
+            ctx.locks.lock().await.remove(resource_key);
+            json!({"status": "ok", "session": state})
+        }
+        Err(e) => json!({"error": e.to_string()}),
+    };
+    audit_action(ctx, "release_human_override", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), Some("human"));
+    if res.get("error").is_none() {
+        emit_system_event(
+            ctx,
+            SystemEvent::HumanOverrideReleased {
+                participant_id: params.get("participant_id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                resource_key: resource_key.to_string(),
+            },
+        );
+    }
+    res
+}
+
+pub async fn handle_create_plan_set(params: &Value, ctx: &EngineContext) -> Value {
+    if !ctx.config.variants.enabled {
+        return json!({"error": "variants are disabled in settings.toml"});
+    }
+    let Ok((participant_id, _role, _is_human)) =
+        require_capability(params, ctx, crate::CollaborationCapability::PlanCreate).await
+    else {
+        return json!({"error": "create_plan_set requires a participant with plan creation capability"});
+    };
+    let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let objective = params.get("objective").and_then(|v| v.as_str()).unwrap_or("");
+    if title.is_empty() || objective.is_empty() {
+        return json!({"error": "create_plan_set requires: title, objective"});
+    }
+    let created_by = params.get("created_by").and_then(|v| v.as_str()).unwrap_or(&participant_id);
+    let store = VariantStore::new(&ctx.workspace_root);
+    let res = match store.create_plan_set(&ctx.config, ctx.collaboration_id, title.to_string(), objective.to_string(), created_by.to_string()) {
+        Ok(plan_set) => json!({"status": "ok", "plan_set": plan_set}),
+        Err(e) => json!({"error": e.to_string()}),
+    };
+    audit_action(ctx, "create_plan_set", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), None);
+    if let Some(plan_set_id) = res.get("plan_set").and_then(|p| p.get("id")).and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) {
+        emit_system_event(
+            ctx,
+            SystemEvent::PlanSetCreated {
+                plan_set_id,
+                title: title.to_string(),
+            },
+        );
+        if let Ok(retention) = store.enforce_retention(&ctx.config) {
+            if let Some(pruned) = retention.get("pruned_plan_sets").and_then(|v| v.as_array()) {
+                for id in pruned.iter().filter_map(|v| v.as_str()).filter_map(|s| Uuid::parse_str(s).ok()) {
+                    emit_system_event(ctx, SystemEvent::PlanSetPruned { plan_set_id: id });
+                }
+            }
+        }
+    }
+    res
+}
+
+pub async fn handle_list_plan_sets(_params: &Value, ctx: &EngineContext) -> Value {
+    let store = VariantStore::new(&ctx.workspace_root);
+    match store.list_plan_sets() {
+        Ok(plan_sets) => json!({"status": "ok", "plan_sets": plan_sets}),
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+pub async fn handle_create_plan_variant(params: &Value, ctx: &EngineContext) -> Value {
+    let Ok((participant_id, _role, _is_human)) =
+        require_capability(params, ctx, crate::CollaborationCapability::PlanCreate).await
+    else {
+        return json!({"error": "create_plan_variant requires a participant with plan creation capability"});
+    };
+    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "create_plan_variant requires valid plan_set_id"});
+    };
+    let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let strategy_summary = params.get("strategy_summary").and_then(|v| v.as_str()).unwrap_or("");
+    if title.is_empty() {
+        return json!({"error": "create_plan_variant requires: title"});
+    }
+    let created_by = params.get("created_by").and_then(|v| v.as_str()).unwrap_or(&participant_id);
+    let plan_value = if let Some(path) = match validated_plan_path(params, ctx) {
+        Ok(path) => path,
+        Err(err) => return err,
+    } {
+        let meta = match fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) => return json!({"error": format!("failed to stat plan_path: {e}")}),
+        };
+        if meta.len() as usize > ctx.config.variants.max_plan_bytes {
+            return json!({"error": format!("plan_path exceeds max_plan_bytes ({})", ctx.config.variants.max_plan_bytes)});
+        }
+        match fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str::<Value>(&content) {
+                Ok(value) => value,
+                Err(e) => return json!({"error": format!("invalid plan_path JSON: {e}")}),
+            },
+            Err(e) => return json!({"error": format!("failed to read plan_path: {e}")}),
+        }
+    } else {
+        params.get("plan").cloned().unwrap_or(Value::Null)
+    };
+    let estimated_plan_bytes = serde_json::to_vec(&plan_value).map(|v| v.len()).unwrap_or(usize::MAX);
+    if estimated_plan_bytes > ctx.config.variants.max_plan_bytes {
+        return json!({"error": format!("plan payload exceeds max_plan_bytes ({})", ctx.config.variants.max_plan_bytes)});
+    }
+    let plan: Plan = match serde_json::from_value(plan_value) {
+        Ok(plan) => plan,
+        Err(e) => return json!({"error": format!("invalid plan payload: {e}")}),
+    };
+    let backend_raw = params.get("backend").and_then(|v| v.as_str()).unwrap_or(&ctx.config.variants.default_backend);
+    if backend_raw == "worktree" && !ctx.config.variants.allow_worktree_backend {
+        return json!({"error": "worktree backend is disabled in settings.toml"});
+    }
+    let backend = match backend_raw {
+        "shadow" => VariantWorkspaceBackend::Shadow,
+        "worktree" => VariantWorkspaceBackend::Worktree,
+        _ => return json!({"error": format!("unsupported backend: {backend_raw}")}),
+    };
+    let assumptions = params.get("assumptions").and_then(|v| v.as_array()).map(|a| {
+        a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>()
+    }).unwrap_or_default();
+    let risk_tags = params.get("risk_tags").and_then(|v| v.as_array()).map(|a| {
+        a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>()
+    }).unwrap_or_default();
+    let store = VariantStore::new(&ctx.workspace_root);
+    let res = match store.create_variant(
+        &ctx.config,
+        plan_set_id,
+        title.to_string(),
+        strategy_summary.to_string(),
+        created_by.to_string(),
+        plan,
+        assumptions,
+        risk_tags,
+        backend,
+    ) {
+        Ok(variant) => json!({"status": "ok", "variant": variant}),
+        Err(e) => json!({"error": e.to_string()}),
+    };
+    audit_action(ctx, "create_plan_variant", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), None);
+    if let Some(variant) = res.get("variant") {
+        if let (Some(plan_set_id), Some(variant_id)) = (
+            variant.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()),
+            variant.get("id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()),
+        ) {
+            emit_system_event(
+                ctx,
+                SystemEvent::PlanVariantCreated {
+                    plan_set_id,
+                    variant_id,
+                    title: title.to_string(),
+                },
+            );
+        }
+    }
+    res
+}
+
+pub async fn handle_list_plan_variants(params: &Value, ctx: &EngineContext) -> Value {
+    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "list_plan_variants requires valid plan_set_id"});
+    };
+    let store = VariantStore::new(&ctx.workspace_root);
+    match store.list_variants(plan_set_id) {
+        Ok(variants) => json!({"status": "ok", "variants": variants}),
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+pub async fn handle_simulate_plan_variant(params: &Value, ctx: &EngineContext) -> Value {
+    let Ok((_participant_id, _role, _is_human)) =
+        require_capability(params, ctx, crate::CollaborationCapability::PlanSimulate).await
+    else {
+        return json!({"error": "simulate_plan_variant requires a participant with plan simulation capability"});
+    };
+    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "simulate_plan_variant requires valid plan_set_id"});
+    };
+    let Some(variant_id) = params.get("variant_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "simulate_plan_variant requires valid variant_id"});
+    };
+    let store = VariantStore::new(&ctx.workspace_root);
+    match store.load_variant(plan_set_id, variant_id) {
+        Ok(mut variant) => match store.simulate_variant(&mut variant, &ctx.config).await {
+            Ok(result) => {
+                emit_system_event(ctx, SystemEvent::PlanVariantSimulated { plan_set_id, variant_id });
+                if let Ok(retention) = store.enforce_retention(&ctx.config)
+                    && let Some(pruned) = retention.get("pruned_variant_workspaces").and_then(|v| v.as_array())
+                {
+                    for item in pruned {
+                        if let (Some(ps), Some(vid)) = (
+                            item.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()),
+                            item.get("variant_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()),
+                        ) {
+                            emit_system_event(ctx, SystemEvent::VariantWorkspacePruned { plan_set_id: ps, variant_id: vid });
+                        }
+                    }
+                }
+                result
+            }
+            Err(e) => json!({"error": e.to_string()}),
+        },
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+pub async fn handle_compare_plan_variants(params: &Value, ctx: &EngineContext) -> Value {
+    let Ok((_participant_id, _role, _is_human)) =
+        require_capability(params, ctx, crate::CollaborationCapability::PlanCompare).await
+    else {
+        return json!({"error": "compare_plan_variants requires a participant with plan compare capability"});
+    };
+    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "compare_plan_variants requires valid plan_set_id"});
+    };
+    let variant_ids = params.get("variant_ids").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str())
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect::<Vec<_>>()
+    }).unwrap_or_default();
+    if variant_ids.is_empty() {
+        return json!({"error": "compare_plan_variants requires non-empty variant_ids"});
+    }
+    if variant_ids.len() > 8 {
+        return json!({"error": "compare_plan_variants supports at most 8 variants per request"});
+    }
+    let store = VariantStore::new(&ctx.workspace_root);
+    match store.compare_variants(&ctx.config, plan_set_id, &variant_ids) {
+        Ok(result) => {
+            emit_system_event(ctx, SystemEvent::PlanVariantCompared { plan_set_id, variant_ids });
+            result
+        }
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+pub async fn handle_review_plan_variant(params: &Value, ctx: &EngineContext) -> Value {
+    let Ok((participant_id, _role, _is_human)) =
+        require_capability(params, ctx, crate::CollaborationCapability::PlanReview).await
+    else {
+        return json!({"error": "review_plan_variant requires a participant with plan review capability"});
+    };
+    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "review_plan_variant requires valid plan_set_id"});
+    };
+    let Some(variant_id) = params.get("variant_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "review_plan_variant requires valid variant_id"});
+    };
+    let decision = params.get("decision").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(decision, "review" | "approve" | "reject") {
+        return json!({"error": "review_plan_variant decision must be one of: review, approve, reject"});
+    }
+    let store = VariantStore::new(&ctx.workspace_root);
+    let res = match store.review_variant(
+        plan_set_id,
+        variant_id,
+        participant_id,
+        decision,
+        params.get("summary").and_then(|v| v.as_str()).map(|s| s.to_string()),
+    ) {
+        Ok(variant) => json!({"status": "ok", "variant": variant}),
+        Err(e) => json!({"error": e.to_string()}),
+    };
+    audit_action(ctx, "review_plan_variant", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string), None);
+    if res.get("error").is_none() {
+        emit_system_event(
+            ctx,
+            SystemEvent::PlanVariantReviewed {
+                plan_set_id,
+                variant_id,
+                decision: decision.to_string(),
+            },
+        );
+    }
+    res
+}
+
+pub async fn handle_promote_plan_variant(params: &Value, ctx: &EngineContext) -> Value {
+    let Ok((participant_id, role, _is_human)) =
+        require_capability(params, ctx, crate::CollaborationCapability::VariantPromote).await
+    else {
+        return json!({"error": "promote_plan_variant requires a participant with promotion capability"});
+    };
+    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "promote_plan_variant requires valid plan_set_id"});
+    };
+    let Some(variant_id) = params.get("variant_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+        return json!({"error": "promote_plan_variant requires valid variant_id"});
+    };
+    if !ctx.config.collaboration.editor_can_promote && matches!(role, ParticipantRole::Editor) {
+        return json!({"error": "editor promotion is disabled in settings.toml"});
+    }
+    let store = VariantStore::new(&ctx.workspace_root);
+    match store.load_variant(plan_set_id, variant_id) {
+        Ok(mut variant) => {
+            if ctx.config.variants.require_review_for_promotion
+                && !matches!(variant.status, crate::PlanVariantStatus::Reviewed | crate::PlanVariantStatus::Approved)
+            {
+                return json!({"error": "promotion requires reviewed or approved variant per settings.toml"});
+            }
+            let collab = CollaborationStore::new(&ctx.workspace_root);
+            if let Ok(mut session) = collab.load_or_create(ctx.collaboration_id) {
+                collab.prune_expired_locks(&mut session);
+                if session.human_override_locks.iter().any(|lock| lock.owner_participant_id != participant_id) {
+                    return json!({"error": "promotion blocked by active human override lock"});
+                }
+            }
+            let res = match store.promote_variant(ctx, &mut variant) {
+                Ok(result) => result,
+                Err(e) => json!({"error": e.to_string()}),
+            };
+            audit_action(ctx, "promote_plan_variant", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), None);
+            if res.get("error").is_none() {
+                emit_system_event(ctx, SystemEvent::PlanVariantPromoted { plan_set_id, variant_id });
+            }
+            res
+        }
         Err(e) => json!({"error": e.to_string()}),
     }
 }
@@ -1049,6 +2284,10 @@ pub async fn handle_edit(params: &Value, engine: Arc<EditEngine>, shadow_root: O
         .and_then(|v| v.as_str())
         .unwrap_or("upsert")
         .to_string();
+    let base_state_hash = params
+        .get("base_state_hash")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let justification = params
         .get("adaptation_justification")
         .and_then(|v| v.as_str())
@@ -1058,7 +2297,7 @@ pub async fn handle_edit(params: &Value, engine: Arc<EditEngine>, shadow_root: O
         return json!({"error": "Missing 'adaptation_justification'. You must provide a concise technical reason why this specific adaptation is necessary."});
     }
 
-    match tokio::task::spawn_blocking(move || engine.edit(&uri, &code, &action, shadow_root.as_deref())).await {
+    match tokio::task::spawn_blocking(move || engine.edit(&uri, &code, &action, base_state_hash.as_deref(), shadow_root.as_deref())).await {
         Ok(Ok(res)) => json!({"status": "ok", "message": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
         Err(e) => json!({"error": format!("Task join error in edit: {}", e)}),
@@ -1081,7 +2320,39 @@ pub async fn handle_graph(params: &Value, engine: Arc<GraphEngine>) -> Value {
         .unwrap_or("both")
         .to_string();
     let depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
-    match tokio::task::spawn_blocking(move || engine.graph(uris, &direction, depth)).await {
+    let min_confidence = params
+        .get("min_confidence")
+        .and_then(|v| v.as_f64())
+        .filter(|v| (0.0..=1.0).contains(v));
+    let tiers = params.get("tiers").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|value| value.as_str().map(|s| s.to_string()))
+                .collect::<std::collections::HashSet<_>>()
+        })
+    });
+    let sources = params.get("sources").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|value| value.as_str().map(|s| s.to_string()))
+                .collect::<std::collections::HashSet<_>>()
+        })
+    });
+    match tokio::task::spawn_blocking(move || {
+        let up_depth = if direction == "up" || direction == "both" {
+            depth
+        } else {
+            0
+        };
+        let down_depth = if direction == "down" || direction == "both" {
+            depth
+        } else {
+            0
+        };
+        engine.graph_with_filters(uris, up_depth, down_depth, min_confidence, tiers, sources)
+    })
+    .await
+    {
         Ok(Ok(res)) => json!({"status": "ok", "graph": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
         Err(e) => json!({"error": format!("Task join error in graph: {}", e)}),
@@ -1190,14 +2461,14 @@ pub async fn handle_workspace(params: &Value, ctx: &EngineContext) -> Value {
         }
 
         let session_active = ctx
-            .sre
+            .rce
             .status()
             .ok()
             .and_then(|v| v.get("active").and_then(|a| a.as_bool()))
             .unwrap_or(false);
 
         if session_active {
-            match ctx.sre.review().await {
+            match ctx.rce.review().await {
                 Ok(review) => {
                     let summary = review.get("summary").cloned().unwrap_or_else(|| json!({}));
                     let high = summary.get("high").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -1213,7 +2484,7 @@ pub async fn handle_workspace(params: &Value, ctx: &EngineContext) -> Value {
                         return json!({
                             "error": {
                                 "code": -32010,
-                                "message": "Commit blocked by session review threshold gate",
+                                "message": "Commit blocked by review-cycle threshold gate",
                                 "details": {
                                     "thresholds": {
                                         "max_high": max_high,
@@ -1231,7 +2502,7 @@ pub async fn handle_workspace(params: &Value, ctx: &EngineContext) -> Value {
                     return json!({
                         "error": {
                             "code": -32011,
-                            "message": "Failed to run session review gate before commit",
+                            "message": "Failed to run review-cycle gate before commit",
                             "details": e.to_string()
                         }
                     });
@@ -1441,7 +2712,8 @@ pub async fn handle_debug_dispatcher(params: &Value, engine: &DebugEngine) -> Va
         }
         "send" => {
             let id = params
-                .get("session_id")
+                .get("debug_session_id")
+                .or_else(|| params.get("session_id"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             let snippet = params.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
@@ -1449,14 +2721,16 @@ pub async fn handle_debug_dispatcher(params: &Value, engine: &DebugEngine) -> Va
         }
         "recv" => {
             let id = params
-                .get("session_id")
+                .get("debug_session_id")
+                .or_else(|| params.get("session_id"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             engine.recv_session(id)
         }
         "stop" => {
             let id = params
-                .get("session_id")
+                .get("debug_session_id")
+                .or_else(|| params.get("session_id"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             engine.stop_session(id)
@@ -1469,7 +2743,7 @@ pub async fn handle_debug_dispatcher(params: &Value, engine: &DebugEngine) -> Va
     }
 }
 
-pub async fn handle_session_dispatcher(params: &Value, engine: &SessionReviewEngine) -> Value {
+pub async fn handle_review_cycle_dispatcher(params: &Value, engine: &ReviewCycleEngine) -> Value {
     let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let result = match action {
         "begin" => engine.begin(params.get("label").and_then(|v| v.as_str())),
@@ -1483,7 +2757,7 @@ pub async fn handle_session_dispatcher(params: &Value, engine: &SessionReviewEng
         }
         "review" => engine.review().await,
         "end" => engine.end(),
-        _ => Err(anyhow::anyhow!("Unknown session action: {}", action)),
+        _ => Err(anyhow::anyhow!("Unknown review_cycle action: {}", action)),
     };
     match result {
         Ok(res) => json!({"status": "ok", "result": res}),
@@ -1491,16 +2765,404 @@ pub async fn handle_session_dispatcher(params: &Value, engine: &SessionReviewEng
     }
 }
 
-pub async fn handle_doc(params: &Value, engine: Arc<DocEngine>) -> Value {
+pub async fn handle_doc(params: &Value, ctx: &EngineContext) -> Value {
     let tool = params
         .get("tool")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let engine = Arc::clone(&ctx.doce);
+    let plugin_doc = ctx.tpe.get_doc(&tool).ok().flatten();
+    if let Some(doc) = plugin_doc {
+        return doc;
+    }
+    let group_doc = ctx.tge.get_doc(&tool).ok().flatten();
+    if let Some(doc) = group_doc {
+        return doc;
+    }
     match tokio::task::spawn_blocking(move || engine.get_doc(&tool)).await {
         Ok(res) => res,
         Err(e) => json!({"error": format!("Task join error in doc: {}", e)}),
     }
+}
+
+pub async fn handle_tool_plugin(params: &Value, ctx: &EngineContext) -> Value {
+    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+    let result = match action {
+        "list" => ctx
+            .tpe
+            .list()
+            .map(|plugins| json!({"plugins": plugins})),
+        "add" => {
+            let archive_path = params.get("archive_path").and_then(|v| v.as_str()).unwrap_or("");
+            if archive_path.is_empty() {
+                Err(anyhow::anyhow!("Missing required field: archive_path"))
+            } else {
+                ctx.tpe
+                    .add_archive(Path::new(archive_path))
+                    .map(|installed| json!({"installed": installed}))
+            }
+        }
+        "remove" => {
+            let package_id = params.get("package_id").and_then(|v| v.as_str()).unwrap_or("");
+            if package_id.is_empty() {
+                Err(anyhow::anyhow!("Missing required field: package_id"))
+            } else {
+                ctx.tpe
+                    .remove(package_id)
+                    .map(|removed| json!({"removed": removed, "package_id": package_id}))
+            }
+        }
+        _ => Err(anyhow::anyhow!("Unknown plugin_tool action: {}", action)),
+    };
+    let out = match result {
+        Ok(result) => json!({"status": "ok", "result": result}),
+        Err(err) => json!({"error": err.to_string()}),
+    };
+    audit_action(
+        ctx,
+        "plugin_tool",
+        params.clone(),
+        out.clone(),
+        out.get("error").is_none(),
+        out.get("error").and_then(|v| v.as_str()).map(str::to_string),
+        params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string),
+        params.get("is_human").and_then(|v| v.as_bool()).map(|v| if v { "human" } else { "agent" }),
+    );
+    if out.get("error").is_none() {
+        match action {
+            "add" => {
+                if let Some(installed) = out.get("result").and_then(|v| v.get("installed")) {
+                    if let (Some(package_id), Some(version), Some(tool_name)) = (
+                        installed.get("package_id").and_then(|v| v.as_str()),
+                        installed.get("version").and_then(|v| v.as_str()),
+                        installed.get("tool").and_then(|v| v.get("tool_name")).and_then(|v| v.as_str()),
+                    ) {
+                        emit_system_event(ctx, SystemEvent::ToolPluginInstalled {
+                            package_id: package_id.to_string(),
+                            version: version.to_string(),
+                            tool_name: tool_name.to_string(),
+                        });
+                    }
+                }
+            }
+            "remove" => {
+                if let Some(package_id) = params.get("package_id").and_then(|v| v.as_str()) {
+                    emit_system_event(ctx, SystemEvent::ToolPluginRemoved { package_id: package_id.to_string() });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+pub async fn handle_language_plugin(params: &Value, ctx: &EngineContext) -> Value {
+    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+    let result = match action {
+        "list" => ctx
+            .lpe
+            .list()
+            .map(|plugins| json!({"plugins": plugins})),
+        "add" => {
+            let archive_path = params.get("archive_path").and_then(|v| v.as_str()).unwrap_or("");
+            if archive_path.is_empty() {
+                Err(anyhow::anyhow!("Missing required field: archive_path"))
+            } else {
+                ctx.lpe
+                    .add_archive(Path::new(archive_path))
+                    .map(|installed| json!({"installed": installed}))
+            }
+        }
+        "remove" => {
+            let package_id = params.get("package_id").and_then(|v| v.as_str()).unwrap_or("");
+            if package_id.is_empty() {
+                Err(anyhow::anyhow!("Missing required field: package_id"))
+            } else {
+                ctx.lpe
+                    .remove(package_id)
+                    .map(|removed| json!({"removed": removed, "package_id": package_id}))
+            }
+        }
+        _ => Err(anyhow::anyhow!("Unknown plugin_language action: {}", action)),
+    };
+    let out = match result {
+        Ok(result) => json!({"status": "ok", "result": result}),
+        Err(err) => json!({"error": err.to_string()}),
+    };
+    audit_action(
+        ctx,
+        "plugin_language",
+        params.clone(),
+        out.clone(),
+        out.get("error").is_none(),
+        out.get("error").and_then(|v| v.as_str()).map(str::to_string),
+        params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string),
+        params.get("is_human").and_then(|v| v.as_bool()).map(|v| if v { "human" } else { "agent" }),
+    );
+    if out.get("error").is_none() {
+        match action {
+            "add" => {
+                if let Some(installed) = out.get("result").and_then(|v| v.get("installed")) {
+                    if let (Some(package_id), Some(version), Some(language_id)) = (
+                        installed.get("package_id").and_then(|v| v.as_str()),
+                        installed.get("version").and_then(|v| v.as_str()),
+                        installed.get("language").and_then(|v| v.get("language_id")).and_then(|v| v.as_str()),
+                    ) {
+                        emit_system_event(ctx, SystemEvent::LanguagePluginInstalled {
+                            package_id: package_id.to_string(),
+                            version: version.to_string(),
+                            language_id: language_id.to_string(),
+                        });
+                    }
+                }
+            }
+            "remove" => {
+                if let Some(package_id) = params.get("package_id").and_then(|v| v.as_str()) {
+                    emit_system_event(ctx, SystemEvent::LanguagePluginRemoved { package_id: package_id.to_string() });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+pub async fn handle_tool_group(params: &Value, ctx: &EngineContext) -> Value {
+    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+    let result = match action {
+        "list" => ctx.tge.list().map(|groups| json!({"groups": groups})),
+        "status" => {
+            let group_id = params.get("group_id").and_then(|v| v.as_str());
+            ctx.tge.session_status(group_id).map(|sessions| json!({"sessions": sessions}))
+        }
+        "add_mcp" => {
+            let group_id = params.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+            let command = params.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let args: Vec<String> = params
+                .get("args")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            let description = params
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let allow_tools: Vec<String> = params
+                .get("allow_tools")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            let deny_tools: Vec<String> = params
+                .get("deny_tools")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            if group_id.is_empty() || command.is_empty() {
+                Err(anyhow::anyhow!("add_mcp requires group_id and command"))
+            } else {
+                ctx.tge
+                    .add_external_mcp_group(
+                        group_id,
+                        command,
+                        &args,
+                        description,
+                        &allow_tools,
+                        &deny_tools,
+                    )
+                    .map(|group| json!({"group": group}))
+            }
+        }
+        "remove" => {
+            let group_id = params.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+            if group_id.is_empty() {
+                Err(anyhow::anyhow!("Missing required field: group_id"))
+            } else {
+                ctx.tge
+                    .remove(group_id)
+                    .map(|removed| json!({"removed": removed, "group_id": group_id}))
+            }
+        }
+        _ => Err(anyhow::anyhow!("Unknown tool_group action: {}", action)),
+    };
+    let out = match result {
+        Ok(result) => json!({"status": "ok", "result": result}),
+        Err(err) => json!({"error": err.to_string()}),
+    };
+    audit_action(
+        ctx,
+        "tool_group",
+        params.clone(),
+        out.clone(),
+        out.get("error").is_none(),
+        out.get("error").and_then(|v| v.as_str()).map(str::to_string),
+        params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string),
+        params.get("is_human").and_then(|v| v.as_bool()).map(|v| if v { "human" } else { "agent" }),
+    );
+    if out.get("error").is_none() {
+        match action {
+            "add_mcp" => {
+                if let Some(group) = out.get("result").and_then(|v| v.get("group")) {
+                    if let Some(group_id) = group.get("group_id").and_then(|v| v.as_str()) {
+                        let tool_count = group.get("tools").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                        emit_system_event(ctx, SystemEvent::ToolGroupRegistered {
+                            group_id: group_id.to_string(),
+                            source: "external_mcp".to_string(),
+                            tool_count,
+                        });
+                    }
+                }
+            }
+            "remove" => {
+                if let Some(group_id) = params.get("group_id").and_then(|v| v.as_str()) {
+                    emit_system_event(ctx, SystemEvent::ToolGroupRemoved { group_id: group_id.to_string() });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+pub async fn handle_plugin_trust(params: &Value, ctx: &EngineContext) -> Value {
+    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+    let result = match action {
+        "list" => crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins)
+            .map(|keys| json!({"keys": keys.keys})),
+        "get" => {
+            let key_id = params.get("key_id").and_then(|v| v.as_str()).unwrap_or("");
+            if key_id.is_empty() {
+                Err(anyhow::anyhow!("get requires key_id"))
+            } else {
+                crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins)
+                    .and_then(|keys| {
+                        keys.keys
+                            .into_iter()
+                            .find(|key| key.key_id == key_id)
+                            .map(|key| json!({"key": key}))
+                            .ok_or_else(|| anyhow::anyhow!("trusted key not found: {}", key_id))
+                    })
+            }
+        }
+        "add" => {
+            let key_id = params.get("key_id").and_then(|v| v.as_str()).unwrap_or("");
+            let pubkey_hex = params.get("pubkey_hex").and_then(|v| v.as_str()).unwrap_or("");
+            if key_id.is_empty() || pubkey_hex.is_empty() {
+                Err(anyhow::anyhow!("add requires key_id and pubkey_hex"))
+            } else {
+                match crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins) {
+                    Ok(mut set) => {
+                        let allowed_kinds: Vec<crate::PluginKind> = params
+                            .get("allowed_kinds")
+                            .and_then(|v| v.as_array())
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|v| match v.as_str() {
+                                Some("tool") => Some(crate::PluginKind::Tool),
+                                Some("language") => Some(crate::PluginKind::Language),
+                                _ => None,
+                            })
+                            .collect();
+                        set.keys.retain(|key| key.key_id != key_id);
+                        match crate::plugin_packages::create_trusted_plugin_key(
+                            key_id,
+                            pubkey_hex,
+                            params.get("label").and_then(|v| v.as_str()).map(str::to_string),
+                            allowed_kinds,
+                            true,
+                        ) {
+                            Ok(trusted) => {
+                                set.keys.push(trusted);
+                                crate::plugin_packages::store_trusted_keys(&ctx.workspace_root, &ctx.config.plugins, &set)
+                                    .map(|_| json!({"key_id": key_id, "pubkey_hex": pubkey_hex}))
+                            }
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+        }
+        "remove" => {
+            let key_id = params.get("key_id").and_then(|v| v.as_str()).unwrap_or("");
+            if key_id.is_empty() {
+                Err(anyhow::anyhow!("remove requires key_id"))
+            } else {
+                match crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins) {
+                    Ok(mut set) => {
+                        let before = set.keys.len();
+                        set.keys.retain(|key| key.key_id != key_id);
+                        crate::plugin_packages::store_trusted_keys(&ctx.workspace_root, &ctx.config.plugins, &set)
+                            .map(|_| json!({"removed": before != set.keys.len(), "key_id": key_id}))
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+        }
+        "enable" | "disable" => {
+            let key_id = params.get("key_id").and_then(|v| v.as_str()).unwrap_or("");
+            if key_id.is_empty() {
+                Err(anyhow::anyhow!("{} requires key_id", action))
+            } else {
+                match crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins) {
+                    Ok(mut set) => {
+                        let enabled = action == "enable";
+                        let mut found = false;
+                        for key in &mut set.keys {
+                            if key.key_id == key_id {
+                                key.enabled = enabled;
+                                found = true;
+                            }
+                        }
+                        if !found {
+                            Err(anyhow::anyhow!("trusted key not found: {}", key_id))
+                        } else {
+                            crate::plugin_packages::store_trusted_keys(&ctx.workspace_root, &ctx.config.plugins, &set)
+                                .map(|_| json!({"key_id": key_id, "enabled": enabled}))
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+        }
+        _ => Err(anyhow::anyhow!("Unknown plugin_trust action: {}", action)),
+    };
+    let out = match result {
+        Ok(result) => json!({"status": "ok", "result": result}),
+        Err(err) => json!({"error": err.to_string()}),
+    };
+    audit_action(
+        ctx,
+        "plugin_trust",
+        params.clone(),
+        out.clone(),
+        out.get("error").is_none(),
+        out.get("error").and_then(|v| v.as_str()).map(str::to_string),
+        params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string),
+        params.get("is_human").and_then(|v| v.as_bool()).map(|v| if v { "human" } else { "agent" }),
+    );
+    if out.get("error").is_none() {
+        match action {
+            "add" => {
+                if let Some(key_id) = params.get("key_id").and_then(|v| v.as_str()) {
+                    emit_system_event(ctx, SystemEvent::PluginTrustedKeyAdded { key_id: key_id.to_string() });
+                }
+            }
+            "remove" => {
+                if let Some(key_id) = params.get("key_id").and_then(|v| v.as_str()) {
+                    emit_system_event(ctx, SystemEvent::PluginTrustedKeyRemoved { key_id: key_id.to_string() });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 pub async fn handle_benchmark(params: &Value, ctx: &EngineContext) -> Value {
@@ -2009,13 +3671,17 @@ pub async fn handle_proposal(params: &Value, ctx: &EngineContext) -> Value {
 }
 
 pub async fn handle_stamina(params: &Value, ctx: &EngineContext) -> Value {
-    let session_token = params.get("session_token").and_then(|v| v.as_str()).unwrap_or("");
-    if session_token.is_empty() {
-        return json!({"error": "stamina requires: session_token"});
+    let connection_token = params
+        .get("connection_token")
+        .or_else(|| params.get("session_token"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if connection_token.is_empty() {
+        return json!({"error": "stamina requires: connection_token"});
     }
 
-    let sessions = ctx.sessions.lock().await;
-    if let Some(entry) = sessions.get(session_token) {
+    let connections = ctx.connections.lock().await;
+    if let Some(entry) = connections.get(connection_token) {
         let now = now_secs();
         let elapsed = now.saturating_sub(entry.budget.started_at_secs);
         
@@ -2031,7 +3697,7 @@ pub async fn handle_stamina(params: &Value, ctx: &EngineContext) -> Value {
             }
         })
     } else {
-        json!({"error": "Invalid session_token"})
+        json!({"error": "Invalid connection_token"})
     }
 }
 
@@ -2880,3 +4546,84 @@ pub async fn handle_mutate(params: &Value, mu: Arc<MutationEngine>, shadow_root:
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::handle_plugin_trust;
+    use crate::context::EngineContext;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn plugin_trust_add_list_and_remove_round_trips() {
+        let dir = tempdir().expect("tempdir");
+        let ctx = EngineContext::new(dir.path().to_str().expect("utf8 path"));
+        let pubkey_hex = "11".repeat(32);
+
+        let add = handle_plugin_trust(
+            &json!({
+                "action": "add",
+                "key_id": "demo",
+                "pubkey_hex": pubkey_hex,
+                "label": "demo key",
+                "allowed_kinds": ["tool"]
+            }),
+            &ctx,
+        )
+        .await;
+        assert_eq!(add["status"], "ok");
+
+        let list = handle_plugin_trust(&json!({"action": "list"}), &ctx).await;
+        let keys = list["result"]["keys"].as_array().expect("keys array");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0]["key_id"], "demo");
+        assert_eq!(keys[0]["allowed_kinds"][0], "tool");
+        assert!(keys[0]["fingerprint_sha256"].as_str().is_some());
+
+        let remove = handle_plugin_trust(&json!({"action": "remove", "key_id": "demo"}), &ctx).await;
+        assert_eq!(remove["status"], "ok");
+        assert_eq!(remove["result"]["removed"], true);
+    }
+
+    #[tokio::test]
+    async fn plugin_trust_get_enable_and_disable_round_trips() {
+        let dir = tempdir().expect("tempdir");
+        let ctx = EngineContext::new(dir.path().to_str().expect("utf8 path"));
+        let pubkey_hex = "22".repeat(32);
+
+        let add = handle_plugin_trust(
+            &json!({
+                "action": "add",
+                "key_id": "demo2",
+                "pubkey_hex": pubkey_hex,
+                "label": "demo key 2"
+            }),
+            &ctx,
+        )
+        .await;
+        assert_eq!(add["status"], "ok");
+
+        let disable = handle_plugin_trust(
+            &json!({"action": "disable", "key_id": "demo2"}),
+            &ctx,
+        )
+        .await;
+        assert_eq!(disable["status"], "ok");
+        assert_eq!(disable["result"]["enabled"], false);
+
+        let get = handle_plugin_trust(
+            &json!({"action": "get", "key_id": "demo2"}),
+            &ctx,
+        )
+        .await;
+        assert_eq!(get["status"], "ok");
+        assert_eq!(get["result"]["key"]["enabled"], false);
+
+        let enable = handle_plugin_trust(
+            &json!({"action": "enable", "key_id": "demo2"}),
+            &ctx,
+        )
+        .await;
+        assert_eq!(enable["status"], "ok");
+        assert_eq!(enable["result"]["enabled"], true);
+    }
+}

@@ -145,6 +145,8 @@ pub fn list_workspace(root: impl AsRef<Path>, prefix: Option<&str>) -> Result<Ve
 /// Returns the absolute path if it is completely enclosed by the workspace root.
 /// Blocks `..` traversal escapes and absolute `/` injections.
 pub fn validate_sandboxed_path(workspace_root: &Path, requested_path: &str) -> Result<PathBuf> {
+    let workspace_root = std::fs::canonicalize(workspace_root)
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
     if requested_path.contains("..")
         || requested_path.starts_with('/')
         || requested_path.starts_with('~')
@@ -195,7 +197,7 @@ pub fn validate_sandboxed_path(workspace_root: &Path, requested_path: &str) -> R
         full_path
     };
 
-    if !resolved_path.starts_with(workspace_root) {
+    if !resolved_path.starts_with(&workspace_root) {
         return Err(anyhow::anyhow!(
             "Path '{}' attempts to escape the workspace sandbox. Execution denied.",
             requested_path
@@ -205,7 +207,7 @@ pub fn validate_sandboxed_path(workspace_root: &Path, requested_path: &str) -> R
     Ok(resolved_path)
 }
 
-/// Returns true if the workspace is currently locked by another active session.
+/// Returns true if the workspace is currently locked by another active transaction.
 pub fn is_workspace_locked(workspace_root: &Path) -> bool {
     let curd_dir = get_curd_dir(workspace_root);
     let lock_path = curd_dir.join("SESSION_LOCK");

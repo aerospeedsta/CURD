@@ -72,6 +72,8 @@ impl DebugEngine {
                     .sandbox
                     .build_command("jshell", &[script.to_string_lossy().to_string()]);
                 let output = command.current_dir(&self.workspace_root).output().await?;
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
                 let _ = tokio::fs::remove_file(&script).await;
                 return Ok(json!({
@@ -79,8 +81,9 @@ impl DebugEngine {
                     "target": target,
                     "status": if output.status.success() { "ok" } else { "error" },
                     "exit_code": output.status.code().unwrap_or(-1),
-                    "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
-                    "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "graph_context": self.graph_context_for_output(target, &stdout, &stderr),
                 }));
             }
             "gdb" => {
@@ -154,15 +157,28 @@ impl DebugEngine {
             .stderr(Stdio::piped())
             .output()
             .await?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         Ok(json!({
             "language": language,
             "target": target,
             "status": if output.status.success() { "ok" } else { "error" },
             "exit_code": output.status.code().unwrap_or(-1),
-            "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
-            "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
+            "stdout": stdout,
+            "stderr": stderr,
+            "graph_context": self.graph_context_for_output(target, &stdout, &stderr),
         }))
+    }
+
+    fn graph_context_for_output(&self, target: Option<&str>, stdout: &str, stderr: &str) -> Value {
+        let seed_terms = target.map(|t| vec![t.to_string()]).unwrap_or_default();
+        crate::trace::graph_context_for_text(
+            &self.workspace_root,
+            &seed_terms,
+            &[stdout, stderr],
+            &DEBUG_NOISE_WORDS,
+        )
     }
 
     fn validate_debug_target(&self, target: &str) -> Result<String> {
@@ -239,6 +255,7 @@ impl DebugEngine {
             .map_err(|e| anyhow::anyhow!(e.to_string()))?
             .insert(id, session);
         Ok(json!({
+            "debug_session_id": id,
             "session_id": id,
             "status": "started",
             "session_mode": if stateful_replay { "stateful_replay" } else { "stateless_history" },
@@ -305,6 +322,7 @@ impl DebugEngine {
         s.last_output = Some(out.clone());
 
         Ok(json!({
+            "debug_session_id": session_id,
             "session_id": session_id,
             "status": "ok",
             "session_mode": if s.stateful_replay { "stateful_replay" } else { "stateless_history" },
@@ -321,6 +339,7 @@ impl DebugEngine {
             .get(&session_id)
             .ok_or_else(|| anyhow::anyhow!("Unknown debug session_id {}", session_id))?;
         Ok(json!({
+            "debug_session_id": session_id,
             "session_id": session_id,
             "session_mode": if s.stateful_replay { "stateful_replay" } else { "stateless_history" },
             "language": s.language,
@@ -338,6 +357,7 @@ impl DebugEngine {
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let removed = guard.remove(&session_id);
         Ok(json!({
+            "debug_session_id": session_id,
             "session_id": session_id,
             "status": if removed.is_some() { "stopped" } else { "not_found" }
         }))
@@ -384,6 +404,11 @@ fn supports_stateful_replay(language: &str) -> bool {
             | "jshell"
     )
 }
+
+pub(crate) const DEBUG_NOISE_WORDS: [&str; 13] = [
+    "panic", "thread", "error", "warning", "info", "trace", "debug", "caused", "causes",
+    "cause", "stack", "frame", "at",
+];
 
 // ── Sandboxed DAP Infrastructure ────────────────────────────────────────
 
@@ -471,5 +496,83 @@ impl SandboxedDapClient {
             .kill()
             .await
             .context("Failed to kill debug process")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEBUG_NOISE_WORDS, DebugEngine};
+    use crate::search::IndexWorkerEntry;
+    use crate::storage::Storage;
+    use crate::{CurdConfig, Symbol, SymbolKind, symbols::SymbolRole};
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    #[test]
+    fn extracts_debug_tokens_without_noise() {
+        let tokens =
+            crate::trace::extract_tokens("panic in caller: callee at src/lib.rs:12", &DEBUG_NOISE_WORDS);
+        assert!(tokens.iter().any(|t| t == "caller"));
+        assert!(tokens.iter().any(|t| t == "callee"));
+        assert!(!tokens.iter().any(|t| t == "at"));
+    }
+
+    #[test]
+    fn graph_context_uses_indexed_symbols() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).expect("src dir");
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "fn callee() {}\nfn caller() { callee(); }\n",
+        )
+        .expect("write source");
+
+        let cfg = CurdConfig::default();
+        let mut storage = Storage::open(root, &cfg).expect("open storage");
+        storage
+            .commit_indexing_results(&[IndexWorkerEntry {
+                rel: "src/lib.rs".to_string(),
+                mtime_ms: 1,
+                file_size: 40,
+                symbols: vec![
+                    Symbol {
+                        id: "src/lib.rs::callee".to_string(),
+                        filepath: PathBuf::from("src/lib.rs"),
+                        name: "callee".to_string(),
+                        kind: SymbolKind::Function,
+                        role: SymbolRole::Definition,
+                        link_name: None,
+                        start_byte: 0,
+                        end_byte: 13,
+                        start_line: 1,
+                        end_line: 1,
+                        signature: None,
+                        semantic_hash: None,
+                        fault_id: None,
+                    },
+                    Symbol {
+                        id: "src/lib.rs::caller".to_string(),
+                        filepath: PathBuf::from("src/lib.rs"),
+                        name: "caller".to_string(),
+                        kind: SymbolKind::Function,
+                        role: SymbolRole::Definition,
+                        link_name: None,
+                        start_byte: 14,
+                        end_byte: 39,
+                        start_line: 2,
+                        end_line: 2,
+                        signature: None,
+                        semantic_hash: None,
+                        fault_id: None,
+                    },
+                ],
+            }])
+            .expect("commit indexing");
+
+        let engine = DebugEngine::new(root);
+        let enriched = engine.graph_context_for_output(None, "", "panic in caller caused by callee");
+        assert!(enriched["seed_nodes"].as_array().is_some());
+        assert!(enriched["graph"]["detailed_edges"].as_array().is_some());
     }
 }

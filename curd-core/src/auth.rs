@@ -1,17 +1,18 @@
 use crate::ReplState;
 use anyhow::{Context, Result};
-use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Helper to encode bytes to hex string
-fn encode_hex(bytes: &[u8]) -> String {
+pub fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Helper to decode hex string to bytes
-fn decode_hex(s: &str) -> Result<Vec<u8>> {
+pub fn decode_hex(s: &str) -> Result<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         anyhow::bail!("Invalid hex string length");
     }
@@ -20,6 +21,15 @@ fn decode_hex(s: &str) -> Result<Vec<u8>> {
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| anyhow::anyhow!(e)))
         .collect()
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionTokenClaims {
+    pub agent_id: String,
+    pub pubkey_hex: String,
+    pub exp: u64,
+}
+
+pub type SessionTokenClaims = ConnectionTokenClaims;
 
 /// Manages cryptographic identities and handles the freezing/thawing of agent session state.
 pub struct IdentityManager {
@@ -88,6 +98,82 @@ impl IdentityManager {
         Ok(verifying_key.verify(message, &signature).is_ok())
     }
 
+    pub fn validate_public_key_hex(pubkey_hex: &str) -> Result<()> {
+        let pub_bytes = decode_hex(pubkey_hex).context("Invalid public key hex")?;
+        if pub_bytes.len() != 32 {
+            anyhow::bail!("Invalid public key length");
+        }
+        let pub_array: [u8; 32] = pub_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid public key length"))?;
+        VerifyingKey::from_bytes(&pub_array)
+            .map_err(|e| anyhow::anyhow!("Invalid public key bytes: {}", e))?;
+        Ok(())
+    }
+
+    pub fn sign_message_hex(private_key_hex: &str, message: &[u8]) -> Result<String> {
+        let priv_bytes = decode_hex(private_key_hex).context("Invalid private key hex")?;
+        if priv_bytes.len() != 32 {
+            anyhow::bail!("Invalid private key length");
+        }
+        let key_array: [u8; 32] = priv_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid private key length"))?;
+        let signing_key = SigningKey::from_bytes(&key_array);
+        let signature = signing_key.sign(message);
+        Ok(encode_hex(&signature.to_bytes()))
+    }
+
+    pub fn public_key_fingerprint(pubkey_hex: &str) -> Result<String> {
+        validate_pubkey(pubkey_hex)?;
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(pubkey_hex.as_bytes());
+        Ok(encode_hex(&hasher.finalize()))
+    }
+
+    pub fn create_connection_token(&self, agent_id: &str, pubkey_hex: &str) -> Result<String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        let claims = ConnectionTokenClaims {
+            agent_id: agent_id.to_string(),
+            pubkey_hex: pubkey_hex.to_string(),
+            exp: now + 3600, // 1 hour
+        };
+        
+        let json = serde_json::to_string(&claims)?;
+        Ok(base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, json.as_bytes()))
+    }
+
+    pub fn verify_connection_token(&self, token: &str) -> Result<ConnectionTokenClaims> {
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, token)?;
+        let claims: ConnectionTokenClaims = serde_json::from_slice(&bytes)?;
+        
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+            
+        if claims.exp < now {
+            anyhow::bail!("Session token expired");
+        }
+        
+        Ok(claims)
+    }
+
+    pub fn create_session_token(&self, agent_id: &str, pubkey_hex: &str) -> Result<String> {
+        self.create_connection_token(agent_id, pubkey_hex)
+    }
+
+    pub fn verify_session_token(&self, token: &str) -> Result<SessionTokenClaims> {
+        self.verify_connection_token(token)
+    }
+
     /// Freezes a ReplState to disk for a specific agent identity (tied to pubkey hash).
     pub fn freeze_session(
         workspace_root: &Path,
@@ -130,4 +216,8 @@ impl IdentityManager {
                 }
         None
     }
+}
+
+fn validate_pubkey(pubkey_hex: &str) -> Result<()> {
+    IdentityManager::validate_public_key_hex(pubkey_hex)
 }

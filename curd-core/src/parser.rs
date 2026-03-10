@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use tree_sitter::wasmtime::Engine;
 use tree_sitter::{Parser, Range, WasmStore};
 
+use crate::plugin_client::PluginClient;
+
 /// Manages Tree-sitter parsing and lazy loading of WASM grammars.
 #[derive(Clone)]
 pub struct ParserManager {
@@ -18,6 +20,7 @@ pub struct ParserManager {
     download_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     resolved_backend_by_lang: Arc<Mutex<HashMap<String, String>>>,
     pub registry: crate::registry::GrammarRegistry,
+    pub plugin_client: Option<Arc<PluginClient>>,
 }
 
 fn get_home_dir() -> Option<PathBuf> {
@@ -57,6 +60,12 @@ impl ParserManager {
         let workspace_root = local_grammars_dir.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let registry = crate::registry::GrammarRegistry::load(&workspace_root);
 
+        let plugin_client = if backend_preference == "native" || backend_preference == "plugin" {
+            PluginClient::new(&workspace_root).ok().map(Arc::new)
+        } else {
+            None
+        };
+
         Ok(Self {
             engine,
             local_grammars_dir,
@@ -66,9 +75,9 @@ impl ParserManager {
             download_locks: Arc::new(Mutex::new(HashMap::new())),
             resolved_backend_by_lang: Arc::new(Mutex::new(HashMap::new())),
             registry,
+            plugin_client,
         })
-    }
-
+        }
     pub fn get_language_bytes(&mut self, language_name: &str) -> Result<Vec<u8>> {
         if language_name.is_empty()
             || !language_name
@@ -209,6 +218,16 @@ impl ParserManager {
     }
 
     pub fn create_parser(&mut self, language_name: &str) -> Result<Parser> {
+        if (self.backend_preference == "native" || self.backend_preference == "plugin")
+            && self.plugin_client.is_some()
+        {
+            if let Ok(mut m) = self.resolved_backend_by_lang.lock() {
+                m.insert(language_name.to_string(), "sidecar".to_string());
+            }
+            // Return a dummy parser for the main process; the actual parsing happens in SearchEngine::parse_file_with_context
+            return Ok(Parser::new());
+        }
+
         if self.backend_preference == "native"
             && let Ok(parser) = self.create_native_parser(language_name)
         {

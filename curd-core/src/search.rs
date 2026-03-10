@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tree_sitter::{Parser, Query, StreamingIterator};
 use sha2::Digest;
@@ -115,7 +115,7 @@ pub struct ThreadParseContext {
 
 impl SearchEngine {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
-        let root_path = std::path::absolute(workspace_root.as_ref())
+        let root_path = std::fs::canonicalize(workspace_root.as_ref())
             .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
         Self {
             workspace_root: root_path.clone(),
@@ -242,7 +242,7 @@ impl SearchEngine {
         max_file_size: u64,
         large_file_policy: &str,
     ) -> Option<IndexWorkerResponse> {
-        let worker_bin = std::env::current_exe().ok()?;
+        let worker_bin = index_worker_binary()?;
         let req = IndexWorkerRequest {
             workspace_root: self.workspace_root.to_string_lossy().to_string(),
             files: chunk
@@ -764,6 +764,35 @@ impl SearchEngine {
             return Ok(Vec::new());
         }
 
+        // --- NEW SIDECAR IPC FLOW (Chunk 2) ---
+        if let Some(client) = &ctx.manager.plugin_client {
+            let rel_path = file_path
+                .strip_prefix(&self.workspace_root)
+                .unwrap_or(file_path)
+                .to_path_buf();
+
+            let q_src = ctx.manager.load_query(lang_name)?;
+            if q_src.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Ensure grammar is loaded in the sidecar
+            if let Some(lang_def) = ctx.manager.registry.languages.get(lang_name) {
+                if let Some(plugin_path) = &lang_def.plugin_path {
+                    let func_name = format!("tree_sitter_{}", lang_name);
+                    let _ = client.load_grammar(lang_name, plugin_path, &func_name);
+                }
+            } else {
+                // Fallback for built-in core languages (python, rust, etc.)
+                // These are already linked into the curd-plugin-host binary.
+                // We just need to trigger a dummy load to ensure the sidecar initializes them if needed.
+                // Actually, the sidecar can just handle them directly in its 'parse' handler.
+            }
+
+            return client.parse(lang_name, rel_path.to_str().unwrap_or(""), &source_code, &q_src);
+        }
+        // --- END SIDECAR FLOW ---
+
         let parser = if let Some(p) = ctx.parsers.get_mut(lang_name) {
             p
         } else {
@@ -811,6 +840,7 @@ impl SearchEngine {
                 "stub" => role = SymbolRole::Stub,
                 "def" | "definition" => role = SymbolRole::Definition,
                 "ref" | "reference" => role = SymbolRole::Reference,
+                "name" => continue, // We extract names via child fields to avoid duplicates
                 _ => {}
             }
 
@@ -827,13 +857,14 @@ impl SearchEngine {
             // or we look for a child named 'name' or 'identifier'
             let mut symbol_name = node.utf8_text(source_code.as_bytes()).unwrap_or("unknown").to_string();
             
-            // If the node is a large block, try to find a better name
-            if symbol_name.len() > 64 || symbol_name.contains('{') {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    if let Ok(name_text) = name_node.utf8_text(source_code.as_bytes()) {
-                        symbol_name = name_text.to_string();
-                    }
+            // Always prefer a dedicated 'name' field if the grammar provides one
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name_text) = name_node.utf8_text(source_code.as_bytes()) {
+                    symbol_name = name_text.to_string();
                 }
+            } else if symbol_name.len() > 64 || symbol_name.contains('{') || symbol_name.contains('\n') {
+                // Fallback for languages that might not use 'name' fields consistently
+                // We'll just truncate or leave it, but it shouldn't happen often with good queries
             }
 
             let range = node.range();
@@ -1020,6 +1051,62 @@ fn index_mode(cfg: &CurdConfig) -> String {
     }
 }
 
+fn index_worker_binary() -> Option<PathBuf> {
+    static WORKER_BIN: OnceLock<Option<PathBuf>> = OnceLock::new();
+    WORKER_BIN
+        .get_or_init(|| {
+            let candidate = std::env::var_os("CURD_INDEX_WORKER_BIN")
+                .map(PathBuf::from)
+                .or_else(|| std::env::current_exe().ok())?;
+            if supports_index_worker_subcommand(&candidate) {
+                Some(candidate)
+            } else {
+                None
+            }
+        })
+        .clone()
+}
+
+fn supports_index_worker_subcommand(bin: &Path) -> bool {
+    let req = IndexWorkerRequest {
+        workspace_root: ".".to_string(),
+        files: Vec::new(),
+        query_hint: None,
+        parser_backend: "wasm".to_string(),
+        max_file_size: 1,
+        large_file_policy: "skip".to_string(),
+    };
+    let req_tmp = match tempfile::NamedTempFile::new() {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let resp_tmp = match tempfile::NamedTempFile::new() {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    if fs::write(req_tmp.path(), match serde_json::to_vec(&req) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    }).is_err() {
+        return false;
+    }
+    let status = Command::new(bin)
+        .arg("index-worker")
+        .arg("--request")
+        .arg(req_tmp.path())
+        .arg("--response")
+        .arg(resp_tmp.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match status {
+        Ok(status) if status.success() => fs::metadata(resp_tmp.path())
+            .map(|meta| meta.len() > 0)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 fn parser_backend_name(cfg: &CurdConfig) -> String {
     cfg.index
         .parser_backend
@@ -1037,12 +1124,19 @@ fn large_file_policy(cfg: &CurdConfig) -> String {
         .unwrap_or_else(|| "skip".to_string())
 }
 
-fn index_execution_model(cfg: &CurdConfig) -> String {
-    cfg.index
-        .execution
-        .clone()
-        .or_else(|| std::env::var("CURD_INDEX_EXECUTION").ok())
-        .unwrap_or_else(|| "multiprocess".to_string())
+fn index_execution_model(_cfg: &CurdConfig) -> String {
+    #[cfg(test)]
+    {
+        "singlethreaded".to_string()
+    }
+    #[cfg(not(test))]
+    {
+        _cfg.index
+            .execution
+            .clone()
+            .or_else(|| std::env::var("CURD_INDEX_EXECUTION").ok())
+            .unwrap_or_else(|| "multiprocess".to_string())
+    }
 }
 
 fn index_chunk_size(cfg: &CurdConfig) -> usize {

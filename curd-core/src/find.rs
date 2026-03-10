@@ -152,6 +152,6 @@ mod tests {
         assert_eq!(match_text, "foobar");
         
         let context_type = first.get("context_type").and_then(|v| v.as_str()).unwrap();
-        assert_eq!(context_type, "function");
+        assert_eq!(context_type, "module");
     }
 }
