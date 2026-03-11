@@ -277,9 +277,10 @@ fn extract_function_names(source: &str, lang: Lang) -> HashSet<String> {
                 _ => None,
             };
         if let Some(n) = name
-            && !n.is_empty() {
-                names.insert(n.to_string());
-            }
+            && !n.is_empty()
+        {
+            names.insert(n.to_string());
+        }
     }
     names
 }

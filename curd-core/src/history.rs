@@ -130,9 +130,9 @@ impl HistoryEngine {
                 .create(true)
                 .append(true)
                 .open(&self.log_path)
-            {
-                let _ = writeln!(file, "{}", serialized);
-            }
+        {
+            let _ = writeln!(file, "{}", serialized);
+        }
     }
 
     pub fn get_history(&self, limit: usize) -> Vec<HistoryEntry> {
@@ -455,7 +455,10 @@ mod provenance_tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].actor_kind, "agent");
         assert_eq!(history[1].actor_kind, "human");
-        assert_eq!(history[0].prev_hash.as_deref(), Some(history[1].entry_hash.as_str()));
+        assert_eq!(
+            history[0].prev_hash.as_deref(),
+            Some(history[1].entry_hash.as_str())
+        );
     }
 
     #[test]
@@ -494,7 +497,8 @@ mod provenance_tests {
             None,
         );
 
-        let checkpoints = std::fs::read_to_string(&ledger.checkpoint_path).expect("checkpoint file");
+        let checkpoints =
+            std::fs::read_to_string(&ledger.checkpoint_path).expect("checkpoint file");
         assert!(checkpoints.contains("\"entries\":2"));
         assert!(checkpoints.contains("\"tip_hash\""));
     }

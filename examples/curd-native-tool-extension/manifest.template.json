@@ -1,0 +1,53 @@
+{
+  "manifest": {
+    "schema_version": 1,
+    "package_id": "curd-demo-toolkit",
+    "version": "0.1.0",
+    "kind": "tool",
+    "signer_pubkey_hex": "REPLACE_WITH_ED25519_PUBKEY_HEX",
+    "description": "Signed demo CURD tool plugin package",
+    "files": [
+      {
+        "path": "bin/curd-demo-tool",
+        "sha256": "REPLACE_WITH_SHA256",
+        "size": 2048,
+        "executable": true
+      }
+    ],
+    "tool": {
+      "tool_name": "curd_demo_tool",
+      "executable_path": "bin/curd-demo-tool",
+      "default_args": [],
+      "protocol": "json_stdio_v1",
+      "agent_usage": "Send one JSON object on stdin and consume one JSON object from stdout. Use this demo tool to validate custom native tool packaging and CURD-side invocation.",
+      "review_guidance": "Reviewers should check argument semantics, downstream effects, and whether the tool should be callable by non-human profiles.",
+      "downstream_impact": "Returns derived metadata only in this sample. Replace with real side effects only after policy review.",
+      "description": "Reference native tool plugin for CURD extension authors.",
+      "parameters": [
+        {
+          "name": "input",
+          "kind": "string",
+          "description": "Input text that the tool should summarize.",
+          "required": true
+        }
+      ],
+      "examples": [
+        {
+          "label": "Summarize a token",
+          "arguments": {
+            "input": "auth"
+          }
+        }
+      ]
+    },
+    "language": null
+  },
+  "payload_files": [
+    {
+      "path": "bin/curd-demo-tool",
+      "content_b64": "REPLACE_WITH_BASE64_PAYLOAD",
+      "executable": true
+    }
+  ],
+  "signature_hex": "REPLACE_WITH_SIGNATURE_OVER_MANIFEST_JSON"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "tree-sitter-curd",
+  "version": "0.1.0",
+  "description": "Reference Tree-sitter grammar scaffold for the CURD script language",
+  "license": "GPL-3.0-only",
+  "main": "grammar.js",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  }
+}

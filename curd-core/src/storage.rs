@@ -73,6 +73,27 @@ CREATE TABLE IF NOT EXISTS symbols (
     FOREIGN KEY(filepath) REFERENCES files(filepath) ON DELETE CASCADE
 );
 
+-- FTS5 Virtual Table for BM25 Ranked Search
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    name,
+    filepath,
+    content='symbols',
+    content_rowid='rowid',
+    tokenize='unicode61'
+);
+
+-- Triggers to keep FTS5 in sync with symbols table
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+  INSERT INTO symbols_fts(rowid, name, filepath) VALUES (new.rowid, new.name, new.filepath);
+END;
+CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+  INSERT INTO symbols_fts(symbols_fts, rowid, name, filepath) VALUES('delete', old.rowid, old.name, old.filepath);
+END;
+CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
+  INSERT INTO symbols_fts(symbols_fts, rowid, name, filepath) VALUES('delete', old.rowid, old.name, old.filepath);
+  INSERT INTO symbols_fts(rowid, name, filepath) VALUES (new.rowid, new.name, new.filepath);
+END;
+
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_filepath ON symbols(filepath);
 
@@ -115,6 +136,7 @@ PRAGMA synchronous = NORMAL;
 "#,
     )?;
     ensure_edge_columns(conn)?;
+    ensure_symbols_fts_populated(conn)?;
     Ok(())
 }
 
@@ -126,17 +148,42 @@ fn ensure_edge_columns(conn: &Connection) -> Result<()> {
         existing.insert(row?);
     }
     if !existing.contains("tier") {
-        conn.execute("ALTER TABLE edges ADD COLUMN tier TEXT NOT NULL DEFAULT 'semantic'", [])?;
+        conn.execute(
+            "ALTER TABLE edges ADD COLUMN tier TEXT NOT NULL DEFAULT 'semantic'",
+            [],
+        )?;
     }
     if !existing.contains("confidence") {
-        conn.execute("ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0", [])?;
+        conn.execute(
+            "ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
+            [],
+        )?;
     }
     if !existing.contains("source") {
         conn.execute("ALTER TABLE edges ADD COLUMN source TEXT", [])?;
     }
     if !existing.contains("evidence") {
-        conn.execute("ALTER TABLE edges ADD COLUMN evidence TEXT NOT NULL DEFAULT '[]'", [])?;
+        conn.execute(
+            "ALTER TABLE edges ADD COLUMN evidence TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
     }
+    Ok(())
+}
+
+fn ensure_symbols_fts_populated(conn: &Connection) -> Result<()> {
+    let symbols_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
+    if symbols_count == 0 {
+        return Ok(());
+    }
+
+    let fts_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM symbols_fts", [], |row| row.get(0))?;
+    if fts_count < symbols_count {
+        conn.execute("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')", [])?;
+    }
+
     Ok(())
 }
 
@@ -150,7 +197,7 @@ pub fn record_index_run(root: &Path, cfg: &CurdConfig, stats: &IndexBuildStats) 
     }
     let conn = open_storage_conn(db_path, cfg)?;
     initialize_symbol_index(&conn)?;
-    
+
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -204,11 +251,18 @@ impl Storage {
     }
 
     pub fn delete_file_data(&self, filepath: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM files WHERE filepath = ?1", params![filepath])?;
+        self.conn
+            .execute("DELETE FROM files WHERE filepath = ?1", params![filepath])?;
         Ok(())
     }
 
-    pub fn upsert_file(&self, filepath: &str, mtime_ms: u64, file_size: u64, content_hash: Option<&str>) -> Result<()> {
+    pub fn upsert_file(
+        &self,
+        filepath: &str,
+        mtime_ms: u64,
+        file_size: u64,
+        content_hash: Option<&str>,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO files (filepath, mtime_ms, file_size, content_hash) 
              VALUES (?1, ?2, ?3, ?4)
@@ -243,7 +297,7 @@ impl Storage {
                 crate::symbols::SymbolRole::Stub => "stub",
                 crate::symbols::SymbolRole::Reference => "reference",
             };
-            
+
             // SECURITY: Ensure absolute path for storage
             let abs_filepath = if s.filepath.is_absolute() {
                 s.filepath.clone()
@@ -272,7 +326,9 @@ impl Storage {
     }
 
     pub fn get_file_meta(&self, filepath: &str) -> Result<Option<(u64, u64)>> {
-        let mut stmt = self.conn.prepare("SELECT mtime_ms, file_size FROM files WHERE filepath = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT mtime_ms, file_size FROM files WHERE filepath = ?1")?;
         let mut rows = stmt.query_map(params![filepath], |row| {
             Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64))
         })?;
@@ -284,7 +340,9 @@ impl Storage {
     }
 
     pub fn get_all_file_meta(&self) -> Result<HashMap<String, (u64, u64)>> {
-        let mut stmt = self.conn.prepare("SELECT filepath, mtime_ms, file_size FROM files")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT filepath, mtime_ms, file_size FROM files")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -305,6 +363,18 @@ impl Storage {
              FROM symbols WHERE filepath = ?1",
         )?;
         let rows = stmt.query_map(params![filepath], decode_symbol_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_all_symbols(&self) -> Result<Vec<Symbol>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, kind, role, link_name, filepath, start_byte, end_byte, start_line, end_line, semantic_hash, fault_id FROM symbols"
+        )?;
+        let rows = stmt.query_map([], decode_symbol_row)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -341,7 +411,9 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id FROM symbols WHERE filepath = ?1 AND start_line <= ?2 AND end_line >= ?2 ORDER BY (end_line - start_line) ASC LIMIT 1"
         )?;
-        let mut rows = stmt.query_map(params![filepath, line as i64], |row| row.get::<_, String>(0))?;
+        let mut rows = stmt.query_map(params![filepath, line as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
         if let Some(row) = rows.next() {
             Ok(Some(row?))
         } else {
@@ -349,11 +421,71 @@ impl Storage {
         }
     }
 
-    pub fn commit_indexing_results(&mut self, entries: &[crate::search::IndexWorkerEntry]) -> Result<()> {
+    /// BM25 Ranked Search using FTS5 virtual table
+    pub fn search_ranked(&self, query: &str, limit: Option<usize>) -> Result<Vec<Symbol>> {
+        let limit = limit.unwrap_or(50);
+
+        if query.is_empty() {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, name, kind, role, link_name, filepath, start_byte, end_byte, start_line, end_line, semantic_hash, fault_id 
+                 FROM symbols 
+                 LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], decode_symbol_row)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            return Ok(out);
+        }
+
+        // Prepare the FTS query string
+        // We handle simple phrases and multi-word queries.
+        // If the query contains special chars, we might need more complex escaping.
+        let sanitized_query = query.replace('"', "\"\"");
+        let fts_query = format!("\"{}\"*", sanitized_query);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT symbols.id, symbols.name, symbols.kind, symbols.role, symbols.link_name, symbols.filepath, symbols.start_byte, symbols.end_byte, symbols.start_line, symbols.end_line, symbols.semantic_hash, symbols.fault_id 
+             FROM symbols 
+             JOIN symbols_fts ON symbols.rowid = symbols_fts.rowid 
+             WHERE symbols_fts MATCH ?1 
+             ORDER BY bm25(symbols_fts) ASC 
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![fts_query, limit as i64], decode_symbol_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+
+        // Fallback to substring search if FTS5 yields 0 results (e.g. for partial matches not caught by tokenizer)
+        if out.is_empty() && query.len() >= 3 {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, name, kind, role, link_name, filepath, start_byte, end_byte, start_line, end_line, semantic_hash, fault_id 
+                 FROM symbols 
+                 WHERE name LIKE ?1 
+                 LIMIT ?2",
+            )?;
+            let like_query = format!("%{}%", query);
+            let rows = stmt.query_map(params![like_query, limit as i64], decode_symbol_row)?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+
+        Ok(out)
+    }
+
+    pub fn commit_indexing_results(
+        &mut self,
+        entries: &[crate::search::IndexWorkerEntry],
+    ) -> Result<()> {
         let conn = &mut self.conn;
         conn.execute("PRAGMA foreign_keys = OFF", [])?;
         conn.execute("PRAGMA synchronous = OFF", [])?;
-        
+
         let tx = conn.transaction()?;
         {
             let mut symbol_stmt = tx.prepare(
@@ -362,16 +494,19 @@ impl Storage {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
             let mut file_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO files (filepath, mtime_ms, file_size) VALUES (?1, ?2, ?3)"
+                "INSERT OR REPLACE INTO files (filepath, mtime_ms, file_size) VALUES (?1, ?2, ?3)",
             )?;
 
             for entry in entries {
                 tx.execute("DELETE FROM files WHERE filepath = ?1", params![entry.rel])?;
-                file_stmt.execute(params![entry.rel, entry.mtime_ms as i64, entry.file_size as i64])?;
-                
+                file_stmt.execute(params![
+                    entry.rel,
+                    entry.mtime_ms as i64,
+                    entry.file_size as i64
+                ])?;
+
                 for s in &entry.symbols {
-                    if s.name.contains("main") {
-                    }
+                    if s.name.contains("main") {}
                     let kind_str = match s.kind {
                         SymbolKind::Function => "function",
                         SymbolKind::Class => "class",
@@ -428,7 +563,9 @@ impl Storage {
     }
 
     pub fn get_symbol_fault(&self, symbol_id: &str) -> Result<Option<Uuid>> {
-        let mut stmt = self.conn.prepare("SELECT fault_id FROM symbols WHERE id = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT fault_id FROM symbols WHERE id = ?1")?;
         let mut rows = stmt.query_map(params![symbol_id], |row| {
             let fid: Option<String> = row.get(0)?;
             Ok(fid.and_then(|s| Uuid::parse_str(&s).ok()))
@@ -445,9 +582,9 @@ impl Storage {
         let mut hasher = Sha256::new();
 
         // 1. Hash all symbols deterministically
-        let mut stmt = self.conn.prepare(
-            "SELECT id, semantic_hash FROM symbols ORDER BY id ASC"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, semantic_hash FROM symbols ORDER BY id ASC")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?;
@@ -532,7 +669,7 @@ fn refresh_graph_edges_tx(
     entries: &[crate::search::IndexWorkerEntry],
 ) -> Result<()> {
     let mut stmt = tx.prepare(
-        "SELECT id, name, kind, role, link_name, filepath, start_byte, end_byte FROM symbols"
+        "SELECT id, name, kind, role, link_name, filepath, start_byte, end_byte FROM symbols",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(StoredSymbol {
@@ -555,11 +692,17 @@ fn refresh_graph_edges_tx(
     let mut by_link: HashMap<String, Vec<StoredSymbol>> = HashMap::new();
     let mut by_file: HashMap<PathBuf, Vec<StoredSymbol>> = HashMap::new();
     for sym in &symbols {
-        by_name.entry(sym.name.clone()).or_default().push(sym.clone());
+        by_name
+            .entry(sym.name.clone())
+            .or_default()
+            .push(sym.clone());
         if let Some(link) = &sym.link_name {
             by_link.entry(link.clone()).or_default().push(sym.clone());
         }
-        by_file.entry(sym.filepath.clone()).or_default().push(sym.clone());
+        by_file
+            .entry(sym.filepath.clone())
+            .or_default()
+            .push(sym.clone());
     }
 
     let impacted = collect_impacted_symbols(entries, &symbols, &by_name, &by_link);
@@ -567,8 +710,7 @@ fn refresh_graph_edges_tx(
         return Ok(());
     }
 
-    let mut delete_stmt =
-        tx.prepare("DELETE FROM edges WHERE caller_id = ?1 OR callee_id = ?1")?;
+    let mut delete_stmt = tx.prepare("DELETE FROM edges WHERE caller_id = ?1 OR callee_id = ?1")?;
     for symbol_id in impacted.iter().map(|sym| sym.id.as_str()) {
         delete_stmt.execute(params![symbol_id])?;
     }
@@ -600,9 +742,7 @@ fn refresh_graph_edges_tx(
                 }
             }
         }
-        if !linked
-            && let Some(targets) = by_name.get(&sym.name)
-        {
+        if !linked && let Some(targets) = by_name.get(&sym.name) {
             for target in targets {
                 if target.id != sym.id && target.role == "definition" {
                     edge_stmt.execute(params![
@@ -674,10 +814,10 @@ fn refresh_graph_edges_tx(
                 serde_json::to_string(&evidence).unwrap_or_else(|_| "[]".to_string()),
             ])?;
         }
-        let import_targets =
-            resolve_import_edges(&source, &file_symbols, &by_name);
+        let import_targets = resolve_import_edges(&source, &file_symbols, &by_name);
         for sym in &file_symbols {
-            if sym.role != "definition" || !impacted.iter().any(|candidate| candidate.id == sym.id) {
+            if sym.role != "definition" || !impacted.iter().any(|candidate| candidate.id == sym.id)
+            {
                 continue;
             }
             for (target, confidence, evidence) in &import_targets {
@@ -698,12 +838,19 @@ fn refresh_graph_edges_tx(
             if !impacted.iter().any(|candidate| candidate.id == sym.id) {
                 continue;
             }
-            if sym.start_byte >= source.len() || sym.end_byte > source.len() || sym.start_byte >= sym.end_byte {
+            if sym.start_byte >= source.len()
+                || sym.end_byte > source.len()
+                || sym.start_byte >= sym.end_byte
+            {
                 continue;
             }
             let snippet = &source[sym.start_byte..sym.end_byte];
             let caller_parent = sym.filepath.parent();
-            let caller_ext = sym.filepath.extension().and_then(|e| e.to_str()).unwrap_or_default();
+            let caller_ext = sym
+                .filepath
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
             for (idx, _) in snippet.match_indices('(') {
                 if idx == 0 {
                     continue;
@@ -733,9 +880,8 @@ fn refresh_graph_edges_tx(
 
     for sym in &impacted {
         let path = sym.filepath.to_string_lossy();
-        let is_wrapper = path.contains("curd-node/")
-            || path.contains("curd-python/")
-            || path.contains("curd/");
+        let is_wrapper =
+            path.contains("curd-node/") || path.contains("curd-python/") || path.contains("curd/");
         if !is_wrapper {
             continue;
         }
@@ -992,8 +1138,22 @@ fn resolve_call_targets(
             let target = candidates.iter().find(|candidate| candidate.id == id)?;
             Some((
                 id,
-                score_call_confidence(called, caller, caller_parent, caller_ext, target, !ambiguous),
-                call_edge_evidence(called, caller, caller_parent, caller_ext, target, !ambiguous),
+                score_call_confidence(
+                    called,
+                    caller,
+                    caller_parent,
+                    caller_ext,
+                    target,
+                    !ambiguous,
+                ),
+                call_edge_evidence(
+                    called,
+                    caller,
+                    caller_parent,
+                    caller_ext,
+                    target,
+                    !ambiguous,
+                ),
             ))
         })
         .collect()
@@ -1091,8 +1251,22 @@ fn resolve_import_targets(
         .map(|target| {
             (
                 target.id.clone(),
-                score_import_confidence(imported, caller, caller_parent, caller_ext, target, !ambiguous),
-                import_edge_evidence(imported, caller, caller_parent, caller_ext, target, !ambiguous),
+                score_import_confidence(
+                    imported,
+                    caller,
+                    caller_parent,
+                    caller_ext,
+                    target,
+                    !ambiguous,
+                ),
+                import_edge_evidence(
+                    imported,
+                    caller,
+                    caller_parent,
+                    caller_ext,
+                    target,
+                    !ambiguous,
+                ),
             )
         })
         .collect()
@@ -1206,7 +1380,11 @@ fn extract_import_names(source: &str) -> Vec<String> {
 fn parse_rust_use_clause(rest: &str) -> Vec<String> {
     let clause = rest.trim().trim_end_matches(';');
     if clause.contains('{') && clause.contains('}') {
-        let prefix = clause.split('{').next().unwrap_or("").trim_end_matches("::");
+        let prefix = clause
+            .split('{')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches("::");
         let inside = clause
             .split('{')
             .nth(1)
@@ -1226,12 +1404,14 @@ fn parse_rust_use_clause(rest: &str) -> Vec<String> {
             })
             .collect()
     } else {
-        vec![clause
-            .split_whitespace()
-            .next()
-            .unwrap_or(clause)
-            .trim()
-            .to_string()]
+        vec![
+            clause
+                .split_whitespace()
+                .next()
+                .unwrap_or(clause)
+                .trim()
+                .to_string(),
+        ]
     }
 }
 
@@ -1390,18 +1570,20 @@ LIMIT ?1
 }
 
 fn sqlite_path(root: &Path, cfg: &CurdConfig) -> PathBuf {
+    let root_str = root.to_string_lossy();
+    if root_str.contains(".curd/shadow/") {
+        return root.join(".curd").join("curd_state.sqlite3");
+    }
+
     let curd_dir = crate::workspace::get_curd_dir(root);
-    let rel = cfg
-        .storage
-        .sqlite_path
-        .clone()
-        .unwrap_or_else(|| {
-             curd_dir.strip_prefix(root)
-                .unwrap_or(&curd_dir)
-                .join("curd_state.sqlite3")
-                .to_string_lossy()
-                .to_string()
-        });
+    let rel = cfg.storage.sqlite_path.clone().unwrap_or_else(|| {
+        curd_dir
+            .strip_prefix(root)
+            .unwrap_or(&curd_dir)
+            .join("curd_state.sqlite3")
+            .to_string_lossy()
+            .to_string()
+    });
     crate::workspace::validate_sandboxed_path(root, &rel).unwrap_or_else(|_| {
         // Keep deterministic fallback inside workspace if an unsafe path is configured.
         curd_dir.join("curd_state.sqlite3")
@@ -1443,8 +1625,8 @@ fn open_storage_conn(db_path: PathBuf, cfg: &CurdConfig) -> Result<Connection> {
 #[cfg(test)]
 mod tests {
     use super::{Storage, read_recent_index_runs, record_index_run};
-    use crate::{CurdConfig, IndexBuildStats, Symbol, SymbolKind, symbols::SymbolRole};
     use crate::search::IndexWorkerEntry;
+    use crate::{CurdConfig, IndexBuildStats, Symbol, SymbolKind, symbols::SymbolRole};
     use rusqlite::params;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -1533,6 +1715,28 @@ mod tests {
         record_index_run(root, &cfg, &stats).expect("record");
         assert!(root.join(".curd").join("curd_state.sqlite3").exists());
         assert!(!root.join("../outside.sqlite3").exists());
+    }
+
+    #[test]
+    fn shadow_roots_use_isolated_sqlite_state() {
+        let dir = tempdir().expect("tempdir");
+        let shadow_root = dir
+            .path()
+            .join(".curd")
+            .join("shadow")
+            .join("curd_shadow_12345678-1234-1234-1234-123456789abc");
+        std::fs::create_dir_all(&shadow_root).expect("shadow root");
+
+        let cfg = CurdConfig::default();
+        let _storage = Storage::open(&shadow_root, &cfg).expect("open storage");
+
+        assert!(
+            shadow_root
+                .join(".curd")
+                .join("curd_state.sqlite3")
+                .exists()
+        );
+        assert!(!dir.path().join(".curd").join("curd_state.sqlite3").exists());
     }
 
     #[test]
@@ -2145,7 +2349,9 @@ mod tests {
 
         let mut stmt = storage
             .conn
-            .prepare("SELECT caller_id, callee_id, kind FROM edges ORDER BY caller_id, callee_id, kind")
+            .prepare(
+                "SELECT caller_id, callee_id, kind FROM edges ORDER BY caller_id, callee_id, kind",
+            )
             .expect("prepare query");
         let rows = stmt
             .query_map([], |row| {
@@ -2226,6 +2432,77 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("query confidence");
-        assert!(confidence > 0.80, "expected strong local call confidence, got {confidence}");
+        assert!(
+            confidence > 0.80,
+            "expected strong local call confidence, got {confidence}"
+        );
+    }
+
+    #[test]
+    fn test_search_ranked_bm25() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let cfg = CurdConfig::default();
+        let storage = Storage::open(root, &cfg).expect("open storage");
+
+        let symbols = vec![
+            Symbol {
+                id: "src/main.rs::main".to_string(),
+                filepath: PathBuf::from("src/main.rs"),
+                name: "main".to_string(),
+                kind: SymbolKind::Function,
+                role: SymbolRole::Definition,
+                link_name: None,
+                start_byte: 0,
+                end_byte: 10,
+                start_line: 1,
+                end_line: 1,
+                signature: None,
+                semantic_hash: None,
+                fault_id: None,
+            },
+            Symbol {
+                id: "src/lib.rs::helper_func".to_string(),
+                filepath: PathBuf::from("src/lib.rs"),
+                name: "helper_func".to_string(),
+                kind: SymbolKind::Function,
+                role: SymbolRole::Definition,
+                link_name: None,
+                start_byte: 0,
+                end_byte: 20,
+                start_line: 1,
+                end_line: 1,
+                signature: None,
+                semantic_hash: None,
+                fault_id: None,
+            },
+        ];
+
+        storage
+            .upsert_file("src/main.rs", 1, 10, None)
+            .expect("upsert main");
+        storage
+            .upsert_file("src/lib.rs", 1, 20, None)
+            .expect("upsert lib");
+        storage.insert_symbols(&symbols).expect("insert symbols");
+
+        // Ranked search for "helper"
+        let res = storage
+            .search_ranked("helper", None)
+            .expect("search ranked");
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].name, "helper_func");
+
+        // Ranked search for "main"
+        let res = storage.search_ranked("main", None).expect("search ranked");
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].name, "main");
+
+        // Ranked search for partial "help"
+        let res = storage
+            .search_ranked("help", None)
+            .expect("search ranked partial");
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].name, "helper_func");
     }
 }

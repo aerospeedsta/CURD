@@ -25,7 +25,11 @@ impl Sandbox {
                 .arg("run")
                 .arg("--rm")
                 .arg("-v")
-                .arg(format!("{}:{}", self.workspace_root.display(), self.workspace_root.display()))
+                .arg(format!(
+                    "{}:{}",
+                    self.workspace_root.display(),
+                    self.workspace_root.display()
+                ))
                 .arg("-w")
                 .arg(&self.workspace_root)
                 .arg(&config.shell.docker_image)
@@ -107,7 +111,11 @@ impl Sandbox {
                 .arg("run")
                 .arg("--rm")
                 .arg("-v")
-                .arg(format!("{}:{}", self.workspace_root.display(), self.workspace_root.display()))
+                .arg(format!(
+                    "{}:{}",
+                    self.workspace_root.display(),
+                    self.workspace_root.display()
+                ))
                 .arg("-w")
                 .arg(&self.workspace_root)
                 .arg(&config.shell.docker_image)
@@ -175,7 +183,7 @@ impl Sandbox {
 
         // Sanitize environment variables to prevent secret leakage (e.g., AWS_*, GITHUB_TOKEN)
         c.env_clear();
-        
+
         // Safelist of inherited environment variables
         for key in ["PATH", "TERM", "HOME", "LANG", "SHELL", "USER"] {
             if let Ok(val) = std::env::var(key) {
@@ -185,9 +193,7 @@ impl Sandbox {
 
         c
     }
-
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -199,21 +205,28 @@ mod tests {
         let dir = tempdir().unwrap();
         let sandbox = Sandbox::new(dir.path());
         let cmd = sandbox.build_command("echo", &["test".to_string()]);
-        
+
         // Unfortunately, TokioCommand doesn't expose a way to inspect env modifications easily
         // but we can ensure the command string is well-formed.
         let debug_str = format!("{:?}", cmd);
-        assert!(debug_str.contains("echo") || debug_str.contains("sandbox-exec") || debug_str.contains("bwrap"));
+        assert!(
+            debug_str.contains("echo")
+                || debug_str.contains("sandbox-exec")
+                || debug_str.contains("bwrap")
+        );
     }
-    
+
     #[test]
     fn test_sandbox_canonicalizes_root() {
         let dir = tempdir().unwrap();
         let symlink_path = dir.path().join("symlink");
         #[cfg(unix)]
         std::os::unix::fs::symlink(dir.path(), &symlink_path).unwrap();
-        
+
         let sandbox = Sandbox::new(&symlink_path);
-        assert_eq!(sandbox.workspace_root, std::fs::canonicalize(dir.path()).unwrap());
+        assert_eq!(
+            sandbox.workspace_root,
+            std::fs::canonicalize(dir.path()).unwrap()
+        );
     }
 }

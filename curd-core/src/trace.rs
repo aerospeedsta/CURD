@@ -91,8 +91,9 @@ pub fn extract_tokens(text: &str, noise_words: &[&str]) -> Vec<String> {
 }
 
 fn push_token(out: &mut Vec<String>, current: &mut String, noise_words: &[&str]) {
-    let token = current
-        .trim_matches(|ch: char| matches!(ch, ':' | '.' | '/' | '\\' | '(' | ')' | ',' | '"' | '\''));
+    let token = current.trim_matches(|ch: char| {
+        matches!(ch, ':' | '.' | '/' | '\\' | '(' | ')' | ',' | '"' | '\'')
+    });
     for candidate in expand_trace_token_candidates(token) {
         if candidate.len() >= 3 && !noise_words.iter().any(|noise| noise == &candidate) {
             out.push(candidate);
@@ -265,7 +266,16 @@ mod tests {
     fn extracts_python_traceback_terms() {
         let tokens = extract_tokens(
             "Traceback (most recent call last):\n  File \"pkg/service.py\", line 41, in handle_event",
-            &["traceback", "most", "recent", "call", "last", "file", "line", "in"],
+            &[
+                "traceback",
+                "most",
+                "recent",
+                "call",
+                "last",
+                "file",
+                "line",
+                "in",
+            ],
         );
         assert!(tokens.iter().any(|t| t == "pkg/service"));
         assert!(tokens.iter().any(|t| t == "service"));
@@ -284,19 +294,30 @@ mod tests {
             &["thread", "panicked", "at", "main"],
         );
         let summary = &enriched["candidate_summary"];
-        assert!(summary["qualified_symbols"]
-            .as_array()
-            .map(|values| values.iter().any(|value| value == "mycrate::worker::run_job"))
-            .unwrap_or(false));
-        assert!(summary["file_candidates"]
-            .as_array()
-            .map(|values| values.iter().any(|value| value == "src/lib"))
-            .unwrap_or(false));
-        assert!(summary["leaf_candidates"]
-            .as_array()
-            .map(|values| values.iter().any(|value| value == "run_job"))
-            .unwrap_or(false));
-        assert_eq!(enriched["failure_summary"]["likely_primary_kind"], "qualified_symbol");
+        assert!(
+            summary["qualified_symbols"]
+                .as_array()
+                .map(|values| values
+                    .iter()
+                    .any(|value| value == "mycrate::worker::run_job"))
+                .unwrap_or(false)
+        );
+        assert!(
+            summary["file_candidates"]
+                .as_array()
+                .map(|values| values.iter().any(|value| value == "src/lib"))
+                .unwrap_or(false)
+        );
+        assert!(
+            summary["leaf_candidates"]
+                .as_array()
+                .map(|values| values.iter().any(|value| value == "run_job"))
+                .unwrap_or(false)
+        );
+        assert_eq!(
+            enriched["failure_summary"]["likely_primary_kind"],
+            "qualified_symbol"
+        );
         assert_eq!(enriched["failure_summary"]["file_candidate_count"], 1);
     }
 }

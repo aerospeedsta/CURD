@@ -1,8 +1,8 @@
+use curd::{API_VERSION, McpServer};
 use curd_core::{
-    API_VERSION, EngineContext, McpServer, check_workspace_config, handle_contract,
-    handle_debug_dispatcher, handle_diagram, handle_doctor, handle_edit, handle_graph, handle_lsp,
-    handle_manage_file, handle_profile, handle_read, handle_search, handle_shell, handle_workspace,
-    scan_workspace,
+    EngineContext, check_workspace_config, handle_contract, handle_debug_dispatcher,
+    handle_diagram, handle_doctor, handle_edit, handle_graph, handle_lsp, handle_manage_file,
+    handle_profile, handle_read, handle_search, handle_shell, handle_workspace, scan_workspace,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -99,12 +99,23 @@ impl CurdEngine {
     }
 
     #[napi]
-    pub async fn read(&self, uris: Vec<String>, verbosity: Option<u32>) -> Result<serde_json::Value> {
+    pub async fn read(
+        &self,
+        uris: Vec<String>,
+        verbosity: Option<u32>,
+    ) -> Result<serde_json::Value> {
         let params = serde_json::json!({
             "uris": uris,
             "verbosity": verbosity.unwrap_or(1)
         });
-        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let shadow_root = self
+            .ctx
+            .we
+            .shadow
+            .lock()
+            .unwrap()
+            .get_shadow_root()
+            .cloned();
         let res = handle_read(&params, Arc::clone(&self.ctx.re), shadow_root).await;
         if res.get("error").is_some() {
             return Err(Error::from_reason(res["error"].to_string()));
@@ -126,7 +137,14 @@ impl CurdEngine {
             "action": action.unwrap_or_else(|| "upsert".to_string()),
             "adaptation_justification": justification.unwrap_or_default()
         });
-        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let shadow_root = self
+            .ctx
+            .we
+            .shadow
+            .lock()
+            .unwrap()
+            .get_shadow_root()
+            .cloned();
         let res = handle_edit(&params, Arc::clone(&self.ctx.ee), shadow_root).await;
         if res.get("error").is_some() {
             return Err(Error::from_reason(res["error"].to_string()));
@@ -174,7 +192,8 @@ impl CurdEngine {
 
     #[napi]
     pub async fn find(&self, query: String) -> Result<serde_json::Value> {
-        self.search(query, Some("text".to_string()), None, None).await
+        self.search(query, Some("text".to_string()), None, None)
+            .await
     }
 
     #[napi]
@@ -201,7 +220,14 @@ impl CurdEngine {
     #[napi]
     pub async fn shell(&self, command: String) -> Result<serde_json::Value> {
         let params = serde_json::json!({ "command": command });
-        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let shadow_root = self
+            .ctx
+            .we
+            .shadow
+            .lock()
+            .unwrap()
+            .get_shadow_root()
+            .cloned();
         let res: serde_json::Value =
             handle_shell(&params, &self.ctx.she, shadow_root.as_deref()).await;
         if res.get("error").is_some() {
@@ -222,7 +248,14 @@ impl CurdEngine {
             "action": action.unwrap_or_else(|| "create".to_string()),
             "destination": destination
         });
-        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let shadow_root = self
+            .ctx
+            .we
+            .shadow
+            .lock()
+            .unwrap()
+            .get_shadow_root()
+            .cloned();
         let res: serde_json::Value =
             handle_manage_file(&params, Arc::clone(&self.ctx.fie), shadow_root).await;
         if res.get("error").is_some() {

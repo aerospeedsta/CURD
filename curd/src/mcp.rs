@@ -1,13 +1,18 @@
-use crate::context::{ConnectionEntry, PendingChallenge, handle_benchmark};
-use crate::plan::{SystemEvent, SystemEventEnvelope, now_secs};
-use crate::{DslNode, EngineContext, Plan, ReplState, dispatch_tool};
+use crate::router::{
+    route_batch, route_execute_dsl, route_execute_plan, route_history, route_tool_call,
+};
+use crate::validation::{annotate_tool_entry, tool_allowed_by_ceiling, validate_tool_call};
 use anyhow::Result;
+use curd_core::EngineContext;
+use curd_core::connection::{handle_connection_open, handle_connection_verify};
+use curd_core::context::{ConnectionEntry, handle_benchmark, handle_verify_impact};
+use curd_core::plan::{SystemEvent, SystemEventEnvelope};
 use serde_json::{Value, json};
-use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
-pub const API_VERSION: &str = "0.7.0";
+pub const API_VERSION: &str = "0.7.1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpServerMode {
@@ -62,11 +67,11 @@ impl McpServer {
         let mut reader = io::BufReader::new(stdin);
 
         let root_path = PathBuf::from(&self.root);
-        crate::validate_workspace_config(&root_path)?;
+        curd_core::validate_workspace_config(&root_path)?;
 
         let mode = self.mode;
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(32);
-        
+
         let root_for_ctx = self.root.clone();
         let (ctx_tx, ctx_rx) = tokio::sync::oneshot::channel::<Arc<EngineContext>>();
         let _ctx_handle = tokio::spawn(async move {
@@ -81,14 +86,16 @@ impl McpServer {
             let mut stdout = io::stdout();
             while let Some(msg) = rx.recv().await {
                 if let Ok(serialized) = serde_json::to_string(&msg) {
-                    let _ = stdout.write_all(format!("{}\n", serialized).as_bytes()).await;
+                    let _ = stdout
+                        .write_all(format!("{}\n", serialized).as_bytes())
+                        .await;
                     let _ = stdout.flush().await;
                 }
             }
         });
 
         let mut handlers = tokio::task::JoinSet::new();
-        
+
         let tx_events_out = tx.clone();
         let mut rx_events = None;
 
@@ -194,7 +201,8 @@ impl McpServer {
             // Bridge events if we have a context now
             if let (Some(ref mut rx), Some(ctx)) = (rx_events.as_mut(), shared_ctx.as_ref()) {
                 while let Ok(event) = rx.try_recv() {
-                    if let Some(msg) = system_event_to_notification(ctx.next_event_envelope(event)) {
+                    if let Some(msg) = system_event_to_notification(ctx.next_event_envelope(event))
+                    {
                         let _ = tx_events_out.send(msg).await;
                     }
                 }
@@ -230,14 +238,15 @@ impl McpServer {
             for (token, entry) in connections_guard.iter() {
                 let k = entry.pubkey_hex.as_str();
                 match latest_by_pubkey.get(k) {
-                    Some((existing, _)) if existing.last_touched_secs >= entry.last_touched_secs => {}
+                    Some((existing, _))
+                        if existing.last_touched_secs >= entry.last_touched_secs => {}
                     _ => {
                         latest_by_pubkey.insert(k, (entry, token));
                     }
                 }
             }
             for (entry, _token) in latest_by_pubkey.values().map(|(e, t)| (*e, *t)) {
-                if let Err(e) = crate::auth::IdentityManager::freeze_session(
+                if let Err(e) = curd_core::auth::IdentityManager::freeze_session(
                     &ctx.workspace_root,
                     &entry.pubkey_hex,
                     &entry.state,
@@ -353,7 +362,10 @@ fn system_event_to_notification(envelope: SystemEventEnvelope) -> Option<Value> 
                 stats.insert("duration_ms".to_string(), json!(duration_ms));
                 stats.insert("summary".to_string(), json!(summary));
                 stats.insert("event_id".to_string(), json!(envelope.event_id));
-                stats.insert("collaboration_id".to_string(), json!(envelope.collaboration_id));
+                stats.insert(
+                    "collaboration_id".to_string(),
+                    json!(envelope.collaboration_id),
+                );
                 stats.insert("session_id".to_string(), json!(envelope.collaboration_id));
                 stats.insert("ts_secs".to_string(), json!(envelope.ts_secs));
                 return Some(json!({
@@ -378,14 +390,13 @@ fn system_event_to_notification(envelope: SystemEventEnvelope) -> Option<Value> 
 
 pub fn handle_tools_list(mode: McpServerMode) -> Value {
     let mut tools = get_all_tools();
+    for tool in &mut tools {
+        annotate_tool_entry(tool);
+    }
     if mode == McpServerMode::Lite {
         tools.retain(|t| {
             let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            name == "search"
-                || name == "read"
-                || name == "edit"
-                || name == "graph"
-                || name == "workspace"
+            tool_allowed_by_ceiling(curd_core::RuntimeCeiling::Lite, name, &json!({}))
         });
     }
     json!({ "result": { "tools": tools } })
@@ -394,14 +405,13 @@ pub fn handle_tools_list(mode: McpServerMode) -> Value {
 pub fn handle_tools_list_with_ctx(ctx: &EngineContext, mode: McpServerMode) -> Value {
     let mut tools = get_all_tools();
     tools.extend(dynamic_tool_entries(ctx));
+    for tool in &mut tools {
+        annotate_tool_entry(tool);
+    }
     if mode == McpServerMode::Lite {
         tools.retain(|t| {
             let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            name == "search"
-                || name == "read"
-                || name == "edit"
-                || name == "graph"
-                || name == "workspace"
+            tool_allowed_by_ceiling(curd_core::RuntimeCeiling::Lite, name, &json!({}))
         });
     }
     json!({ "result": { "tools": tools } })
@@ -504,35 +514,24 @@ pub async fn handle_tools_call(req: &Value, ctx: &EngineContext, mode: McpServer
         });
     }
 
-    if mode == McpServerMode::Lite && name == "workspace" {
-        let action = tool_params
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("status");
-        let allowed = matches!(action, "status" | "list" | "dependencies");
-        if !allowed {
-            return json!({
-                "error": {
-                    "code": -32601,
-                    "message": format!("Workspace action disabled in lite mode: {}", action),
-                    "details": null
-                }
-            });
-        }
+    if let Err(err) = validate_tool_call(ctx, name, tool_params, false) {
+        return err;
     }
 
     let result = if name == "batch" {
-        handle_batch(tool_params, ctx).await
+        route_batch(tool_params, ctx).await
     } else if name == "session_open" || name == "connection_open" {
         handle_connection_open(tool_params, ctx).await
     } else if name == "session_verify" || name == "connection_verify" {
         handle_connection_verify(tool_params, ctx).await
     } else if name == "execute_dsl" {
-        handle_execute_dsl(tool_params, ctx).await
+        route_execute_dsl(tool_params, ctx).await
     } else if name == "execute_plan" {
-        handle_execute_plan(tool_params, ctx).await
+        route_execute_plan(tool_params, ctx).await
+    } else if name == "verify_impact" {
+        handle_verify_impact(tool_params, ctx).await
     } else if name == "history" {
-        handle_history(tool_params, ctx).await
+        route_history(tool_params, ctx).await
     } else if name == "benchmark" {
         let allow_bench = cfg!(debug_assertions) || std::env::var("CURD_ALLOW_BENCHMARK").is_ok();
         if allow_bench {
@@ -541,464 +540,11 @@ pub async fn handle_tools_call(req: &Value, ctx: &EngineContext, mode: McpServer
             json!({"error": "The benchmark tool is disabled in release builds for security and stability. Set CURD_ALLOW_BENCHMARK=1 to override."})
         }
     } else {
-        dispatch_tool(name, tool_params, ctx).await
+        route_tool_call(name, tool_params, ctx).await
     };
 
     json!({ "result": { "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| "Error serializing result".to_string()) }] } })
 }
-
-pub async fn handle_connection_open(params: &Value, ctx: &EngineContext) -> Value {
-    let pubkey_hex = params
-        .get("pubkey_hex")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if pubkey_hex.is_empty() {
-        return json!({"error": "pubkey_hex is required"});
-    }
-
-    let mut nonce = [0u8; 32];
-    if let Err(e) = getrandom::fill(&mut nonce) {
-        return json!({"error": format!("Failed to generate nonce: {}", e)});
-    }
-    // Simple hex encoding
-    let nonce_hex: String = nonce.iter().map(|b| format!("{:02x}", b)).collect();
-
-    let mut pending = ctx.pending_challenges.lock().await;
-    pending.insert(
-        pubkey_hex.to_string(),
-        PendingChallenge {
-            nonce_hex: nonce_hex.clone(),
-            created_at_secs: now_secs(),
-        },
-    );
-
-    ctx.he.log(
-        Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-        ctx.collaboration_id,
-        Some(pubkey_hex.to_string()),
-        None,
-        "connection_open",
-        params.clone(),
-        json!({"status": "ok"}),
-        None,
-        None,
-        true,
-        None,
-        None,
-    );
-
-    json!({
-        "status": "ok",
-        "nonce": nonce_hex
-    })
-}
-
-pub async fn handle_connection_verify(params: &Value, ctx: &EngineContext) -> Value {
-    let pubkey_hex = params
-        .get("pubkey_hex")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let signature_hex = params
-        .get("signature_hex")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    if pubkey_hex.is_empty() || signature_hex.is_empty() {
-        return json!({"error": "pubkey_hex and signature_hex are required"});
-    }
-
-    let challenge = {
-        let mut pending = ctx.pending_challenges.lock().await;
-        match pending.remove(pubkey_hex) {
-            Some(n) => n,
-            None => return json!({"error": "No pending challenge found for this pubkey"}),
-        }
-    };
-    if now_secs().saturating_sub(challenge.created_at_secs)
-        > ctx.config.collaboration.session_challenge_ttl_secs
-    {
-        let out = json!({"error": "Challenge expired"});
-        ctx.he.log(
-            Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-            ctx.collaboration_id,
-            Some(pubkey_hex.to_string()),
-            None,
-            "connection_verify",
-            params.clone(),
-            out.clone(),
-            None,
-            None,
-            false,
-            Some("Challenge expired".to_string()),
-            None,
-        );
-        return out;
-    }
-
-    match crate::auth::IdentityManager::verify_signature(
-        pubkey_hex,
-        challenge.nonce_hex.as_bytes(),
-        signature_hex,
-    ) {
-        Ok(true) => {
-            // AUTHORIZATION CHECK: Ensure this pubkey is actually on the allowlist
-            let auth_file = ctx.workspace_root.join(".curd").join("authorized_agents.json");
-            let (agent_id, is_authorized) = if auth_file.exists() {
-                if let Ok(content) = std::fs::read_to_string(&auth_file)
-                    && let Ok(authorized) =
-                        serde_json::from_str::<std::collections::HashMap<String, String>>(&content)
-                    {
-                        let aid = authorized.iter().find(|(_, v)| *v == pubkey_hex).map(|(k, _)| k.clone());
-                        match aid {
-                            Some(id) => (id, true),
-                            None => ("unknown".to_string(), false)
-                        }
-                    } else { ("unknown".to_string(), false) }
-            } else if ctx.config.collaboration.require_authorized_agents_file {
-                ("unknown".to_string(), false)
-            } else {
-                ("anonymous".to_string(), true)
-            };
-
-            if !is_authorized {
-                let out = json!({"error": "Unauthorized: Agent public key not found in authorized_agents.json"});
-                ctx.he.log(
-                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                    ctx.collaboration_id,
-                    Some(pubkey_hex.to_string()),
-                    None,
-                    "connection_verify",
-                    params.clone(),
-                    out.clone(),
-                    None,
-                    None,
-                    false,
-                    Some("Unauthorized public key".to_string()),
-                    None,
-                );
-                return out;
-            }
-
-            let auth_mgr = match crate::auth::IdentityManager::new() {
-                Ok(m) => m,
-                Err(e) => return json!({"error": format!("Failed to initialize IdentityManager: {}", e)}),
-            };
-
-            let connection_token = match auth_mgr.create_connection_token(&agent_id, pubkey_hex) {
-                Ok(t) => t,
-                Err(e) => return json!({"error": format!("Failed to create connection token: {}", e)}),
-            };
-            let (state, restored) = if let Some(frozen_state) =
-                crate::auth::IdentityManager::thaw_session(&ctx.workspace_root, pubkey_hex)
-            {
-                (frozen_state, true)
-            } else {
-                (ReplState::new(), false)
-            };
-            let entry = ConnectionEntry {
-                agent_id: agent_id.clone(),
-                pubkey_hex: pubkey_hex.to_string(),
-                state,
-                budget: crate::context::ConnectionBudget::default(),
-                last_touched_secs: now_secs(),
-            };
-            let mut connections = ctx.connections.lock().await;
-            connections.insert(connection_token.clone(), entry);
-            drop(connections);
-            let _ = ctx.tx_events.send(SystemEvent::ConnectionAuthenticated {
-                agent_id: agent_id.clone(),
-                pubkey_hex: pubkey_hex.to_string(),
-                restored_state: restored,
-            });
-
-            let out = json!({
-                "status": "authenticated",
-                "connection_token": connection_token,
-                "session_token": connection_token,
-                "agent_id": agent_id,
-                "restored_state": restored,
-                "config_hash": ctx.config.compute_hash()
-            });            ctx.he.log(
-                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                ctx.collaboration_id,
-                Some(pubkey_hex.to_string()),
-                None,
-                "connection_verify",
-                params.clone(),
-                out.clone(),
-                None,
-                None,
-                true,
-                None,
-                None,
-            );
-            out
-        }
-        Ok(false) | Err(_) => {
-            let out = json!({"error": "Invalid signature. Authentication failed."});
-            ctx.he.log(
-                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                ctx.collaboration_id,
-                Some(pubkey_hex.to_string()),
-                None,
-                "connection_verify",
-                params.clone(),
-                out.clone(),
-                None,
-                None,
-                false,
-                Some("Invalid signature".to_string()),
-                None,
-            );
-            out
-        }
-    }
-}
-
-async fn handle_execute_dsl(params: &Value, ctx: &EngineContext) -> Value {
-    let nodes: Vec<DslNode> = match params
-        .get("nodes")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-    {
-        Some(n) => n,
-        None => return json!({"error": "Invalid or missing 'nodes' for execute_dsl"}),
-    };
-
-    // Check for authenticated connection
-    let connection_token = params
-        .get("connection_token")
-        .or_else(|| params.get("session_token"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if connection_token.is_empty() {
-        return json!({"error": "Unauthorized: connection_token is required for execute_dsl"});
-    }
-
-    let mut local_state = {
-        let mut connections_guard = ctx.connections.lock().await;
-        if let Some(entry) = connections_guard.get_mut(connection_token) {
-            entry.state.is_executing_plan = true;
-            ReplState::from_variables(entry.state.variables.clone())
-        } else {
-            return json!({"error": "Unauthorized: Invalid or expired connection_token."});
-        }
-    };
-
-    let res = ctx.ple.execute_dsl(&nodes, ctx, &mut local_state).await;
-    
-    let mut connections_guard = ctx.connections.lock().await;
-    if let Some(entry) = connections_guard.get_mut(connection_token) {
-        entry.state.is_executing_plan = false;
-        match res {
-            Ok(results) => {
-                entry.state.variables.extend(local_state.variables);
-                entry.last_touched_secs = now_secs();
-                let val = json!({"status": "ok", "results": results});
-                ctx.he.log(
-                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                    ctx.collaboration_id,
-                    None, // agent_id
-                    None, // transaction_id
-                    "dsl",
-                    json!(nodes),
-                    val.clone(),
-                    None, // base_hash
-                    None, // post_hash
-                    true,
-                    None,
-                    None, // verification_result
-                );
-                val
-            }
-            Err(e) => {
-                let err_msg = e.to_string();
-                let val = json!({"error": err_msg.clone()});
-                ctx.he.log(
-                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                    ctx.collaboration_id,
-                    None, // agent_id
-                    None, // transaction_id
-                    "dsl",
-                    json!(nodes),
-                    val.clone(),
-                    None, // base_hash
-                    None, // post_hash
-                    false,
-                    Some(err_msg),
-                    None, // verification_result
-                );
-                val
-            }
-        }
-    } else {
-        json!({"error": "Connection lost during DSL execution"})
-    }
-}
-
-async fn handle_execute_plan(params: &Value, ctx: &EngineContext) -> Value {
-    let plan: Plan = match params
-        .get("plan")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-    {
-        Some(p) => p,
-        None => return json!({"error": "Invalid or missing 'plan' for execute_plan"}),
-    };
-
-    let connection_token = params
-        .get("connection_token")
-        .or_else(|| params.get("session_token"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if connection_token.is_empty() {
-        return json!({"error": "Unauthorized: connection_token is required for execute_plan"});
-    }
-
-    let mut local_state = {
-        let mut connections_guard = ctx.connections.lock().await;
-        if let Some(entry) = connections_guard.get_mut(connection_token) {
-            entry.state.is_executing_plan = true;
-            ReplState::from_variables(entry.state.variables.clone())
-        } else {
-            return json!({"error": "Unauthorized: Invalid or expired connection_token."});
-        }
-    };
-
-    let res = ctx.ple.execute_plan(&plan, ctx, &mut local_state).await;
-    
-    let mut connections_guard = ctx.connections.lock().await;
-    if let Some(entry) = connections_guard.get_mut(connection_token) {
-        entry.state.is_executing_plan = false;
-        match res {
-            Ok(ref results) => {
-                entry.state.variables.extend(local_state.variables);
-                entry.last_touched_secs = now_secs();
-                let val = json!({"status": "ok", "results": results});
-                ctx.he.log(
-                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                    ctx.collaboration_id,
-                    None, // agent_id
-                    None, // transaction_id
-                    "plan",
-                    json!(plan),
-                    val.clone(),
-                    None, // base_hash
-                    None, // post_hash
-                    true,
-                    None,
-                    None, // verification_result
-                );
-                val
-            }
-            Err(ref e) => {
-                let err_msg = e.to_string();
-                let val = json!({"error": err_msg.clone()});
-                ctx.he.log(
-                    Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                    ctx.collaboration_id,
-                    None, // agent_id
-                    None, // transaction_id
-                    "plan",
-                    json!(plan),
-                    val.clone(),
-                    None, // base_hash
-                    None, // post_hash
-                    false,
-                    Some(err_msg),
-                    None, // verification_result
-                );
-                val
-            }
-        }
-    } else {
-        json!({"error": "Connection lost during plan execution"})
-    }
-}
-
-async fn handle_history(params: &Value, ctx: &EngineContext) -> Value {
-    let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
-    let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("operations");
-    match mode {
-        "operations" => {
-            let history = ctx.he.get_history(limit);
-            json!({"status": "ok", "mode": "operations", "history": history})
-        }
-        "contributions" => {
-            let history = ctx.ce.get_history(limit);
-            json!({"status": "ok", "mode": "contributions", "history": history})
-        }
-        "checkpoints" => {
-            let checkpoints = ctx.ce.get_checkpoints(limit);
-            json!({"status": "ok", "mode": "checkpoints", "checkpoints": checkpoints})
-        }
-        "verify_contributions" => {
-            let verification = ctx.ce.verify_chain();
-            json!({"status": "ok", "mode": "verify_contributions", "verification": verification})
-        }
-        _ => json!({"error": format!("unsupported history mode: {}", mode)}),
-    }
-}
-
-async fn handle_batch(params: &Value, ctx: &EngineContext) -> Value {
-    let tasks = params
-        .get("tasks")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut results = Vec::new();
-    let default_args = json!({});
-
-    use std::collections::HashMap;
-    let mut graph = petgraph::graph::DiGraph::<usize, ()>::new();
-    let mut node_indices = Vec::new();
-    let mut id_to_idx = HashMap::new();
-
-    for (i, task) in tasks.iter().enumerate() {
-        let id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let idx = graph.add_node(i);
-        node_indices.push(idx);
-        if !id.is_empty() {
-            id_to_idx.insert(id.to_string(), idx);
-        }
-    }
-
-    for (i, task) in tasks.iter().enumerate() {
-        if let Some(deps) = task.get("depends_on").and_then(|v| v.as_array()) {
-            for dep in deps {
-                if let Some(dep_id) = dep.as_str()
-                    && let Some(&dep_idx) = id_to_idx.get(dep_id)
-                {
-                    graph.add_edge(dep_idx, node_indices[i], ());
-                }
-            }
-        }
-    }
-
-    // Perform topological sort to resolve dependencies
-    let sorted_indices = match petgraph::algo::toposort(&graph, None) {
-        Ok(indices) => indices,
-        Err(_) => return json!({"error": "Cycle detected in batch tasks"}),
-    };
-
-    for idx in sorted_indices {
-        let task_idx = graph[idx];
-        let task = &tasks[task_idx];
-        let id = task.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let tool = task.get("tool").and_then(|v| v.as_str()).unwrap_or("");
-        let args = task.get("args").unwrap_or(&default_args);
-
-        let res = dispatch_tool(tool, args, ctx).await;
-        results.push(json!({
-            "id": id,
-            "result": res
-        }));
-    }
-
-    json!({
-        "status": "ok",
-        "results": results
-    })
-}
-
 fn get_all_tools() -> Vec<Value> {
     vec![
         json!({
@@ -1056,6 +602,17 @@ fn get_all_tools() -> Vec<Value> {
                     "signature_hex": {"type": "string", "description": "Hex signature of the nonce provided by connection_open"}
                 },
                 "required": ["pubkey_hex", "signature_hex"]
+            }
+        }),
+        json!({
+            "name": "verify_impact",
+            "description": "Audit the semantic integrity and architectural impact of your pending edits. Returns cohesion and broken-link analysis for the current baseline vs shadow/session state. ALWAYS run this before calling 'session commit' to ensure no regressions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "connection_token": {"type": "string"},
+                    "strict": {"type": "boolean", "description": "If true, enforce regression-oriented cohesion checks against the current baseline instead of returning advisory output only."}
+                }
             }
         }),
         json!({
@@ -1321,7 +878,7 @@ fn get_all_tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                    "action": {"type": "string", "enum": ["add", "get", "remove", "enable", "disable", "list"]},
                     "key_id": {"type": "string"},
                     "pubkey_hex": {"type": "string"},
                     "allowed_kinds": {"type": "array", "items": {"type": "string", "enum": ["tool", "language"]}}
@@ -1368,13 +925,15 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "simulate",
-            "description": "Dry-run preflight for execute_plan/execute_dsl payloads. Validates schema and dependencies without mutating workspace.",
+            "description": "Dry-run preflight for execute_plan/execute_dsl payloads. Validates schema, dependencies, and session requirements without mutating workspace.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "mode": {"type": "string", "enum": ["execute_plan", "execute_dsl"]},
                     "plan": {"type": "object"},
-                    "nodes": {"type": "array", "items": {"type": "object"}}
+                    "nodes": {"type": "array", "items": {"type": "object"}},
+                    "profile": {"type": "string"},
+                    "session_token": {"type": "string"}
                 },
                 "required": ["mode"]
             }
@@ -1527,12 +1086,13 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "execute_dsl",
-            "description": "Execute a sequence of DSL nodes (Call, Atomic, Abort, Assign). Supports variable interpolation with $var.",
+            "description": "Execute a sequence of DSL nodes (Call, Atomic, Abort, Assign). Supports variable interpolation with $var. Mutating or runtime-affecting payloads require an active workspace session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "connection_token": {"type": "string", "description": "Token obtained from connection_verify"},
                     "session_token": {"type": "string", "description": "Deprecated alias for connection_token"},
+                    "profile": {"type": "string", "description": "Optional profile override for nested validation"},
                     "nodes": {
                         "type": "array",
                         "items": {"type": "object"}
@@ -1543,12 +1103,13 @@ fn get_all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "execute_plan",
-            "description": "Execute a dependency-aware DAG Plan.",
+            "description": "Execute a dependency-aware DAG Plan. Mutating or runtime-affecting plans require an active workspace session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "connection_token": {"type": "string", "description": "Token obtained from connection_verify"},
                     "session_token": {"type": "string", "description": "Deprecated alias for connection_token"},
+                    "profile": {"type": "string", "description": "Optional profile override for nested validation"},
                     "plan": {"type": "object"}
                 },
                 "required": ["plan"]
@@ -1630,9 +1191,12 @@ mod tests {
         McpServerMode, handle_tools_call, handle_tools_list, handle_tools_list_with_ctx,
         system_event_to_notification,
     };
-    use crate::context::EngineContext;
-    use crate::plugin_packages::{InstalledPluginRecord, ToolDocExample, ToolDocParameter, ToolPluginSpec};
-    use crate::plan::{SystemEvent, SystemEventEnvelope};
+    use curd_core::PluginKind;
+    use curd_core::context::EngineContext;
+    use curd_core::plan::{SystemEvent, SystemEventEnvelope};
+    use curd_core::plugin_packages::{
+        InstalledPluginRecord, ToolDocExample, ToolDocParameter, ToolPluginSpec,
+    };
     use serde_json::{Value, json};
     use std::path::Path;
     use tempfile::tempdir;
@@ -1754,7 +1318,7 @@ mod tests {
             serde_json::to_vec_pretty(&InstalledPluginRecord {
                 package_id: "demo-tool".to_string(),
                 version: "0.1.0".to_string(),
-                kind: crate::PluginKind::Tool,
+                kind: PluginKind::Tool,
                 signer_pubkey_hex: "11".repeat(32),
                 install_dir: plugin_dir.clone(),
                 manifest_path: plugin_dir.join("manifest.json"),

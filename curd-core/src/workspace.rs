@@ -9,14 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Returns the path to the internal CURD state directory.
-/// Priority: 
+/// Priority:
 /// 1. CURD_STATE_DIR environment variable
 /// 2. workspace_root/.curd
 pub fn get_curd_dir(workspace_root: &Path) -> PathBuf {
     if let Ok(env_path) = std::env::var("CURD_STATE_DIR") {
         let p = PathBuf::from(env_path);
         if !p.is_absolute() {
-             return workspace_root.join(p);
+            return workspace_root.join(p);
         }
         return p;
     }
@@ -145,8 +145,8 @@ pub fn list_workspace(root: impl AsRef<Path>, prefix: Option<&str>) -> Result<Ve
 /// Returns the absolute path if it is completely enclosed by the workspace root.
 /// Blocks `..` traversal escapes and absolute `/` injections.
 pub fn validate_sandboxed_path(workspace_root: &Path, requested_path: &str) -> Result<PathBuf> {
-    let workspace_root = std::fs::canonicalize(workspace_root)
-        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let workspace_root =
+        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
     if requested_path.contains("..")
         || requested_path.starts_with('/')
         || requested_path.starts_with('~')
@@ -159,10 +159,13 @@ pub fn validate_sandboxed_path(workspace_root: &Path, requested_path: &str) -> R
 
     let path = Path::new(requested_path);
     if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
-        && (file_name == ".env" || file_name.ends_with(".env")) {
-            return Err(anyhow::anyhow!("Access to .env files is strictly prohibited."));
-        }
-        
+        && (file_name == ".env" || file_name.ends_with(".env"))
+    {
+        return Err(anyhow::anyhow!(
+            "Access to .env files is strictly prohibited."
+        ));
+    }
+
     // Specifically protect the internal `.curd` operational directory state
     // against arbitrary modification by agents, regardless of sandbox routing
     for component in path.components() {
@@ -180,8 +183,11 @@ pub fn validate_sandboxed_path(workspace_root: &Path, requested_path: &str) -> R
     // Canonicalize it to resolve any symlinks, but gracefully handle if it doesn't exist yet (like on "create")
     // We find the deepest existing ancestor to canonicalize it correctly
     let mut existing_ancestor = &*full_path;
-    while !existing_ancestor.exists() && existing_ancestor.parent().is_some() {
-        existing_ancestor = existing_ancestor.parent().unwrap();
+    while !existing_ancestor.exists() {
+        let Some(parent) = existing_ancestor.parent() else {
+            break;
+        };
+        existing_ancestor = parent;
     }
 
     let resolved_path = if let Ok(canon) = fs::canonicalize(existing_ancestor) {
@@ -443,10 +449,11 @@ impl WorkspaceEngine {
                 let curd_dir = get_curd_dir(&self.workspace_root);
                 let alerts_file = curd_dir.join("alerts.json");
                 if let Ok(content) = fs::read_to_string(&alerts_file)
-                    && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                        report_json["architectural_alerts"] = json;
-                    }
- 
+                    && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+                {
+                    report_json["architectural_alerts"] = json;
+                }
+
                 let watchdog_file = curd_dir.join("watchdog_report.md");
                 if let Ok(content) = fs::read_to_string(&watchdog_file) {
                     report_json["watchdog_report"] = serde_json::json!(content);
@@ -457,9 +464,7 @@ impl WorkspaceEngine {
             "clear_faults" => {
                 let graph = crate::GraphEngine::new(&self.workspace_root);
                 let curd_dir = get_curd_dir(&self.workspace_root);
-                let _ = std::fs::remove_file(
-                    curd_dir.join("watchdog_report.md"),
-                );
+                let _ = std::fs::remove_file(curd_dir.join("watchdog_report.md"));
                 // We'll add a clear_all method to GraphEngine
                 let mut g = graph.build_dependency_graph()?;
                 g.fault_states.clear();

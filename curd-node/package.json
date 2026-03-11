@@ -1,6 +1,6 @@
 {
     "name": "curd-node",
-    "version": "0.7.0-beta",
+    "version": "0.7.1-beta",
     "description": "Node.js bindings for CURD",
     "main": "index.js",
     "types": "index.d.ts",

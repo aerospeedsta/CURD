@@ -298,8 +298,14 @@ impl DocEngine {
                     },
                 ],
                 examples: vec![
-                    ExampleDoc { label: "Start a review cycle".into(), arguments: json!({"action": "begin", "label": "refactor pass"}) },
-                    ExampleDoc { label: "Review current changes".into(), arguments: json!({"action": "review"}) },
+                    ExampleDoc {
+                        label: "Start a review cycle".into(),
+                        arguments: json!({"action": "begin", "label": "refactor pass"}),
+                    },
+                    ExampleDoc {
+                        label: "Review current changes".into(),
+                        arguments: json!({"action": "review"}),
+                    },
                 ],
             },
         );
@@ -376,14 +382,53 @@ impl DocEngine {
 
         // --- simulate ---
         registry.insert("simulate".to_string(), ToolDoc {
-            description: "Dry-run preflight for execute_plan/execute_dsl payloads. Performs validation without mutating workspace.".to_string(),
+            description: "Dry-run preflight for execute_plan/execute_dsl payloads. Performs validation without mutating workspace and surfaces session requirements or plan/DSL shape issues before execution.".to_string(),
             parameters: vec![
                 ParameterDoc { name: "mode".into(), kind: "string (enum)".into(), description: "'execute_plan' or 'execute_dsl'.".into(), required: true },
                 ParameterDoc { name: "plan".into(), kind: "object".into(), description: "Required when mode=execute_plan.".into(), required: false },
                 ParameterDoc { name: "nodes".into(), kind: "array<object>".into(), description: "Required when mode=execute_dsl.".into(), required: false },
+                ParameterDoc { name: "profile".into(), kind: "string".into(), description: "Optional profile override applied during validation.".into(), required: false },
+                ParameterDoc { name: "session_token".into(), kind: "string".into(), description: "Optional agent/session token for scoped validation.".into(), required: false },
             ],
             examples: vec![
                 ExampleDoc { label: "Simulate a plan payload".into(), arguments: json!({"mode": "execute_plan", "plan": {"id": "00000000-0000-0000-0000-000000000000", "nodes": []}}) },
+            ],
+        });
+
+        registry.insert("plugin_tool".to_string(), ToolDoc {
+            description: "Install, remove, or list signed .curdt tool plugins. Plugin installation and removal are human-only operations and obey plugin enablement/policy gates.".to_string(),
+            parameters: vec![
+                ParameterDoc { name: "action".into(), kind: "string (enum)".into(), description: "'add', 'remove', or 'list'.".into(), required: true },
+                ParameterDoc { name: "archive_path".into(), kind: "string".into(), description: "Path to a signed .curdt archive when action=add.".into(), required: false },
+                ParameterDoc { name: "package_id".into(), kind: "string".into(), description: "Installed package id when action=remove.".into(), required: false },
+            ],
+            examples: vec![
+                ExampleDoc { label: "List installed tool plugins".into(), arguments: json!({"action":"list"}) },
+            ],
+        });
+
+        registry.insert("plugin_language".to_string(), ToolDoc {
+            description: "Install, remove, or list signed .curdl language plugins. Installed language plugins can contribute language definitions and build-system metadata when plugins are enabled.".to_string(),
+            parameters: vec![
+                ParameterDoc { name: "action".into(), kind: "string (enum)".into(), description: "'add', 'remove', or 'list'.".into(), required: true },
+                ParameterDoc { name: "archive_path".into(), kind: "string".into(), description: "Path to a signed .curdl archive when action=add.".into(), required: false },
+                ParameterDoc { name: "package_id".into(), kind: "string".into(), description: "Installed package id when action=remove.".into(), required: false },
+            ],
+            examples: vec![
+                ExampleDoc { label: "List installed language plugins".into(), arguments: json!({"action":"list"}) },
+            ],
+        });
+
+        registry.insert("plugin_trust".to_string(), ToolDoc {
+            description: "Manage trusted signing keys for CURD plugin packages. Trust mutation is human-only and controls which signed .curdt / .curdl archives may be installed.".to_string(),
+            parameters: vec![
+                ParameterDoc { name: "action".into(), kind: "string (enum)".into(), description: "'add', 'get', 'remove', 'enable', 'disable', or 'list'.".into(), required: true },
+                ParameterDoc { name: "key_id".into(), kind: "string".into(), description: "Trusted key id for get/remove/enable/disable/add.".into(), required: false },
+                ParameterDoc { name: "pubkey_hex".into(), kind: "string".into(), description: "Ed25519 public key hex when action=add.".into(), required: false },
+                ParameterDoc { name: "allowed_kinds".into(), kind: "array<string>".into(), description: "Allowed plugin kinds for the trusted key when action=add.".into(), required: false },
+            ],
+            examples: vec![
+                ExampleDoc { label: "List trusted plugin keys".into(), arguments: json!({"action":"list"}) },
             ],
         });
 
@@ -544,23 +589,27 @@ impl DocEngine {
 
         // --- execute_dsl ---
         registry.insert("execute_dsl".to_string(), ToolDoc {
-            description: "Execute a sequence of DSL nodes (Call, Atomic, Abort, Assign). Supports variable interpolation with $var.".to_string(),
+            description: "Execute a sequence of DSL nodes (Call, Atomic, Abort, Assign). Supports variable interpolation with $var. If the payload contains mutating or runtime-affecting steps, an active workspace session is required.".to_string(),
             parameters: vec![
                 ParameterDoc { name: "nodes".into(), kind: "array<object>".into(), description: "List of DslNodes (Call, Atomic, Abort, Assign).".into(), required: true },
+                ParameterDoc { name: "profile".into(), kind: "string".into(), description: "Optional profile override for nested validation.".into(), required: false },
+                ParameterDoc { name: "session_token".into(), kind: "string".into(), description: "Required for agent-scoped execution; mutating payloads also require an active workspace session.".into(), required: false },
             ],
             examples: vec![
-                ExampleDoc { label: "Assign search result and then read".into(), arguments: json!({"nodes": [{"assign": "res", "value": {"tool": "search", "args": {"query": "main"}}}, {"tool": "read", "args": {"uris": ["$res"]}}]}) },
+                ExampleDoc { label: "Assign search result and then read".into(), arguments: json!({"nodes": [{"type":"assign","var":"res","value":{"tool":"search","args":{"query":"main","mode":"symbol"}}},{"type":"call","tool":"read","args":{"uris":["$res"]}}]}) },
             ],
         });
 
         // --- execute_plan ---
         registry.insert("execute_plan".to_string(), ToolDoc {
-            description: "Execute a dependency-aware DAG Plan.".to_string(),
+            description: "Execute a dependency-aware DAG Plan. Mutating or runtime-affecting plans require an active workspace session.".to_string(),
             parameters: vec![
                 ParameterDoc { name: "plan".into(), kind: "object".into(), description: "The Plan object containing nodes and dependencies.".into(), required: true },
+                ParameterDoc { name: "profile".into(), kind: "string".into(), description: "Optional profile override for nested plan validation.".into(), required: false },
+                ParameterDoc { name: "session_token".into(), kind: "string".into(), description: "Required for agent-scoped execution; mutating plans also require an active workspace session.".into(), required: false },
             ],
             examples: vec![
-                ExampleDoc { label: "Run a simple plan with two independent nodes".into(), arguments: json!({"plan": {"id": "00000000-0000-0000-0000-000000000000", "nodes": [{"id": "00000000-0000-0000-0000-000000000001", "op": {"mcp_call": {"tool": "search", "args": {"query": "test"}}}, "dependencies": [], "output_limit": 1024}]}}) },
+                ExampleDoc { label: "Run a simple plan with one search node".into(), arguments: json!({"plan": {"id": "00000000-0000-0000-0000-000000000000", "nodes": [{"id": "00000000-0000-0000-0000-000000000001", "op": {"McpCall": {"tool": "search", "args": {"query": "test","mode":"symbol"}}}, "dependencies": [], "output_limit": 1024, "retry_limit": 0}]}}) },
             ],
         });
 

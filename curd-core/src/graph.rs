@@ -47,7 +47,105 @@ pub enum FaultState {
     Poisoned(Uuid),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphIntegrityReport {
+    pub cohesion_ratio: f64,
+    pub total_stubs: usize,
+    pub resolved_stubs: usize,
+    pub symbol_density: f64,
+    pub confidence_distribution: HashMap<String, usize>, // "high", "medium", "low" buckets
+    pub cycles: Vec<Vec<String>>,
+}
+
 impl DependencyGraph {
+    pub fn calculate_integrity(&self, symbols: &[Symbol]) -> GraphIntegrityReport {
+        let mut total_stubs = 0;
+        let mut resolved_stubs = 0;
+        let mut high = 0;
+        let mut med = 0;
+        let mut low = 0;
+
+        for s in symbols {
+            if s.role == SymbolRole::Stub {
+                total_stubs += 1;
+                if self.outgoing.contains_key(&s.id) && !self.outgoing[&s.id].is_empty() {
+                    resolved_stubs += 1;
+                }
+            }
+        }
+
+        for meta in self.edge_metadata.values() {
+            if meta.confidence >= 0.90 {
+                high += 1;
+            } else if meta.confidence >= 0.70 {
+                med += 1;
+            } else {
+                low += 1;
+            }
+        }
+
+        let total_lines: usize = symbols.iter().map(|s| s.end_line - s.start_line + 1).sum();
+        let symbol_density = if total_lines > 0 {
+            symbols.len() as f64 / (total_lines as f64 / 1000.0)
+        } else {
+            0.0
+        };
+
+        let mut dist = HashMap::new();
+        dist.insert("high".to_string(), high);
+        dist.insert("medium".to_string(), med);
+        dist.insert("low".to_string(), low);
+
+        GraphIntegrityReport {
+            cohesion_ratio: if total_stubs > 0 {
+                resolved_stubs as f64 / total_stubs as f64
+            } else {
+                1.0
+            },
+            total_stubs,
+            resolved_stubs,
+            symbol_density,
+            confidence_distribution: dist,
+            cycles: self.find_cycles(),
+        }
+    }
+
+    pub fn find_cycles(&self) -> Vec<Vec<String>> {
+        use petgraph::algo::tarjan_scc;
+        use petgraph::graph::DiGraph;
+
+        let mut graph = DiGraph::<usize, ()>::new();
+        let mut id_to_node = HashMap::new();
+        let mut node_to_id = HashMap::new();
+
+        let all_ids: HashSet<&String> = self.outgoing.keys().chain(self.incoming.keys()).collect();
+
+        for (idx, &id) in all_ids.iter().enumerate() {
+            let node = graph.add_node(idx);
+            id_to_node.insert(id.clone(), node);
+            node_to_id.insert(node, id.clone());
+        }
+
+        for (caller, callees) in &self.outgoing {
+            if let Some(&u) = id_to_node.get(caller) {
+                for callee in callees {
+                    if let Some(&v) = id_to_node.get(callee) {
+                        graph.add_edge(u, v, ());
+                    }
+                }
+            }
+        }
+
+        tarjan_scc(&graph)
+            .into_iter()
+            .filter(|scc| scc.len() > 1)
+            .map(|scc| {
+                scc.into_iter()
+                    .filter_map(|node| node_to_id.get(&node).cloned())
+                    .collect()
+            })
+            .collect()
+    }
     pub fn new() -> Self {
         Self {
             outgoing: HashMap::new(),
@@ -93,7 +191,12 @@ impl DependencyGraph {
     }
 
     pub fn add_dependency_typed(&mut self, caller_id: &str, callee_id: &str, kind: &str) {
-        self.add_dependency_typed_with_metadata(caller_id, callee_id, kind, default_edge_metadata(kind));
+        self.add_dependency_typed_with_metadata(
+            caller_id,
+            callee_id,
+            kind,
+            default_edge_metadata(kind),
+        );
     }
 
     pub fn add_dependency_typed_with_metadata(
@@ -116,9 +219,17 @@ impl DependencyGraph {
             .insert(caller_id.to_string());
         self.outgoing.entry(callee_id.to_string()).or_default();
         self.incoming.entry(caller_id.to_string()).or_default();
-        
-        if !self.edge_kinds.iter().any(|(f, t, k)| f == caller_id && t == callee_id && k == kind) {
-            self.edge_kinds.push((caller_id.to_string(), callee_id.to_string(), kind.to_string()));
+
+        if !self
+            .edge_kinds
+            .iter()
+            .any(|(f, t, k)| f == caller_id && t == callee_id && k == kind)
+        {
+            self.edge_kinds.push((
+                caller_id.to_string(),
+                callee_id.to_string(),
+                kind.to_string(),
+            ));
         }
         self.edge_metadata
             .insert(edge_key(caller_id, callee_id, kind), meta);
@@ -252,12 +363,16 @@ impl DependencyGraph {
                 kinds
             };
             for kind in kinds {
-                let meta = self.edge_metadata.get(&edge_key(from, to, &kind)).cloned().unwrap_or(EdgeMetadata {
-                    tier: default_edge_metadata(&kind).tier,
-                    confidence: default_edge_metadata(&kind).confidence,
-                    source: default_edge_metadata(&kind).source,
-                    evidence: default_edge_metadata(&kind).evidence,
-                });
+                let meta = self
+                    .edge_metadata
+                    .get(&edge_key(from, to, &kind))
+                    .cloned()
+                    .unwrap_or(EdgeMetadata {
+                        tier: default_edge_metadata(&kind).tier,
+                        confidence: default_edge_metadata(&kind).confidence,
+                        source: default_edge_metadata(&kind).source,
+                        evidence: default_edge_metadata(&kind).evidence,
+                    });
                 detailed.push(json!({
                     "from": from,
                     "to": to,
@@ -270,14 +385,20 @@ impl DependencyGraph {
             }
         }
         detailed.sort_by(|a, b| {
-            a.get("from").and_then(|v| v.as_str()).unwrap_or("")
+            a.get("from")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
                 .cmp(b.get("from").and_then(|v| v.as_str()).unwrap_or(""))
                 .then_with(|| {
-                    a.get("to").and_then(|v| v.as_str()).unwrap_or("")
+                    a.get("to")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
                         .cmp(b.get("to").and_then(|v| v.as_str()).unwrap_or(""))
                 })
                 .then_with(|| {
-                    a.get("kind").and_then(|v| v.as_str()).unwrap_or("")
+                    a.get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
                         .cmp(b.get("kind").and_then(|v| v.as_str()).unwrap_or(""))
                 })
         });
@@ -334,7 +455,10 @@ impl DependencyGraph {
                     }
                 }
                 if let Some(sources) = sources {
-                    let source = edge.get("source").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let source = edge
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
                     if !sources.contains(source) {
                         return false;
                     }
@@ -536,7 +660,11 @@ impl GraphEngine {
             .outgoing
             .keys()
             .chain(dep_graph.incoming.keys())
-            .filter(|id| id.ends_with(uri) && (id.len() == uri.len() || id.get(id.len() - uri.len() - 2..id.len() - uri.len()) == Some("::")))
+            .filter(|id| {
+                id.ends_with(uri)
+                    && (id.len() == uri.len()
+                        || id.get(id.len() - uri.len() - 2..id.len() - uri.len()) == Some("::"))
+            })
             .cloned()
             .collect();
         matches.sort();
@@ -545,31 +673,40 @@ impl GraphEngine {
     }
 
     pub fn build_dependency_graph(&self) -> Result<DependencyGraph> {
-        if let Some(cached) = self.load_graph_cache() {
+        self.build_dependency_graph_inner(true)
+    }
+
+    pub fn build_dependency_graph_fresh(&self) -> Result<DependencyGraph> {
+        self.build_dependency_graph_inner(false)
+    }
+
+    fn build_dependency_graph_inner(&self, use_cache: bool) -> Result<DependencyGraph> {
+        if use_cache && let Some(cached) = self.load_graph_cache() {
             return Ok(cached);
         }
 
         let search = SearchEngine::new(&self.workspace_root);
-        let _ = search.search("", Some(crate::SymbolKind::Function));
-        if let Some(cached) = self.load_graph_cache() {
+        search.ensure_index()?;
+        let symbols = search.get_all_symbols()?;
+
+        if use_cache && let Some(cached) = self.load_graph_cache() {
             return Ok(cached);
         }
 
-        let symbols = search.search("", None)?;
         let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
         let mut by_link: HashMap<String, Vec<String>> = HashMap::new();
         let mut symbol_by_id: HashMap<String, Symbol> = HashMap::new();
-        
+
         for s in &symbols {
             by_name
                 .entry(s.name.clone())
                 .or_default()
                 .push(s.id.clone());
-            
+
             if let Some(link) = &s.link_name {
                 by_link.entry(link.clone()).or_default().push(s.id.clone());
             }
-            
+
             symbol_by_id.insert(s.id.clone(), s.clone());
         }
 
@@ -582,7 +719,7 @@ impl GraphEngine {
             if s.role != SymbolRole::Stub {
                 continue;
             }
-            
+
             final_graph.mark_alias(&s.id);
 
             // Priority 1: Match by explicit link_name
@@ -624,6 +761,12 @@ impl GraphEngine {
             }
         }
 
+        for (from, to, confidence, evidence) in resolve_trait_realization_edges(&symbols) {
+            let mut meta = fallback_edge_metadata_with_confidence("realizes", confidence);
+            meta.evidence = evidence;
+            final_graph.add_dependency_typed_with_metadata(&from, &to, "realizes", meta);
+        }
+
         for (from, to, confidence, evidence) in resolve_containment_edges(&symbols) {
             let mut meta = fallback_edge_metadata_with_confidence("contains", confidence);
             meta.evidence = evidence;
@@ -658,87 +801,130 @@ impl GraphEngine {
                 .push(s.clone());
         }
 
-        let intra_edges: Vec<(String, String, String, f64, Vec<String>)> = file_to_symbols.into_par_iter().map(|(rel_path, syms)| {
-            let mut edges = Vec::new();
-            let file_path = if rel_path.is_absolute() {
-                rel_path.clone()
-            } else {
-                self.workspace_root.join(&rel_path)
-            };
+        let intra_edges: Vec<(String, String, String, f64, Vec<String>)> = file_to_symbols
+            .into_par_iter()
+            .map(|(rel_path, syms)| {
+                let mut edges = Vec::new();
+                let file_path = if rel_path.is_absolute() {
+                    rel_path.clone()
+                } else {
+                    self.workspace_root.join(&rel_path)
+                };
 
-            let source = match fs::read_to_string(&file_path) {
-                Ok(src) => src,
-                Err(_) => return edges,
-            };
-            let import_targets = resolve_import_edges(&source, &syms, &by_name, &symbol_by_id);
-            for s in &syms {
-                if s.role != SymbolRole::Definition {
-                    continue;
-                }
-                for (target, confidence, evidence) in &import_targets {
-                    if target != &s.id {
-                        edges.push((
-                            s.id.clone(),
-                            target.clone(),
-                            "imports".to_string(),
-                            *confidence,
-                            evidence.clone(),
-                        ));
+                let source = match fs::read_to_string(&file_path) {
+                    Ok(src) => src,
+                    Err(_) => return edges,
+                };
+                let import_targets = resolve_import_edges(&source, &syms, &by_name, &symbol_by_id);
+                for s in &syms {
+                    if s.role != SymbolRole::Definition {
+                        continue;
                     }
-                }
-            }
-
-            for s in syms {
-                if s.start_byte >= source.len() || s.end_byte > source.len() || s.start_byte >= s.end_byte {
-                    continue;
-                }
-
-                let snippet = &source[s.start_byte..s.end_byte];
-                let caller_parent = s.filepath.parent();
-                let caller_ext = s.filepath.extension().and_then(|e| e.to_str()).unwrap_or_default();
-
-                for (idx, _) in snippet.match_indices('(') {
-                    if idx == 0 { continue; }
-                    let name = get_name_before_paren(snippet, idx);
-                    if !name.is_empty() && !keywords.contains(name) {
-                        let targets =
-                            resolve_call_targets(name, &s, caller_parent, caller_ext, &by_name, &symbol_by_id);
-                        for (target, confidence) in targets {
-                            // Deduplicate: Don't link to aliases if the primary definition exists
-                            if target.contains("::#") {
-                                let primary = target.split("::#").next().unwrap_or(&target);
-                                if symbol_by_id.contains_key(primary) {
-                                    edges.push((
-                                        s.id.clone(),
-                                        primary.to_string(),
-                                        "calls".to_string(),
-                                        confidence,
-                                        fallback_call_edge_evidence(name, &s, caller_parent, caller_ext, symbol_by_id.get(primary).unwrap_or(&s), true),
-                                    ));
-                                    continue;
-                                }
-                            }
-                            let evidence = symbol_by_id
-                                .get(&target)
-                                .map(|sym| fallback_call_edge_evidence(name, &s, caller_parent, caller_ext, sym, true))
-                                .unwrap_or_else(|| vec!["fallback".to_string(), "call_scan".to_string()]);
-                            edges.push((s.id.clone(), target, "calls".to_string(), confidence, evidence));
+                    for (target, confidence, evidence) in &import_targets {
+                        if target != &s.id {
+                            edges.push((
+                                s.id.clone(),
+                                target.clone(),
+                                "imports".to_string(),
+                                *confidence,
+                                evidence.clone(),
+                            ));
                         }
                     }
                 }
-            }
-            edges
-        }).flatten().collect();
+
+                for s in syms {
+                    if s.start_byte >= source.len()
+                        || s.end_byte > source.len()
+                        || s.start_byte >= s.end_byte
+                    {
+                        continue;
+                    }
+
+                    let snippet = &source[s.start_byte..s.end_byte];
+                    let caller_parent = s.filepath.parent();
+                    let caller_ext = s
+                        .filepath
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or_default();
+
+                    for (idx, _) in snippet.match_indices('(') {
+                        if idx == 0 {
+                            continue;
+                        }
+                        let name = get_name_before_paren(snippet, idx);
+                        if !name.is_empty() && !keywords.contains(name) {
+                            let targets = resolve_call_targets(
+                                name,
+                                &s,
+                                caller_parent,
+                                caller_ext,
+                                &by_name,
+                                &symbol_by_id,
+                            );
+                            for (target, confidence) in targets {
+                                // Deduplicate: Don't link to aliases if the primary definition exists
+                                if target.contains("::#") {
+                                    let primary = target.split("::#").next().unwrap_or(&target);
+                                    if symbol_by_id.contains_key(primary) {
+                                        edges.push((
+                                            s.id.clone(),
+                                            primary.to_string(),
+                                            "calls".to_string(),
+                                            confidence,
+                                            fallback_call_edge_evidence(
+                                                name,
+                                                &s,
+                                                caller_parent,
+                                                caller_ext,
+                                                symbol_by_id.get(primary).unwrap_or(&s),
+                                                true,
+                                            ),
+                                        ));
+                                        continue;
+                                    }
+                                }
+                                let evidence = symbol_by_id
+                                    .get(&target)
+                                    .map(|sym| {
+                                        fallback_call_edge_evidence(
+                                            name,
+                                            &s,
+                                            caller_parent,
+                                            caller_ext,
+                                            sym,
+                                            true,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| {
+                                        vec!["fallback".to_string(), "call_scan".to_string()]
+                                    });
+                                edges.push((
+                                    s.id.clone(),
+                                    target,
+                                    "calls".to_string(),
+                                    confidence,
+                                    evidence,
+                                ));
+                            }
+                        }
+                    }
+                }
+                edges
+            })
+            .flatten()
+            .collect();
 
         for (from, to, kind, confidence, evidence) in intra_edges {
             let mut meta = fallback_edge_metadata_with_confidence(&kind, confidence);
             meta.evidence = evidence;
             final_graph.add_dependency_typed_with_metadata(&from, &to, &kind, meta);
         }
-        
+
         // 3. Special Bridge mapping (Wrappers -> Core)
         self.add_cross_language_bridge_edges(&mut final_graph, &symbols, &by_name);
-        
+
         self.save_graph_cache(&final_graph);
         Ok(final_graph)
     }
@@ -851,20 +1037,22 @@ impl GraphEngine {
         let storage = self.storage().ok()?;
         let mut g = DependencyGraph::new();
         g.origin = "indexed".to_string();
-        
+
         let mut stmt = storage.conn.prepare("SELECT caller_id, callee_id, kind, tier, confidence, source, COALESCE(evidence, '[]') FROM edges").ok()?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, String>(6)?,
-            ))
-        }).ok()?;
-        
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .ok()?;
+
         for row in rows.flatten() {
             g.add_dependency_typed_with_metadata(
                 &row.0,
@@ -878,8 +1066,11 @@ impl GraphEngine {
                 },
             );
         }
-        
-        let mut stmt = storage.conn.prepare("SELECT id FROM symbols WHERE role = 'stub'").ok()?;
+
+        let mut stmt = storage
+            .conn
+            .prepare("SELECT id FROM symbols WHERE role = 'stub'")
+            .ok()?;
         let ids = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
         for id in ids.flatten() {
             g.mark_alias(&id);
@@ -892,7 +1083,7 @@ impl GraphEngine {
         if symbol_count == 0 {
             return None;
         }
-        
+
         Some(g)
     }
 
@@ -901,23 +1092,36 @@ impl GraphEngine {
             Ok(s) => s,
             Err(_) => return,
         };
-        
+
         let _ = storage.conn.execute("DELETE FROM edges", []);
         let mut stmt = match storage.conn.prepare("INSERT INTO edges (caller_id, callee_id, kind, tier, confidence, source, evidence) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)") {
             Ok(s) => s,
             Err(_) => return,
         };
-        
+
         use rusqlite::params;
         for (from, to, kind) in &g.edge_kinds {
-            let meta = g.edge_metadata.get(&edge_key(from, to, kind)).cloned().unwrap_or(EdgeMetadata {
-                tier: default_edge_metadata(kind).tier,
-                confidence: default_edge_metadata(kind).confidence,
-                source: Some(g.origin.clone()),
-                evidence: default_edge_evidence(kind, &g.origin),
-            });
-            let evidence = serde_json::to_string(&meta.evidence).unwrap_or_else(|_| "[]".to_string());
-            let _ = stmt.execute(params![from, to, kind, meta.tier, meta.confidence, meta.source, evidence]);
+            let meta = g
+                .edge_metadata
+                .get(&edge_key(from, to, kind))
+                .cloned()
+                .unwrap_or(EdgeMetadata {
+                    tier: default_edge_metadata(kind).tier,
+                    confidence: default_edge_metadata(kind).confidence,
+                    source: Some(g.origin.clone()),
+                    evidence: default_edge_evidence(kind, &g.origin),
+                });
+            let evidence =
+                serde_json::to_string(&meta.evidence).unwrap_or_else(|_| "[]".to_string());
+            let _ = stmt.execute(params![
+                from,
+                to,
+                kind,
+                meta.tier,
+                meta.confidence,
+                meta.source,
+                evidence
+            ]);
         }
     }
 }
@@ -1010,6 +1214,49 @@ fn resolve_import_edges(
     }
     out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
     out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
+fn resolve_trait_realization_edges(symbols: &[Symbol]) -> Vec<(String, String, f64, Vec<String>)> {
+    let mut out = Vec::new();
+    for s in symbols {
+        if s.name.contains(" impl ") || s.name.contains(" for ") {
+            // Heuristic for Rust trait impls: "impl Trait for Struct"
+            let parts: Vec<&str> = s.name.split(" for ").collect();
+            if parts.len() == 2 {
+                let trait_name = parts[0].trim_start_matches("impl ").trim();
+                let struct_name = parts[1].trim();
+
+                // Find potential trait definition
+                for target in symbols {
+                    if target.name == trait_name && target.kind == SymbolKind::Interface {
+                        out.push((
+                            s.id.clone(),
+                            target.id.clone(),
+                            0.95,
+                            vec![format!(
+                                "Trait realization: {} realizes {}",
+                                s.id, target.id
+                            )],
+                        ));
+                    }
+                    if target.name == struct_name
+                        && matches!(target.kind, SymbolKind::Struct | SymbolKind::Class)
+                    {
+                        out.push((
+                            s.id.clone(),
+                            target.id.clone(),
+                            0.95,
+                            vec![format!(
+                                "Structural implementation: {} implements {}",
+                                s.id, target.id
+                            )],
+                        ));
+                    }
+                }
+            }
+        }
+    }
     out
 }
 
@@ -1135,8 +1382,22 @@ fn resolve_import_targets(
             let target = symbol_by_id.get(id)?;
             Some((
                 id.clone(),
-                score_import_confidence(imported, caller, caller_parent, caller_ext, target, !ambiguous),
-                fallback_import_edge_evidence(imported, caller, caller_parent, caller_ext, target, !ambiguous),
+                score_import_confidence(
+                    imported,
+                    caller,
+                    caller_parent,
+                    caller_ext,
+                    target,
+                    !ambiguous,
+                ),
+                fallback_import_edge_evidence(
+                    imported,
+                    caller,
+                    caller_parent,
+                    caller_ext,
+                    target,
+                    !ambiguous,
+                ),
             ))
         })
         .collect()
@@ -1289,7 +1550,11 @@ fn extract_import_names(source: &str) -> Vec<String> {
 fn parse_rust_use_clause(rest: &str) -> Vec<String> {
     let clause = rest.trim().trim_end_matches(';');
     if clause.contains('{') && clause.contains('}') {
-        let prefix = clause.split('{').next().unwrap_or("").trim_end_matches("::");
+        let prefix = clause
+            .split('{')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches("::");
         let inside = clause
             .split('{')
             .nth(1)
@@ -1309,12 +1574,14 @@ fn parse_rust_use_clause(rest: &str) -> Vec<String> {
             })
             .collect()
     } else {
-        vec![clause
-            .split_whitespace()
-            .next()
-            .unwrap_or(clause)
-            .trim()
-            .to_string()]
+        vec![
+            clause
+                .split_whitespace()
+                .next()
+                .unwrap_or(clause)
+                .trim()
+                .to_string(),
+        ]
     }
 }
 
@@ -1431,10 +1698,11 @@ fn resolve_call_targets(
             score += 100;
         }
         if let Some(cp) = caller_parent
-            && sym.filepath.parent() == Some(cp) {
-                score += 20;
-            }
-        
+            && sym.filepath.parent() == Some(cp)
+        {
+            score += 20;
+        }
+
         let sym_ext = sym
             .filepath
             .extension()
@@ -1443,11 +1711,11 @@ fn resolve_call_targets(
         if sym_ext == caller_ext {
             score += 10;
         }
-        
+
         if sym.id.starts_with('@') {
             score += 50;
         }
-        
+
         if called.contains("::") || called.contains('.') {
             if sym.id.contains(called) || sym.filepath.to_string_lossy().contains(called) {
                 score += 15;
@@ -1612,6 +1880,30 @@ mod tests {
     }
 
     #[test]
+    fn fresh_graph_build_indexes_workspace_without_preexisting_cache() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).expect("src dir");
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "fn callee() {}\nfn caller() { callee(); }\n",
+        )
+        .expect("write source");
+
+        let graph = GraphEngine::new(root)
+            .build_dependency_graph_fresh()
+            .expect("fresh graph");
+
+        assert!(
+            graph
+                .outgoing
+                .get("src/lib.rs::caller")
+                .map(|targets| targets.contains("src/lib.rs::callee"))
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
     fn graph_uses_indexed_import_edge_metadata() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
@@ -1675,20 +1967,23 @@ mod tests {
             .graph(vec!["src/lib.rs::caller".to_string()], "down", 1)
             .expect("graph result");
         let detailed = result["detailed_edges"].as_array().expect("detailed edges");
-        assert!(detailed.iter().any(|edge| {
-            edge["from"] == "src/lib.rs::caller"
-                && edge["to"] == "src/helper.rs::callee"
-                && edge["kind"] == "imports"
-                && edge["tier"] == "structural"
-                && edge["source"] == "indexed:import_scan"
-                && edge["evidence"]
-                    .as_array()
-                    .map(|evidence| {
-                        evidence.iter().any(|entry| entry == "import_scan")
-                            && evidence.iter().any(|entry| entry == "qualified_import")
-                    })
-                    .unwrap_or(false)
-        }), "{result}");
+        assert!(
+            detailed.iter().any(|edge| {
+                edge["from"] == "src/lib.rs::caller"
+                    && edge["to"] == "src/helper.rs::callee"
+                    && edge["kind"] == "imports"
+                    && edge["tier"] == "structural"
+                    && edge["source"] == "indexed:import_scan"
+                    && edge["evidence"]
+                        .as_array()
+                        .map(|evidence| {
+                            evidence.iter().any(|entry| entry == "import_scan")
+                                && evidence.iter().any(|entry| entry == "qualified_import")
+                        })
+                        .unwrap_or(false)
+            }),
+            "{result}"
+        );
     }
 
     #[test]
@@ -1746,20 +2041,23 @@ mod tests {
             .graph(vec!["src/lib.rs::inner".to_string()], "down", 1)
             .expect("graph result");
         let detailed = result["detailed_edges"].as_array().expect("detailed edges");
-        assert!(detailed.iter().any(|edge| {
-            edge["from"] == "src/lib.rs::inner"
-                && edge["to"] == "src/lib.rs::helper"
-                && edge["kind"] == "contains"
-                && edge["tier"] == "structural"
-                && edge["source"] == "indexed:contains"
-                && edge["evidence"]
-                    .as_array()
-                    .map(|evidence| {
-                        evidence.iter().any(|entry| entry == "nested_span")
-                            && evidence.iter().any(|entry| entry == "same_file")
-                    })
-                    .unwrap_or(false)
-        }), "{result}");
+        assert!(
+            detailed.iter().any(|edge| {
+                edge["from"] == "src/lib.rs::inner"
+                    && edge["to"] == "src/lib.rs::helper"
+                    && edge["kind"] == "contains"
+                    && edge["tier"] == "structural"
+                    && edge["source"] == "indexed:contains"
+                    && edge["evidence"]
+                        .as_array()
+                        .map(|evidence| {
+                            evidence.iter().any(|entry| entry == "nested_span")
+                                && evidence.iter().any(|entry| entry == "same_file")
+                        })
+                        .unwrap_or(false)
+            }),
+            "{result}"
+        );
     }
 
     #[test]
@@ -1817,17 +2115,20 @@ mod tests {
             .graph(vec!["src/lib.rs::inner".to_string()], "down", 1)
             .expect("graph result");
         let detailed = result["detailed_edges"].as_array().expect("detailed edges");
-        assert!(detailed.iter().any(|edge| {
-            edge["from"] == "src/lib.rs::inner"
-                && edge["to"] == "src/lib.rs::helper"
-                && edge["kind"] == "declares"
-                && edge["tier"] == "structural"
-                && edge["source"] == "indexed:declares"
-                && edge["evidence"]
-                    .as_array()
-                    .map(|evidence| evidence.iter().any(|entry| entry == "module_declaration"))
-                    .unwrap_or(false)
-        }), "{result}");
+        assert!(
+            detailed.iter().any(|edge| {
+                edge["from"] == "src/lib.rs::inner"
+                    && edge["to"] == "src/lib.rs::helper"
+                    && edge["kind"] == "declares"
+                    && edge["tier"] == "structural"
+                    && edge["source"] == "indexed:declares"
+                    && edge["evidence"]
+                        .as_array()
+                        .map(|evidence| evidence.iter().any(|entry| entry == "module_declaration"))
+                        .unwrap_or(false)
+            }),
+            "{result}"
+        );
     }
 
     #[test]
@@ -1885,20 +2186,23 @@ mod tests {
             .graph(vec!["src/lib.rs::Thing".to_string()], "down", 1)
             .expect("graph result");
         let detailed = result["detailed_edges"].as_array().expect("detailed edges");
-        assert!(detailed.iter().any(|edge| {
-            edge["from"] == "src/lib.rs::Thing"
-                && edge["to"] == "src/lib.rs::helper"
-                && edge["kind"] == "owns_member"
-                && edge["tier"] == "structural"
-                && edge["source"] == "indexed:owns_member"
-                && edge["evidence"]
-                    .as_array()
-                    .map(|evidence| {
-                        evidence.iter().any(|entry| entry == "member_ownership")
-                            && evidence.iter().any(|entry| entry == "owner_kind:struct")
-                    })
-                    .unwrap_or(false)
-        }), "{result}");
+        assert!(
+            detailed.iter().any(|edge| {
+                edge["from"] == "src/lib.rs::Thing"
+                    && edge["to"] == "src/lib.rs::helper"
+                    && edge["kind"] == "owns_member"
+                    && edge["tier"] == "structural"
+                    && edge["source"] == "indexed:owns_member"
+                    && edge["evidence"]
+                        .as_array()
+                        .map(|evidence| {
+                            evidence.iter().any(|entry| entry == "member_ownership")
+                                && evidence.iter().any(|entry| entry == "owner_kind:struct")
+                        })
+                        .unwrap_or(false)
+            }),
+            "{result}"
+        );
     }
 
     #[test]
@@ -2009,13 +2313,12 @@ mod tests {
             )
             .expect("graph result");
         assert_eq!(
-            filtered["detailed_edges"].as_array().map(|edges| edges.len()),
+            filtered["detailed_edges"]
+                .as_array()
+                .map(|edges| edges.len()),
             Some(0)
         );
-        assert_eq!(
-            filtered["filters"]["min_confidence"].as_f64(),
-            Some(0.93)
-        );
+        assert_eq!(filtered["filters"]["min_confidence"].as_f64(), Some(0.93));
     }
 
     #[test]
@@ -2116,7 +2419,13 @@ mod tests {
                 None,
             )
             .expect("high graph");
-        assert_eq!(low["detailed_edges"].as_array().map(|edges| edges.len()), Some(2));
-        assert_eq!(high["detailed_edges"].as_array().map(|edges| edges.len()), Some(0));
+        assert_eq!(
+            low["detailed_edges"].as_array().map(|edges| edges.len()),
+            Some(2)
+        );
+        assert_eq!(
+            high["detailed_edges"].as_array().map(|edges| edges.len()),
+            Some(0)
+        );
     }
 }

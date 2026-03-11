@@ -57,7 +57,11 @@ impl ParserManager {
         }
 
         // Determine workspace root roughly from local_grammars_dir if possible, else fallback to current_dir
-        let workspace_root = local_grammars_dir.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let workspace_root = local_grammars_dir
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let registry = crate::registry::GrammarRegistry::load(&workspace_root);
 
         let plugin_client = if backend_preference == "native" || backend_preference == "plugin" {
@@ -77,7 +81,7 @@ impl ParserManager {
             registry,
             plugin_client,
         })
-        }
+    }
     pub fn get_language_bytes(&mut self, language_name: &str) -> Result<Vec<u8>> {
         if language_name.is_empty()
             || !language_name
@@ -130,17 +134,20 @@ impl ParserManager {
             self.validate_checksum(language_name, &bytes, &wasm_filename)?;
             self.loaded_wasm_bytes
                 .write()
-                .unwrap()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?
                 .insert(language_name.to_string(), bytes.clone());
             return Ok(bytes);
         }
 
         if global_path.exists() {
             let bytes = fs::read(&global_path)?;
-            if self.validate_checksum(language_name, &bytes, &wasm_filename).is_ok() {
+            if self
+                .validate_checksum(language_name, &bytes, &wasm_filename)
+                .is_ok()
+            {
                 self.loaded_wasm_bytes
                     .write()
-                    .unwrap()
+                    .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?
                     .insert(language_name.to_string(), bytes.clone());
                 return Ok(bytes);
             }
@@ -189,7 +196,7 @@ impl ParserManager {
             let _ = self.validate_checksum(language_name, &bytes, &wasm_filename);
             self.loaded_wasm_bytes
                 .write()
-                .unwrap()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?
                 .insert(language_name.to_string(), bytes.clone());
             Ok(bytes)
         } else {
@@ -209,10 +216,9 @@ impl ParserManager {
             let mut hasher = Sha256::new();
             hasher.update(bytes);
             let actual_hex = format!("{:x}", hasher.finalize());
-            if actual_hex != expected_hex
-                && ["python", "rust"].contains(&language_name) {
-                    anyhow::bail!("Checksum mismatch for core language {}", language_name);
-                }
+            if actual_hex != expected_hex && ["python", "rust"].contains(&language_name) {
+                anyhow::bail!("Checksum mismatch for core language {}", language_name);
+            }
         }
         Ok(())
     }
@@ -328,7 +334,16 @@ impl ParserManager {
     }
 
     pub fn bootstrap_core_grammars(&mut self) -> Result<()> {
-        let core_langs = ["rust", "python", "javascript", "typescript", "go", "c", "cpp", "java"];
+        let core_langs = [
+            "rust",
+            "python",
+            "javascript",
+            "typescript",
+            "go",
+            "c",
+            "cpp",
+            "java",
+        ];
         for lang in core_langs {
             if let Err(e) = self.get_language_bytes(lang) {
                 log::warn!("Failed to bootstrap grammar for {}: {}", lang, e);
@@ -394,7 +409,7 @@ fn parser_backend() -> String {
         .to_lowercase()
 }
 
-    fn get_expected_checksum(lang: &str) -> Option<&'static str> {
+fn get_expected_checksum(lang: &str) -> Option<&'static str> {
     match lang {
         "python" => Some("16108b50df4ee9a30168794252ab55e7c93bfc5765d7fa0aa3e335752c515f47"),
         "rust" => Some("44b8d1a2e307ee8933d7c0bcb6b0f30d56bc999999fd1d2d9608a7dcf6e8ce56"),

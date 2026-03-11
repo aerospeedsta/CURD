@@ -1,11 +1,11 @@
 use anyhow::Result;
+use libloading::{Library, Symbol};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::io::{self, BufRead, Write};
-use libloading::{Library, Symbol};
-use std::collections::HashMap;
-use tree_sitter::StreamingIterator;
 use sha2::Digest;
+use std::collections::HashMap;
+use std::io::{self, BufRead, Write};
+use tree_sitter::StreamingIterator;
 
 // --- IPC Protocol ---
 
@@ -38,7 +38,7 @@ struct PluginResponse {
 
 fn main() -> Result<()> {
     let mut loaded_libraries: HashMap<String, Library> = HashMap::new();
-    
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -61,7 +61,8 @@ fn main() -> Result<()> {
             },
         };
 
-        let out = serde_json::to_string(&res).unwrap_or_else(|_| r#"{"status":"error","error":"Serialization failed"}"#.to_string());
+        let out = serde_json::to_string(&res)
+            .unwrap_or_else(|_| r#"{"status":"error","error":"Serialization failed"}"#.to_string());
         writeln!(stdout, "{}", out)?;
         stdout.flush()?;
     }
@@ -71,51 +72,60 @@ fn main() -> Result<()> {
 
 fn handle_request(req: PluginRequest, libraries: &mut HashMap<String, Library>) -> PluginResponse {
     match req {
-        PluginRequest::LoadGrammar { language_id, plugin_path, function_name } => {
-            unsafe {
-                match Library::new(&plugin_path) {
-                    Ok(lib) => {
-                        let result: Result<Symbol<unsafe extern "C" fn() -> tree_sitter::Language>, _> = lib.get(function_name.as_bytes());
-                        match result {
-                            Ok(_) => {
-                                libraries.insert(language_id.clone(), lib);
-                                PluginResponse {
-                                    status: "ok".to_string(),
-                                    result: Some(json!({"language_id": language_id, "loaded": true})),
-                                    error: None,
-                                }
-                            }
-                            Err(e) => {
-                                PluginResponse {
-                                    status: "error".to_string(),
-                                    result: None,
-                                    error: Some(format!("Failed to find symbol {}: {}", function_name, e)),
-                                }
+        PluginRequest::LoadGrammar {
+            language_id,
+            plugin_path,
+            function_name,
+        } => unsafe {
+            match Library::new(&plugin_path) {
+                Ok(lib) => {
+                    let result: Result<Symbol<unsafe extern "C" fn() -> tree_sitter::Language>, _> =
+                        lib.get(function_name.as_bytes());
+                    match result {
+                        Ok(_) => {
+                            libraries.insert(language_id.clone(), lib);
+                            PluginResponse {
+                                status: "ok".to_string(),
+                                result: Some(json!({"language_id": language_id, "loaded": true})),
+                                error: None,
                             }
                         }
-                    }
-                    Err(e) => {
-                        PluginResponse {
+                        Err(e) => PluginResponse {
                             status: "error".to_string(),
                             result: None,
-                            error: Some(format!("Failed to load plugin from {}: {}", plugin_path, e)),
-                        }
+                            error: Some(format!("Failed to find symbol {}: {}", function_name, e)),
+                        },
                     }
                 }
+                Err(e) => PluginResponse {
+                    status: "error".to_string(),
+                    result: None,
+                    error: Some(format!("Failed to load plugin from {}: {}", plugin_path, e)),
+                },
             }
-        }
-        PluginRequest::Parse { language_id, file_path, source_code, query_src } => {
+        },
+        PluginRequest::Parse {
+            language_id,
+            file_path,
+            source_code,
+            query_src,
+        } => {
             let language = if let Some(lib) = libraries.get(&language_id) {
                 let func_name = format!("tree_sitter_{}", language_id);
                 unsafe {
-                    match lib.get::<unsafe extern "C" fn() -> tree_sitter::Language>(func_name.as_bytes()) {
+                    match lib.get::<unsafe extern "C" fn() -> tree_sitter::Language>(
+                        func_name.as_bytes(),
+                    ) {
                         Ok(func) => func(),
                         Err(e) => {
                             return PluginResponse {
                                 status: "error".to_string(),
                                 result: None,
-                                error: Some(format!("Failed to load language function from plugin: {}", e)),
-                            }
+                                error: Some(format!(
+                                    "Failed to load language function from plugin: {}",
+                                    e
+                                )),
+                            };
                         }
                     }
                 }
@@ -134,8 +144,11 @@ fn handle_request(req: PluginRequest, libraries: &mut HashMap<String, Library>) 
                         return PluginResponse {
                             status: "error".to_string(),
                             result: None,
-                            error: Some(format!("Language plugin not loaded and not built-in: {}", language_id)),
-                        }
+                            error: Some(format!(
+                                "Language plugin not loaded and not built-in: {}",
+                                language_id
+                            )),
+                        };
                     }
                 }
             };
@@ -146,7 +159,7 @@ fn handle_request(req: PluginRequest, libraries: &mut HashMap<String, Library>) 
                     status: "error".to_string(),
                     result: None,
                     error: Some(format!("Failed to set parser language: {}", e)),
-                }
+                };
             }
 
             match parser.parse(&source_code, None) {
@@ -158,12 +171,13 @@ fn handle_request(req: PluginRequest, libraries: &mut HashMap<String, Library>) 
                                 status: "error".to_string(),
                                 result: None,
                                 error: Some(format!("Failed to compile query: {}", e)),
-                            }
+                            };
                         }
                     };
 
                     let mut cursor = tree_sitter::QueryCursor::new();
-                    let mut captures_iter = cursor.captures(&query, tree.root_node(), source_code.as_bytes());
+                    let mut captures_iter =
+                        cursor.captures(&query, tree.root_node(), source_code.as_bytes());
 
                     let mut symbols_list = Vec::new();
                     let mut name_counts: HashMap<String, usize> = HashMap::new();
@@ -172,9 +186,9 @@ fn handle_request(req: PluginRequest, libraries: &mut HashMap<String, Library>) 
                         let cap = mat.captures[*cap_idx];
                         let node = cap.node;
                         let capture_name = &query.capture_names()[cap.index as usize];
-                        
+
                         let mut role = "definition";
-                        
+
                         match &capture_name[..] {
                             "stub" => role = "stub",
                             "def" | "definition" => role = "definition",
@@ -185,26 +199,37 @@ fn handle_request(req: PluginRequest, libraries: &mut HashMap<String, Library>) 
 
                         // Heuristic for kind based on node kind
                         let symbol_kind = match node.kind() {
-                            "function_item" | "function_declaration" | "function_definition" | "method_declaration" | "method_definition" | "function" => "function",
+                            "function_item"
+                            | "function_declaration"
+                            | "function_definition"
+                            | "method_declaration"
+                            | "method_definition"
+                            | "function" => "function",
                             "class_declaration" | "class_definition" | "class" => "class",
                             "struct_item" | "struct_specifier" | "struct" => "struct",
-                            "interface_declaration" | "interface" | "type_alias_declaration" => "interface",
+                            "interface_declaration" | "interface" | "type_alias_declaration" => {
+                                "interface"
+                            }
                             _ => "unknown",
                         };
 
-                        let name_res: Result<&str, std::str::Utf8Error> = node.utf8_text(source_code.as_bytes());
+                        let name_res: Result<&str, std::str::Utf8Error> =
+                            node.utf8_text(source_code.as_bytes());
                         let mut symbol_name = name_res.unwrap_or("unknown").to_string();
-                        
+
                         if let Some(name_node) = node.child_by_field_name("name") {
-                            let child_name_res: Result<&str, std::str::Utf8Error> = name_node.utf8_text(source_code.as_bytes());
+                            let child_name_res: Result<&str, std::str::Utf8Error> =
+                                name_node.utf8_text(source_code.as_bytes());
                             if let Ok(name_text) = child_name_res {
                                 symbol_name = name_text.to_string();
                             }
                         }
 
                         let range = node.range();
-                        let symbol_code = &source_code[range.start_byte..range.end_byte.min(source_code.len())];
-                        let hash_str = format!("{:x}", sha2::Sha256::digest(symbol_code.as_bytes()));
+                        let symbol_code =
+                            &source_code[range.start_byte..range.end_byte.min(source_code.len())];
+                        let hash_str =
+                            format!("{:x}", sha2::Sha256::digest(symbol_code.as_bytes()));
 
                         let count = name_counts.entry(symbol_name.clone()).or_insert(0);
                         let id = if *count == 0 {
@@ -236,13 +261,11 @@ fn handle_request(req: PluginRequest, libraries: &mut HashMap<String, Library>) 
                         error: None,
                     }
                 }
-                None => {
-                    PluginResponse {
-                        status: "error".to_string(),
-                        result: None,
-                        error: Some("Parser returned None (timeout or cancellation)".to_string()),
-                    }
-                }
+                None => PluginResponse {
+                    status: "error".to_string(),
+                    result: None,
+                    error: Some("Parser returned None (timeout or cancellation)".to_string()),
+                },
             }
         }
     }

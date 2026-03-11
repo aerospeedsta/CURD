@@ -1,5 +1,6 @@
+use curd::API_VERSION;
 use curd_core::{
-    API_VERSION, EngineContext, check_workspace_config, handle_contract, handle_debug_dispatcher,
+    EngineContext, check_workspace_config, handle_contract, handle_debug_dispatcher,
     handle_diagram, handle_doctor, handle_edit, handle_graph, handle_lsp, handle_manage_file,
     handle_profile, handle_read, handle_search, handle_shell, handle_workspace,
 };
@@ -51,9 +52,7 @@ impl PyCurdEngine {
             ));
         }
         let ctx = EngineContext::new(&workspace_root);
-        Ok(Self {
-            ctx,
-        })
+        Ok(Self { ctx })
     }
 
     #[getter]
@@ -99,7 +98,14 @@ impl PyCurdEngine {
             "uris": uris,
             "verbosity": verbosity.unwrap_or(1)
         });
-        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let shadow_root = self
+            .ctx
+            .we
+            .shadow
+            .lock()
+            .unwrap()
+            .get_shadow_root()
+            .cloned();
         let res = self.block_on(handle_read(&params, Arc::clone(&self.ctx.re), shadow_root));
         if let Some(e) = res.get("error").and_then(|v| v.as_str()) {
             return Err(PyRuntimeError::new_err(e.to_string()));
@@ -122,7 +128,14 @@ impl PyCurdEngine {
             "action": action.unwrap_or("upsert"),
             "adaptation_justification": justification.unwrap_or("")
         });
-        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let shadow_root = self
+            .ctx
+            .we
+            .shadow
+            .lock()
+            .unwrap()
+            .get_shadow_root()
+            .cloned();
         let res = self.block_on(handle_edit(&params, Arc::clone(&self.ctx.ee), shadow_root));
         if let Some(e) = res.get("error").and_then(|v| v.as_str()) {
             return Err(PyRuntimeError::new_err(e.to_string()));
@@ -190,8 +203,12 @@ impl PyCurdEngine {
             "up_depth": up_depth.unwrap_or(1),
             "down_depth": down_depth.unwrap_or(1)
         });
-        let res: serde_json::Value = self.block_on(handle_diagram(&params, Arc::clone(&self.ctx.de)));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        let res: serde_json::Value =
+            self.block_on(handle_diagram(&params, Arc::clone(&self.ctx.de)));
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -200,10 +217,20 @@ impl PyCurdEngine {
     #[pyo3(signature = (command))]
     fn shell(&self, py: Python, command: &str) -> PyResult<PyObject> {
         let params = serde_json::json!({ "command": command });
-        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let shadow_root = self
+            .ctx
+            .we
+            .shadow
+            .lock()
+            .unwrap()
+            .get_shadow_root()
+            .cloned();
         let res: serde_json::Value =
             self.block_on(handle_shell(&params, &self.ctx.she, shadow_root.as_deref()));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -222,13 +249,23 @@ impl PyCurdEngine {
             "action": action.unwrap_or("create"),
             "destination": destination
         });
-        let shadow_root = self.ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+        let shadow_root = self
+            .ctx
+            .we
+            .shadow
+            .lock()
+            .unwrap()
+            .get_shadow_root()
+            .cloned();
         let res: serde_json::Value = self.block_on(handle_manage_file(
             &params,
             Arc::clone(&self.ctx.fie),
             shadow_root,
         ));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -252,7 +289,10 @@ impl PyCurdEngine {
             "offset": offset
         });
         let res: serde_json::Value = self.block_on(handle_lsp(&params, &self.ctx.le));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -279,7 +319,10 @@ impl PyCurdEngine {
             "down_depth": down_depth.unwrap_or(3)
         });
         let res: serde_json::Value = self.block_on(handle_profile(&params, &self.ctx.pe));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -307,7 +350,10 @@ impl PyCurdEngine {
             "target_args": target_args.unwrap_or_default()
         });
         let res: serde_json::Value = self.block_on(handle_debug_dispatcher(&params, &self.ctx.dbe));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -328,7 +374,10 @@ impl PyCurdEngine {
             "target_args": target_args.unwrap_or_default()
         });
         let res: serde_json::Value = self.block_on(handle_debug_dispatcher(&params, &self.ctx.dbe));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -341,7 +390,10 @@ impl PyCurdEngine {
             "snippet": snippet
         });
         let res: serde_json::Value = self.block_on(handle_debug_dispatcher(&params, &self.ctx.dbe));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -353,7 +405,10 @@ impl PyCurdEngine {
             "session_id": session_id
         });
         let res: serde_json::Value = self.block_on(handle_debug_dispatcher(&params, &self.ctx.dbe));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)
@@ -365,7 +420,10 @@ impl PyCurdEngine {
             "session_id": session_id
         });
         let res: serde_json::Value = self.block_on(handle_debug_dispatcher(&params, &self.ctx.dbe));
-        if let Some(e) = res.get("error").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(e) = res
+            .get("error")
+            .and_then(|v: &serde_json::Value| v.as_str())
+        {
             return Err(PyRuntimeError::new_err(e.to_string()));
         }
         Self::to_py_object(py, &res)

@@ -24,7 +24,10 @@ impl Watchdog {
     }
 
     pub fn heartbeat(&self) {
-        let mut hb = self.last_heartbeat.lock().unwrap_or_else(|e| e.into_inner());
+        let mut hb = self
+            .last_heartbeat
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *hb = Instant::now();
     }
 
@@ -126,9 +129,10 @@ impl Watchdog {
         if let Some(nodes) = g.get("nodes").and_then(|n| n.as_array()) {
             for node in nodes {
                 if let Some(id) = node.get("id").and_then(|v| v.as_str())
-                    && node.get("fault_state").is_some() {
-                        poisoned_uris.push(id.to_string());
-                    }
+                    && node.get("fault_state").is_some()
+                {
+                    poisoned_uris.push(id.to_string());
+                }
             }
         }
 

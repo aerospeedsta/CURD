@@ -1,0 +1,48 @@
+{
+  "manifest": {
+    "schema_version": 1,
+    "package_id": "curd-language-reference",
+    "version": "0.1.0",
+    "kind": "language",
+    "signer_pubkey_hex": "REPLACE_WITH_ED25519_PUBKEY_HEX",
+    "description": "Reference CURD language extension package",
+    "files": [
+      {
+        "path": "lib/tree-sitter-curd.dylib",
+        "sha256": "REPLACE_WITH_SHA256",
+        "size": 123456,
+        "executable": false
+      },
+      {
+        "path": "queries/curd.scm",
+        "sha256": "REPLACE_WITH_SHA256",
+        "size": 512,
+        "executable": false
+      }
+    ],
+    "tool": null,
+    "language": {
+      "language_id": "curd",
+      "extensions": ["curd"],
+      "grammar_library_path": "lib/tree-sitter-curd.dylib",
+      "grammar_symbol": "tree_sitter_curd",
+      "query_path": "queries/curd.scm",
+      "build_system": null,
+      "lsp_adapter": "curd-lsp",
+      "debug_adapter": null
+    }
+  },
+  "payload_files": [
+    {
+      "path": "lib/tree-sitter-curd.dylib",
+      "content_b64": "REPLACE_WITH_BASE64_PAYLOAD",
+      "executable": false
+    },
+    {
+      "path": "queries/curd.scm",
+      "content_b64": "REPLACE_WITH_BASE64_QUERY",
+      "executable": false
+    }
+  ],
+  "signature_hex": "REPLACE_WITH_SIGNATURE_OVER_MANIFEST_JSON"
+}

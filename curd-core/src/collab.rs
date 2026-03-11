@@ -142,7 +142,8 @@ impl CollaborationStore {
         }
         let legacy_path = self.legacy_state_path(collaboration_id);
         if legacy_path.exists() {
-            let mut state: CollaborationState = serde_json::from_str(&fs::read_to_string(legacy_path)?)?;
+            let mut state: CollaborationState =
+                serde_json::from_str(&fs::read_to_string(legacy_path)?)?;
             state.collaboration_id = collaboration_id;
             return Ok(state);
         }
@@ -158,7 +159,10 @@ impl CollaborationStore {
 
     pub fn save(&self, state: &CollaborationState) -> Result<()> {
         fs::create_dir_all(self.dir())?;
-        fs::write(self.state_path(state.collaboration_id), serde_json::to_string_pretty(state)?)?;
+        fs::write(
+            self.state_path(state.collaboration_id),
+            serde_json::to_string_pretty(state)?,
+        )?;
         Ok(())
     }
 
@@ -167,7 +171,10 @@ impl CollaborationStore {
         state: &'a CollaborationState,
         participant_id: &str,
     ) -> Option<&'a ParticipantBinding> {
-        state.participants.iter().find(|p| p.participant_id == participant_id)
+        state
+            .participants
+            .iter()
+            .find(|p| p.participant_id == participant_id)
     }
 
     pub fn prune_expired_locks(&self, state: &mut CollaborationState) {

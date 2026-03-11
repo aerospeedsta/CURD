@@ -389,23 +389,25 @@ fn try_chromium(root: &Path) -> Option<ManifestInfo> {
     let mut dependencies = Vec::new();
 
     if deps_path.exists()
-        && let Ok(content) = fs::read_to_string(&deps_path) {
-            // Very basic extraction of "external" deps from DEPS
-            for line in content.lines() {
-                let line = line.trim();
-                if (line.starts_with('\'') || line.starts_with('"'))
-                    && (line.contains("https://") || line.contains("git://")) {
-                        let parts: Vec<&str> = line.split(&['\'', '"'][..]).collect();
-                        if parts.len() >= 2 {
-                            dependencies.push(Dependency {
-                                name: parts[1].to_string(),
-                                version: "remote".to_string(),
-                                kind: "runtime".to_string(),
-                            });
-                        }
-                    }
+        && let Ok(content) = fs::read_to_string(&deps_path)
+    {
+        // Very basic extraction of "external" deps from DEPS
+        for line in content.lines() {
+            let line = line.trim();
+            if (line.starts_with('\'') || line.starts_with('"'))
+                && (line.contains("https://") || line.contains("git://"))
+            {
+                let parts: Vec<&str> = line.split(&['\'', '"'][..]).collect();
+                if parts.len() >= 2 {
+                    dependencies.push(Dependency {
+                        name: parts[1].to_string(),
+                        version: "remote".to_string(),
+                        kind: "runtime".to_string(),
+                    });
+                }
             }
         }
+    }
 
     Some(ManifestInfo {
         manager: "chromium".to_string(),

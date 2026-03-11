@@ -10,18 +10,17 @@ async fn search_delegation_respects_local_first_provenance() {
     fs::create_dir_all(root.join("src")).unwrap();
 
     // Create a local symbol
-    fs::write(
-        root.join("src/main.py"),
-        "def local_func():\n    pass\n",
-    )
-    .unwrap();
+    fs::write(root.join("src/main.py"), "def local_func():\n    pass\n").unwrap();
 
     fs::create_dir_all(root.join(".curd")).unwrap();
     let mut config = CurdConfig::default();
     config.reference.enable_delegation = true;
-    config.reference.instances.insert("test_ref".to_string(), "http://localhost:12345/nonexistent".to_string());
+    config.reference.instances.insert(
+        "test_ref".to_string(),
+        "http://localhost:12345/nonexistent".to_string(),
+    );
     config.index.execution = Some("singlethreaded".to_string());
-    
+
     fs::write(
         root.join(".curd/settings.toml"),
         toml::to_string(&config).unwrap(),

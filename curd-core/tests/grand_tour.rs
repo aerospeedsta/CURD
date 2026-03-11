@@ -25,7 +25,10 @@ async fn test_library_grand_tour() -> anyhow::Result<()> {
     )?;
 
     std::fs::create_dir_all(root.join(".curd"))?;
-    std::fs::write(root.join(".curd/curd.toml"), "[index]\nexecution = \"singlethreaded\"\n[edit]\nenforce_transactional = false\n")?;
+    std::fs::write(
+        root.join(".curd/curd.toml"),
+        "[index]\nexecution = \"singlethreaded\"\n[edit]\nenforce_transactional = false\n",
+    )?;
 
     // 2. Initialize the CURD kernel
     let ctx = EngineContext::new(root.to_str().unwrap());

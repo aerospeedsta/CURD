@@ -102,7 +102,11 @@ fn hash_file(path: &Path) -> Option<String> {
 fn snapshot_id(root: &Path) -> String {
     let mut entries = BTreeMap::new();
     let mut builder = WalkBuilder::new(root);
-    builder.hidden(false).git_ignore(true).ignore(true).parents(false);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .ignore(true)
+        .parents(false);
     builder.filter_entry(|entry| {
         let path = entry.path();
         if path.is_dir() {
@@ -134,7 +138,11 @@ fn copy_workspace(src: &Path, dst: &Path) -> Result<()> {
     }
     fs::create_dir_all(dst)?;
     let mut builder = WalkBuilder::new(src);
-    builder.hidden(false).git_ignore(true).ignore(true).parents(false);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .ignore(true)
+        .parents(false);
     builder.filter_entry(|entry| {
         let path = entry.path();
         if path.is_dir() {
@@ -163,7 +171,11 @@ fn copy_workspace(src: &Path, dst: &Path) -> Result<()> {
 fn estimate_workspace_size(root: &Path) -> Result<u64> {
     let mut total = 0u64;
     let mut builder = WalkBuilder::new(root);
-    builder.hidden(false).git_ignore(true).ignore(true).parents(false);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .ignore(true)
+        .parents(false);
     builder.filter_entry(|entry| {
         let path = entry.path();
         if path.is_dir() {
@@ -367,7 +379,9 @@ impl VariantStore {
     }
 
     pub fn load_plan_set(&self, plan_set_id: Uuid) -> Result<PlanSet> {
-        Ok(serde_json::from_str(&fs::read_to_string(self.planset_path(plan_set_id))?)?)
+        Ok(serde_json::from_str(&fs::read_to_string(
+            self.planset_path(plan_set_id),
+        )?)?)
     }
 
     fn save_plan_set(&self, plan_set: &PlanSet) -> Result<()> {
@@ -492,16 +506,47 @@ impl VariantStore {
         }
 
         let ctx = EngineContext::new(materialized_root.to_string_lossy().as_ref());
-        let register = dispatch_tool("register_plan", &serde_json::to_value(&variant.plan)?, ctx.as_ref()).await;
+        let begin = dispatch_tool("workspace", &json!({"action":"begin"}), ctx.as_ref()).await;
+        if begin.get("error").is_some() {
+            return Ok(begin);
+        }
+        let register = dispatch_tool(
+            "register_plan",
+            &serde_json::to_value(&variant.plan)?,
+            ctx.as_ref(),
+        )
+        .await;
         if register.get("error").is_some() {
+            let _ = dispatch_tool("workspace", &json!({"action":"rollback"}), ctx.as_ref()).await;
             return Ok(register);
         }
         let execute = dispatch_tool("execute_active_plan", &json!({}), ctx.as_ref()).await;
-        let compare_path = self.variant_dir(variant.plan_set_id, variant.id).join("compare.json");
-        let graph_path = self.variant_dir(variant.plan_set_id, variant.id).join("graph.json");
+        if execute.get("error").is_some() {
+            let _ = dispatch_tool("workspace", &json!({"action":"rollback"}), ctx.as_ref()).await;
+            return Ok(execute);
+        }
+        let commit = dispatch_tool(
+            "workspace",
+            &json!({"action":"commit","allow_unapproved":true}),
+            ctx.as_ref(),
+        )
+        .await;
+        if commit.get("error").is_some() {
+            let _ = dispatch_tool("workspace", &json!({"action":"rollback"}), ctx.as_ref()).await;
+            return Ok(commit);
+        }
+        let compare_path = self
+            .variant_dir(variant.plan_set_id, variant.id)
+            .join("compare.json");
+        let graph_path = self
+            .variant_dir(variant.plan_set_id, variant.id)
+            .join("graph.json");
         let workspace_locator = materialized_root.to_string_lossy().to_string();
         let graph = graph_snapshot(&materialized_root)?;
-        fs::write(&graph_path, serde_json::to_string_pretty(&graph.as_value())?)?;
+        fs::write(
+            &graph_path,
+            serde_json::to_string_pretty(&graph.as_value())?,
+        )?;
         variant.status = PlanVariantStatus::Simulated;
         variant.simulated_snapshot_id = Some(snapshot_id(&materialized_root));
         variant.artifacts.workspace_locator = Some(workspace_locator.clone());
@@ -514,7 +559,8 @@ impl VariantStore {
             "variant_id": variant.id,
             "workspace_root": workspace_locator,
             "materialized_bytes": materialized_bytes,
-            "result": execute
+            "result": execute,
+            "workspace": commit
         }))
     }
 
@@ -551,12 +597,23 @@ impl VariantStore {
                 }));
                 continue;
             }
-            let summary = compare_dirs(&self.workspace_root, &workspace, config.variants.max_compare_files)?;
-            let compare_path = self.variant_dir(plan_set_id, *variant_id).join("compare.json");
-            let graph_path = self.variant_dir(plan_set_id, *variant_id).join("graph.json");
+            let summary = compare_dirs(
+                &self.workspace_root,
+                &workspace,
+                config.variants.max_compare_files,
+            )?;
+            let compare_path = self
+                .variant_dir(plan_set_id, *variant_id)
+                .join("compare.json");
+            let graph_path = self
+                .variant_dir(plan_set_id, *variant_id)
+                .join("graph.json");
             let graph_snapshot = graph_snapshot(&workspace)?;
             fs::write(&compare_path, serde_json::to_string_pretty(&summary)?)?;
-            fs::write(&graph_path, serde_json::to_string_pretty(&graph_snapshot.as_value())?)?;
+            fs::write(
+                &graph_path,
+                serde_json::to_string_pretty(&graph_snapshot.as_value())?,
+            )?;
             variant.artifacts.compare_path = Some(compare_path.clone());
             variant.artifacts.graph_path = Some(graph_path);
             self.save_variant(&variant)?;
@@ -584,7 +641,11 @@ impl VariantStore {
         if !workspace.exists() {
             anyhow::bail!("variant has not been simulated");
         }
-        let summary = compare_dirs(&self.workspace_root, &workspace, ctx.config.variants.max_compare_files)?;
+        let summary = compare_dirs(
+            &self.workspace_root,
+            &workspace,
+            ctx.config.variants.max_compare_files,
+        )?;
         {
             let mut shadow = ctx.we.shadow.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
             if !shadow.is_active() {
@@ -598,7 +659,9 @@ impl VariantStore {
             for entry in changed {
                 if let Some(rel) = entry.get("path").and_then(Value::as_str) {
                     if entry.get("status").and_then(Value::as_str) == Some("removed") {
-                        anyhow::bail!("promotion currently rejects removed files; use review or manual promotion flow");
+                        anyhow::bail!(
+                            "promotion currently rejects removed files; use review or manual promotion flow"
+                        );
                     }
                     let content = fs::read_to_string(workspace.join(rel))?;
                     shadow.stage(Path::new(rel), &content)?;
@@ -654,19 +717,28 @@ impl VariantStore {
             "reject" => PlanVariantStatus::Rejected,
             _ => anyhow::bail!("unsupported review decision: {}", decision),
         };
-        let review_path = self.variant_dir(plan_set_id, variant_id).join("review.json");
-        fs::write(&review_path, serde_json::to_string_pretty(&variant.reviews)?)?;
+        let review_path = self
+            .variant_dir(plan_set_id, variant_id)
+            .join("review.json");
+        fs::write(
+            &review_path,
+            serde_json::to_string_pretty(&variant.reviews)?,
+        )?;
         variant.artifacts.review_path = Some(review_path);
         self.save_variant(&variant)?;
         Ok(variant)
     }
 
     fn load_compare_summary(&self, plan_set_id: Uuid, variant_id: Uuid) -> Result<Option<Value>> {
-        let compare_path = self.variant_dir(plan_set_id, variant_id).join("compare.json");
+        let compare_path = self
+            .variant_dir(plan_set_id, variant_id)
+            .join("compare.json");
         if !compare_path.exists() {
             return Ok(None);
         }
-        Ok(Some(serde_json::from_str(&fs::read_to_string(compare_path)?)?))
+        Ok(Some(serde_json::from_str(&fs::read_to_string(
+            compare_path,
+        )?)?))
     }
 }
 
@@ -760,7 +832,11 @@ fn compare_graph_snapshot_values(baseline: &GraphSnapshot, variant: &GraphSnapsh
             .iter()
             .chain(removed_nodes.iter())
             .map(String::as_str)
-            .chain(added_edges.iter().flat_map(|(from, to, _)| [from.as_str(), to.as_str()]))
+            .chain(
+                added_edges
+                    .iter()
+                    .flat_map(|(from, to, _)| [from.as_str(), to.as_str()]),
+            )
             .chain(
                 removed_edges
                     .iter()
@@ -889,7 +965,11 @@ fn naive_graph_snapshot(root: &Path) -> Result<GraphSnapshot> {
     let mut node_ids = Vec::new();
     let mut typed_edges: Vec<(String, String, String)> = Vec::new();
     let mut builder = WalkBuilder::new(root);
-    builder.hidden(false).git_ignore(true).ignore(true).parents(false);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .ignore(true)
+        .parents(false);
     builder.filter_entry(|entry| {
         let path = entry.path();
         if path.is_dir() {
@@ -1014,11 +1094,7 @@ fn extract_text_function_name(line: &str) -> Option<String> {
         .chars()
         .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
         .collect();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn summarize_edge_kinds(edges: &[(String, String, String)]) -> Value {
@@ -1230,7 +1306,10 @@ fn compare_variant_snapshots(snapshots: &[(Uuid, String, GraphSnapshot)]) -> Vec
     deltas
 }
 
-fn summarize_variant_comparison(variants: &[Value], snapshots: &[(Uuid, String, GraphSnapshot)]) -> Value {
+fn summarize_variant_comparison(
+    variants: &[Value],
+    snapshots: &[(Uuid, String, GraphSnapshot)],
+) -> Value {
     let variant_summaries: Vec<Value> = variants
         .iter()
         .filter_map(|variant| {
@@ -1344,7 +1423,8 @@ fn top_impacted_scopes<'a>(ids: impl Iterator<Item = &'a str>) -> Vec<Value> {
     }
     let mut pairs: Vec<(String, usize)> = counts.into_iter().collect();
     pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    pairs.into_iter()
+    pairs
+        .into_iter()
         .take(12)
         .map(|(scope, changes)| json!({ "scope": scope, "changes": changes }))
         .collect()
@@ -1423,7 +1503,9 @@ mod tests {
         assert!(
             delta["risk_summary"]["reasons"]
                 .as_array()
-                .map(|reasons| reasons.iter().any(|reason| reason == "unstable_edge_changes:1"))
+                .map(|reasons| reasons
+                    .iter()
+                    .any(|reason| reason == "unstable_edge_changes:1"))
                 .unwrap_or(false),
             "{delta}"
         );
@@ -1481,24 +1563,35 @@ mod tests {
                 },
             ),
         ]));
-        assert_eq!(summary, vec![json!({"scope": "src/lib.rs", "direct_children": 2})]);
+        assert_eq!(
+            summary,
+            vec![json!({"scope": "src/lib.rs", "direct_children": 2})]
+        );
     }
 
     #[test]
     fn variant_comparison_summary_ranks_by_risk_and_surfaces_common_scopes() {
         let snapshots = vec![
-            (Uuid::nil(), "a".to_string(), GraphSnapshot {
-                node_ids: vec![],
-                typed_edges: vec![],
-                edge_details: BTreeMap::new(),
-                summary: json!({"origin": "indexed"}),
-            }),
-            (Uuid::from_u128(1), "b".to_string(), GraphSnapshot {
-                node_ids: vec![],
-                typed_edges: vec![],
-                edge_details: BTreeMap::new(),
-                summary: json!({"origin": "indexed"}),
-            }),
+            (
+                Uuid::nil(),
+                "a".to_string(),
+                GraphSnapshot {
+                    node_ids: vec![],
+                    typed_edges: vec![],
+                    edge_details: BTreeMap::new(),
+                    summary: json!({"origin": "indexed"}),
+                },
+            ),
+            (
+                Uuid::from_u128(1),
+                "b".to_string(),
+                GraphSnapshot {
+                    node_ids: vec![],
+                    typed_edges: vec![],
+                    edge_details: BTreeMap::new(),
+                    summary: json!({"origin": "indexed"}),
+                },
+            ),
         ];
         let variants = vec![
             json!({
@@ -1527,7 +1620,10 @@ mod tests {
         let summary = summarize_variant_comparison(&variants, &snapshots);
         assert_eq!(summary["variant_count"], 2);
         assert_eq!(summary["rankings"][0]["title"], "b");
-        assert_eq!(summary["common_impacted_scopes"], json!([{"scope": "src/lib.rs", "variants": 2}]));
+        assert_eq!(
+            summary["common_impacted_scopes"],
+            json!([{"scope": "src/lib.rs", "variants": 2}])
+        );
     }
 
     #[test]
@@ -1551,7 +1647,11 @@ mod tests {
 
 fn populate_file_map(root: &Path, current: &Path, out: &mut HashMap<String, String>) -> Result<()> {
     let mut builder = WalkBuilder::new(current);
-    builder.hidden(false).git_ignore(true).ignore(true).parents(false);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .ignore(true)
+        .parents(false);
     builder.filter_entry(|entry| {
         let path = entry.path();
         if path.is_dir() {

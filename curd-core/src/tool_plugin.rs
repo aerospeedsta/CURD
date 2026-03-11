@@ -24,6 +24,7 @@ impl ToolPluginEngine {
     }
 
     pub fn add_archive(&self, archive_path: &Path) -> Result<InstalledPluginRecord> {
+        self.ensure_enabled()?;
         let verified = verify_archive_file(archive_path, &self.workspace_root, &self.config)?;
         if verified.archive.manifest.kind != PluginKind::Tool {
             anyhow::bail!("expected a .curdt tool plugin archive");
@@ -32,14 +33,22 @@ impl ToolPluginEngine {
     }
 
     pub fn remove(&self, package_id: &str) -> Result<bool> {
-        remove_installed_plugin(&self.workspace_root, &self.config, PluginKind::Tool, package_id)
+        self.ensure_enabled()?;
+        remove_installed_plugin(
+            &self.workspace_root,
+            &self.config,
+            PluginKind::Tool,
+            package_id,
+        )
     }
 
     pub fn list(&self) -> Result<Vec<InstalledPluginRecord>> {
+        self.ensure_enabled()?;
         load_installed_plugins(&self.workspace_root, &self.config, PluginKind::Tool)
     }
 
     pub fn get_doc(&self, tool_name: &str) -> Result<Option<Value>> {
+        self.ensure_enabled()?;
         let installed = self.list()?;
         let record = installed.into_iter().find(|record| {
             record
@@ -51,7 +60,9 @@ impl ToolPluginEngine {
         let Some(record) = record else {
             return Ok(None);
         };
-        let spec = record.tool.context("installed tool plugin missing tool spec")?;
+        let spec = record
+            .tool
+            .context("installed tool plugin missing tool spec")?;
         Ok(Some(json!({
             "tool": spec.tool_name,
             "description": spec.description.unwrap_or_else(|| "Installed signed tool plugin".to_string()),
@@ -70,6 +81,7 @@ impl ToolPluginEngine {
     }
 
     pub async fn invoke(&self, tool_name: &str, params: &Value) -> Result<Option<Value>> {
+        self.ensure_enabled()?;
         let installed = self.list()?;
         let record = installed.into_iter().find(|record| {
             record
@@ -81,7 +93,10 @@ impl ToolPluginEngine {
         let Some(record) = record else {
             return Ok(None);
         };
-        let spec = record.tool.clone().context("installed tool plugin missing tool spec")?;
+        let spec = record
+            .tool
+            .clone()
+            .context("installed tool plugin missing tool spec")?;
         if spec.protocol != "json_stdio_v1" {
             anyhow::bail!(
                 "tool plugin '{}' uses unsupported protocol '{}'",
@@ -92,17 +107,27 @@ impl ToolPluginEngine {
         if self.config.tool_runtime != "sidecar_stdio" {
             anyhow::bail!("tool plugin runtime policy forbids installed tool execution");
         }
-        let install_dir = fs::canonicalize(&record.install_dir)
-            .with_context(|| format!("Failed to canonicalize plugin install dir {}", record.install_dir.display()))?;
+        let install_dir = fs::canonicalize(&record.install_dir).with_context(|| {
+            format!(
+                "Failed to canonicalize plugin install dir {}",
+                record.install_dir.display()
+            )
+        })?;
         let entry_path = install_dir.join(&spec.executable_path);
-        let entry_path = fs::canonicalize(&entry_path)
-            .with_context(|| format!("Failed to canonicalize tool plugin entry {}", entry_path.display()))?;
+        let entry_path = fs::canonicalize(&entry_path).with_context(|| {
+            format!(
+                "Failed to canonicalize tool plugin entry {}",
+                entry_path.display()
+            )
+        })?;
         if !entry_path.starts_with(&install_dir) {
             anyhow::bail!("tool plugin entry escaped install directory");
         }
         let sandbox = crate::Sandbox::new(&self.workspace_root);
         let mut cmd = sandbox.build_std_command(
-            entry_path.to_str().ok_or_else(|| anyhow::anyhow!("tool plugin path is not valid UTF-8"))?,
+            entry_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("tool plugin path is not valid UTF-8"))?,
             &spec.default_args,
         );
         cmd.current_dir(&self.workspace_root)
@@ -110,7 +135,9 @@ impl ToolPluginEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().context("Failed to spawn sandboxed tool plugin process")?;
+        let mut child = cmd
+            .spawn()
+            .context("Failed to spawn sandboxed tool plugin process")?;
         {
             let mut stdin = child
                 .stdin
@@ -146,7 +173,8 @@ impl ToolPluginEngine {
                 self.config.external_mcp_max_output_bytes
             );
         }
-        let stdout = String::from_utf8(output.stdout).context("tool plugin emitted non-UTF8 stdout")?;
+        let stdout =
+            String::from_utf8(output.stdout).context("tool plugin emitted non-UTF8 stdout")?;
         let trimmed = stdout.trim();
         if trimmed.is_empty() {
             return Ok(Some(json!({"status": "ok"})));
@@ -154,6 +182,13 @@ impl ToolPluginEngine {
         let parsed: Value = serde_json::from_str(trimmed)
             .with_context(|| format!("tool plugin '{}' returned invalid JSON", tool_name))?;
         Ok(Some(parsed))
+    }
+
+    fn ensure_enabled(&self) -> Result<()> {
+        if !self.config.enabled {
+            anyhow::bail!("plugins are disabled by configuration");
+        }
+        Ok(())
     }
 }
 
@@ -181,14 +216,16 @@ mod tests {
             dir.path(),
             &cfg,
             &crate::plugin_packages::TrustedPluginKeySet {
-                keys: vec![crate::plugin_packages::create_trusted_plugin_key(
-                    "tool",
-                    &pubkey_hex,
-                    Some("tool".to_string()),
-                    vec![PluginKind::Tool],
-                    true,
-                )
-                .unwrap()],
+                keys: vec![
+                    crate::plugin_packages::create_trusted_plugin_key(
+                        "tool",
+                        &pubkey_hex,
+                        Some("tool".to_string()),
+                        vec![PluginKind::Tool],
+                        true,
+                    )
+                    .unwrap(),
+                ],
             },
         )
         .unwrap();
@@ -243,6 +280,18 @@ mod tests {
         assert!(record.install_dir.join("bin/demo-tool").exists());
     }
 
+    #[test]
+    fn disabled_plugin_config_blocks_tool_plugin_access() {
+        let dir = tempdir().unwrap();
+        let mut cfg = crate::config::PluginConfig::default();
+        cfg.enabled = false;
+        let engine = ToolPluginEngine::new(dir.path(), cfg);
+        let err = engine
+            .list()
+            .expect_err("expected disabled plugins to fail");
+        assert!(err.to_string().contains("plugins are disabled"));
+    }
+
     #[tokio::test]
     async fn tool_plugin_invoke_respects_output_budget() {
         let dir = tempdir().unwrap();
@@ -261,14 +310,16 @@ mod tests {
             dir.path(),
             &cfg,
             &crate::plugin_packages::TrustedPluginKeySet {
-                keys: vec![crate::plugin_packages::create_trusted_plugin_key(
-                    "tool",
-                    &pubkey_hex,
-                    Some("tool".to_string()),
-                    vec![PluginKind::Tool],
-                    true,
-                )
-                .unwrap()],
+                keys: vec![
+                    crate::plugin_packages::create_trusted_plugin_key(
+                        "tool",
+                        &pubkey_hex,
+                        Some("tool".to_string()),
+                        vec![PluginKind::Tool],
+                        true,
+                    )
+                    .unwrap(),
+                ],
             },
         )
         .unwrap();
@@ -320,6 +371,9 @@ mod tests {
         let engine = ToolPluginEngine::new(dir.path(), cfg);
         engine.add_archive(&archive_path).unwrap();
         let err = engine.invoke("demo_budget", &json!({})).await.unwrap_err();
-        assert!(err.to_string().contains("exceeded max output budget"), "{err}");
+        assert!(
+            err.to_string().contains("exceeded max output budget"),
+            "{err}"
+        );
     }
 }

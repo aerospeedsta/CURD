@@ -30,13 +30,14 @@ impl ContextRegistry {
         if let Some(idx) = path_str.find(".curd/shadow/") {
             real_root = PathBuf::from(&path_str[..idx]);
         }
-        
+
         let path = real_root.join(".curd/contexts.json");
         if path.exists()
             && let Ok(content) = fs::read_to_string(&path)
-                && let Ok(registry) = serde_json::from_str::<ContextRegistry>(&content) {
-                    return registry;
-                }
+            && let Ok(registry) = serde_json::from_str::<ContextRegistry>(&content)
+        {
+            return registry;
+        }
         Self::default()
     }
 
@@ -84,18 +85,29 @@ mod tests {
         let root = dir.path();
 
         let mut registry = ContextRegistry::default();
-        registry.add("@test_api".to_string(), PathBuf::from("/tmp/test_api"), ContextMode::Read);
-        registry.add("@test_lib".to_string(), PathBuf::from("/tmp/test_lib"), ContextMode::Index);
+        registry.add(
+            "@test_api".to_string(),
+            PathBuf::from("/tmp/test_api"),
+            ContextMode::Read,
+        );
+        registry.add(
+            "@test_lib".to_string(),
+            PathBuf::from("/tmp/test_lib"),
+            ContextMode::Index,
+        );
 
         assert_eq!(registry.contexts.len(), 2);
-        
+
         // Save to disk
         registry.save(root).unwrap();
 
         // Load from disk
         let loaded = ContextRegistry::load(root);
         assert_eq!(loaded.contexts.len(), 2);
-        assert_eq!(loaded.contexts.get("@test_api").unwrap().mode, ContextMode::Read);
+        assert_eq!(
+            loaded.contexts.get("@test_api").unwrap().mode,
+            ContextMode::Read
+        );
 
         // Remove by alias
         assert!(registry.remove("@test_api"));

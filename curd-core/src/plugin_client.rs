@@ -1,11 +1,11 @@
+use crate::Sandbox;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::Mutex;
-use std::io::{BufRead, BufReader, Write};
-use crate::Sandbox;
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "method", content = "params")]
@@ -56,7 +56,10 @@ impl PluginClient {
     }
 
     fn ensure_inner(&self) -> Result<()> {
-        let mut inner_guard = self.inner.lock().unwrap();
+        let mut inner_guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Plugin sidecar lock poisoned"))?;
         if inner_guard.is_some() {
             // Check if child is still alive
             if let Some(inner) = inner_guard.as_mut() {
@@ -71,22 +74,33 @@ impl PluginClient {
 
         let exe = std::env::current_exe().context("Failed to get current executable path")?;
         let host_bin = exe.with_file_name("curd-plugin-host");
-        
+
         if !host_bin.exists() {
             anyhow::bail!("Sidecar binary not found at {}", host_bin.display());
         }
 
         let sandbox = Sandbox::new(&self.workspace_root);
-        let mut cmd = sandbox.build_std_command(host_bin.to_str().unwrap(), &[]);
+        let host_bin_str = host_bin
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Sidecar binary path is not valid UTF-8"))?;
+        let mut cmd = sandbox.build_std_command(host_bin_str, &[]);
         cmd.current_dir(&self.workspace_root);
 
         cmd.stdin(Stdio::piped())
-           .stdout(Stdio::piped())
-           .stderr(Stdio::inherit());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
 
-        let mut child = cmd.spawn().context("Failed to spawn curd-plugin-host sidecar")?;
-        let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("Failed to open sidecar stdin"))?;
-        let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to open sidecar stdout"))?;
+        let mut child = cmd
+            .spawn()
+            .context("Failed to spawn curd-plugin-host sidecar")?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to open sidecar stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to open sidecar stdout"))?;
 
         *inner_guard = Some(PluginClientInner {
             child,
@@ -96,18 +110,25 @@ impl PluginClient {
 
         // If we had previously loaded grammars, we need to reload them in the new process
         // (This would happen on the next parse call lazily)
-        self.loaded_grammars.lock().unwrap().clear();
+        if let Ok(mut loaded) = self.loaded_grammars.lock() {
+            loaded.clear();
+        }
 
         Ok(())
     }
 
     pub fn send_request(&self, req: &PluginRequest) -> Result<PluginResponse> {
         self.ensure_inner()?;
-        let mut inner_guard = self.inner.lock().unwrap();
-        let inner = inner_guard.as_mut().unwrap();
+        let mut inner_guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Plugin sidecar lock poisoned"))?;
+        let inner = inner_guard
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Sidecar process is unavailable"))?;
 
         let req_json = serde_json::to_string(req)?;
-        
+
         // Write with timeout-like behavior via non-blocking or just standard io
         // Since we are using std::process::Child, we don't have easy async timeouts here
         // but we can use the reader's behavior.
@@ -127,8 +148,16 @@ impl PluginClient {
         Ok(resp)
     }
 
-    pub fn load_grammar(&self, language_id: &str, plugin_path: &str, function_name: &str) -> Result<()> {
-        let mut loaded = self.loaded_grammars.lock().unwrap();
+    pub fn load_grammar(
+        &self,
+        language_id: &str,
+        plugin_path: &str,
+        function_name: &str,
+    ) -> Result<()> {
+        let mut loaded = self
+            .loaded_grammars
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Loaded grammar cache lock poisoned"))?;
         if loaded.contains(language_id) {
             return Ok(());
         }
@@ -147,11 +176,20 @@ impl PluginClient {
             loaded.insert(language_id.to_string());
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Plugin load failed: {}", resp.error.unwrap_or_default()))
+            Err(anyhow::anyhow!(
+                "Plugin load failed: {}",
+                resp.error.unwrap_or_default()
+            ))
         }
     }
 
-    pub fn parse(&self, language_id: &str, file_path: &str, source_code: &str, query_src: &str) -> Result<Vec<crate::Symbol>> {
+    pub fn parse(
+        &self,
+        language_id: &str,
+        file_path: &str,
+        source_code: &str,
+        query_src: &str,
+    ) -> Result<Vec<crate::Symbol>> {
         let req = PluginRequest::Parse {
             language_id: language_id.to_string(),
             file_path: file_path.to_string(),
@@ -167,7 +205,10 @@ impl PluginClient {
                 Ok(Vec::new())
             }
         } else {
-            Err(anyhow::anyhow!("Parse failed: {}", resp.error.unwrap_or_default()))
+            Err(anyhow::anyhow!(
+                "Parse failed: {}",
+                resp.error.unwrap_or_default()
+            ))
         }
     }
 }

@@ -1,8 +1,8 @@
+use anyhow::Result;
 use curd_core::gpu::ComputeBackend;
+use pollster::block_on;
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
-use anyhow::Result;
-use pollster::block_on;
 
 #[derive(Deserialize)]
 struct Request {

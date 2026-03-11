@@ -554,7 +554,7 @@ impl ShadowStore {
             }
         }
 
-        // Phase 2: apply all prepared writes only after successful planning.
+        // Step 2: apply all prepared writes only after successful planning.
         for (rel_path, planned_path) in plan_files {
             let orig_path = self.workspace_root.join(&rel_path);
             if let Some(parent) = orig_path.parent() {

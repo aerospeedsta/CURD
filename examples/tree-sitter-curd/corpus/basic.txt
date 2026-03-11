@@ -1,0 +1,57 @@
+================================================================================
+declarations and blocks
+================================================================================
+
+arg target_uri: string
+let patch = """
+fn validate(token: &str) -> bool {
+  !token.is_empty()
+}
+"""
+
+sequence main {
+  search query="Auth"
+  atomic apply_fix {
+    edit uri=$target_uri action="upsert" code=$patch
+    verify_impact strict=true
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (arg_decl
+    (identifier)
+    (identifier))
+  (let_decl
+    (identifier)
+    (multiline_string))
+  (sequence_block
+    (identifier)
+    (block
+      (tool_call
+        (identifier)
+        (named_argument
+          (identifier)
+          (string)))
+      (atomic_block
+        (identifier)
+        (block
+          (tool_call
+            (identifier)
+            (named_argument
+              (identifier)
+              (variable_ref
+                (identifier)))
+            (named_argument
+              (identifier)
+              (string))
+            (named_argument
+              (identifier)
+              (variable_ref
+                (identifier))))
+          (tool_call
+            (identifier)
+            (named_argument
+              (identifier)
+              (boolean)))))))

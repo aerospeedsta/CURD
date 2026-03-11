@@ -22,6 +22,7 @@ impl LangPluginEngine {
     }
 
     pub fn add_archive(&self, archive_path: &Path) -> Result<InstalledPluginRecord> {
+        self.ensure_enabled()?;
         let verified = verify_archive_file(archive_path, &self.workspace_root, &self.config)?;
         if verified.archive.manifest.kind != PluginKind::Language {
             anyhow::bail!("expected a .curdl language plugin archive");
@@ -32,29 +33,35 @@ impl LangPluginEngine {
     }
 
     pub fn remove(&self, package_id: &str) -> Result<bool> {
-        let removed =
-            remove_installed_plugin(&self.workspace_root, &self.config, PluginKind::Language, package_id)?;
+        self.ensure_enabled()?;
+        let removed = remove_installed_plugin(
+            &self.workspace_root,
+            &self.config,
+            PluginKind::Language,
+            package_id,
+        )?;
         self.rebuild_registry()?;
         Ok(removed)
     }
 
     pub fn list(&self) -> Result<Vec<InstalledPluginRecord>> {
+        self.ensure_enabled()?;
         load_installed_plugins(&self.workspace_root, &self.config, PluginKind::Language)
     }
 
     pub fn rebuild_registry(&self) -> Result<()> {
+        self.ensure_enabled()?;
         let installed = self.list()?;
         let mut languages = HashMap::new();
         for record in installed {
-            let Some(spec) = record.language else { continue };
+            let Some(spec) = record.language else {
+                continue;
+            };
             let plugin_path = record.install_dir.join(&spec.grammar_library_path);
-            let query_path = spec.query_path.as_ref().map(|q| {
-                record
-                    .install_dir
-                    .join(q)
-                    .to_string_lossy()
-                    .to_string()
-            });
+            let query_path = spec
+                .query_path
+                .as_ref()
+                .map(|q| record.install_dir.join(q).to_string_lossy().to_string());
             languages.insert(
                 spec.language_id.clone(),
                 crate::registry::LanguageDef {
@@ -84,11 +91,14 @@ impl LangPluginEngine {
         language_id: &str,
         function_name: &str,
     ) -> Result<()> {
+        self.ensure_enabled()?;
         let installed = self.list()?;
         let canon = fs::canonicalize(plugin_path)
             .with_context(|| format!("Failed to canonicalize {}", plugin_path.display()))?;
         for record in installed {
-            let Some(spec) = record.language else { continue };
+            let Some(spec) = record.language else {
+                continue;
+            };
             if spec.language_id != language_id {
                 continue;
             }
@@ -105,6 +115,13 @@ impl LangPluginEngine {
             "language plugin library is not an installed verified package for language '{}'",
             language_id
         )
+    }
+
+    fn ensure_enabled(&self) -> Result<()> {
+        if !self.config.enabled {
+            anyhow::bail!("plugins are disabled by configuration");
+        }
+        Ok(())
     }
 }
 
@@ -132,14 +149,16 @@ mod tests {
             dir.path(),
             &cfg,
             &crate::plugin_packages::TrustedPluginKeySet {
-                keys: vec![crate::plugin_packages::create_trusted_plugin_key(
-                    "lang",
-                    &pubkey_hex,
-                    Some("lang".to_string()),
-                    vec![PluginKind::Language],
-                    true,
-                )
-                .unwrap()],
+                keys: vec![
+                    crate::plugin_packages::create_trusted_plugin_key(
+                        "lang",
+                        &pubkey_hex,
+                        Some("lang".to_string()),
+                        vec![PluginKind::Language],
+                        true,
+                    )
+                    .unwrap(),
+                ],
             },
         )
         .unwrap();
@@ -190,8 +209,21 @@ mod tests {
 
         let engine = LangPluginEngine::new(dir.path(), cfg.clone());
         engine.add_archive(&archive_path).unwrap();
-        let registry = fs::read_to_string(dir.path().join(".curd/plugins/lang/languages.toml")).unwrap();
+        let registry =
+            fs::read_to_string(dir.path().join(".curd/plugins/lang/languages.toml")).unwrap();
         assert!(registry.contains("demo"));
         assert!(registry.contains("plugin"));
+    }
+
+    #[test]
+    fn disabled_plugin_config_blocks_language_plugin_access() {
+        let dir = tempdir().unwrap();
+        let mut cfg = crate::config::PluginConfig::default();
+        cfg.enabled = false;
+        let engine = LangPluginEngine::new(dir.path(), cfg);
+        let err = engine
+            .list()
+            .expect_err("expected disabled plugins to fail");
+        assert!(err.to_string().contains("plugins are disabled"));
     }
 }

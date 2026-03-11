@@ -1,6 +1,6 @@
 [package]
 name = "curd-python"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 edition = "2024"
 
 [lib]
@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.102"
+curd = { path = "../curd", default-features = false, features = ["mcp"] }
 curd-core = { path = "../curd-core" }
 pyo3 = { version = "0.24.1", features = ["extension-module", "abi3-py37"] }
 pythonize = "0.24.0"

@@ -22,6 +22,7 @@ curd-node/index.d.ts
 
 # CURD Internal
 .curd/
+curd-proposals/
 .curd-grammars/
 curd-cli/curd
 dist/

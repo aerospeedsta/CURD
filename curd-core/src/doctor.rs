@@ -113,11 +113,16 @@ impl DoctorEngine {
         profile: Option<DoctorProfile>,
         mut cfg: DoctorIndexConfig,
     ) -> anyhow::Result<DoctorReport> {
-        let workspace_root = std::fs::canonicalize(&self.workspace_root).unwrap_or_else(|_| self.workspace_root.clone());
+        let workspace_root = std::fs::canonicalize(&self.workspace_root)
+            .unwrap_or_else(|_| self.workspace_root.clone());
         let workspace_cfg = CurdConfig::load_from_workspace(&workspace_root);
 
         let effective_profile = profile.or_else(|| {
-            workspace_cfg.doctor.profile.as_deref().and_then(|p| DoctorProfile::from_str(p).ok())
+            workspace_cfg
+                .doctor
+                .profile
+                .as_deref()
+                .and_then(|p| DoctorProfile::from_str(p).ok())
         });
 
         if let Some(p) = effective_profile {
@@ -126,31 +131,71 @@ impl DoctorEngine {
         let config_findings = workspace_cfg.validate();
 
         // Merge thresholds from config if not provided
-        if thresholds.max_total_ms.is_none() { thresholds.max_total_ms = workspace_cfg.doctor.max_total_ms; }
-        if thresholds.max_parse_fail.is_none() { thresholds.max_parse_fail = workspace_cfg.doctor.max_parse_fail; }
-        if thresholds.max_no_symbols_ratio.is_none() { thresholds.max_no_symbols_ratio = workspace_cfg.doctor.max_no_symbols_ratio; }
-        if thresholds.max_skipped_large_ratio.is_none() { thresholds.max_skipped_large_ratio = workspace_cfg.doctor.max_skipped_large_ratio; }
-        if thresholds.min_coverage_ratio.is_none() { thresholds.min_coverage_ratio = workspace_cfg.doctor.min_coverage_ratio; }
-        if thresholds.require_coverage_state.is_none() { thresholds.require_coverage_state = workspace_cfg.doctor.require_coverage_state.clone(); }
-        if thresholds.min_symbol_count.is_none() { thresholds.min_symbol_count = workspace_cfg.doctor.min_symbol_count; }
-        if thresholds.min_symbols_per_k_files.is_none() { thresholds.min_symbols_per_k_files = workspace_cfg.doctor.min_symbols_per_k_files; }
-        if thresholds.min_overlap_with_full.is_none() { thresholds.min_overlap_with_full = workspace_cfg.doctor.min_overlap_with_full; }
-        if !thresholds.parity_rerun { thresholds.parity_rerun = workspace_cfg.doctor.parity_rerun.unwrap_or(false); }
+        if thresholds.max_total_ms.is_none() {
+            thresholds.max_total_ms = workspace_cfg.doctor.max_total_ms;
+        }
+        if thresholds.max_parse_fail.is_none() {
+            thresholds.max_parse_fail = workspace_cfg.doctor.max_parse_fail;
+        }
+        if thresholds.max_no_symbols_ratio.is_none() {
+            thresholds.max_no_symbols_ratio = workspace_cfg.doctor.max_no_symbols_ratio;
+        }
+        if thresholds.max_skipped_large_ratio.is_none() {
+            thresholds.max_skipped_large_ratio = workspace_cfg.doctor.max_skipped_large_ratio;
+        }
+        if thresholds.min_coverage_ratio.is_none() {
+            thresholds.min_coverage_ratio = workspace_cfg.doctor.min_coverage_ratio;
+        }
+        if thresholds.require_coverage_state.is_none() {
+            thresholds.require_coverage_state = workspace_cfg.doctor.require_coverage_state.clone();
+        }
+        if thresholds.min_symbol_count.is_none() {
+            thresholds.min_symbol_count = workspace_cfg.doctor.min_symbol_count;
+        }
+        if thresholds.min_symbols_per_k_files.is_none() {
+            thresholds.min_symbols_per_k_files = workspace_cfg.doctor.min_symbols_per_k_files;
+        }
+        if thresholds.min_overlap_with_full.is_none() {
+            thresholds.min_overlap_with_full = workspace_cfg.doctor.min_overlap_with_full;
+        }
+        if !thresholds.parity_rerun {
+            thresholds.parity_rerun = workspace_cfg.doctor.parity_rerun.unwrap_or(false);
+        }
 
         // Merge index config from workspace if not provided
-        if cfg.index_mode.is_none() { cfg.index_mode = workspace_cfg.index.mode.clone(); }
-        if cfg.index_max_file_size.is_none() { cfg.index_max_file_size = workspace_cfg.index.max_file_size; }
-        if cfg.index_large_file_policy.is_none() { cfg.index_large_file_policy = workspace_cfg.index.large_file_policy.clone(); }
-        if cfg.index_execution.is_none() { cfg.index_execution = workspace_cfg.index.execution.clone(); }
-        if cfg.index_chunk_size.is_none() { cfg.index_chunk_size = workspace_cfg.index.chunk_size; }
+        if cfg.index_mode.is_none() {
+            cfg.index_mode = workspace_cfg.index.mode.clone();
+        }
+        if cfg.index_max_file_size.is_none() {
+            cfg.index_max_file_size = workspace_cfg.index.max_file_size;
+        }
+        if cfg.index_large_file_policy.is_none() {
+            cfg.index_large_file_policy = workspace_cfg.index.large_file_policy.clone();
+        }
+        if cfg.index_execution.is_none() {
+            cfg.index_execution = workspace_cfg.index.execution.clone();
+        }
+        if cfg.index_chunk_size.is_none() {
+            cfg.index_chunk_size = workspace_cfg.index.chunk_size;
+        }
 
         // Build custom CurdConfig for the SearchEngine
         let mut search_cfg = workspace_cfg.clone();
-        if let Some(mode) = cfg.index_mode.as_ref() { search_cfg.index.mode = Some(mode.clone()); }
-        if let Some(max_sz) = cfg.index_max_file_size { search_cfg.index.max_file_size = Some(max_sz); }
-        if let Some(large_policy) = cfg.index_large_file_policy.as_ref() { search_cfg.index.large_file_policy = Some(large_policy.clone()); }
-        if let Some(execution) = cfg.index_execution.as_ref() { search_cfg.index.execution = Some(execution.clone()); }
-        if let Some(chunk_size) = cfg.index_chunk_size { search_cfg.index.chunk_size = Some(chunk_size); }
+        if let Some(mode) = cfg.index_mode.as_ref() {
+            search_cfg.index.mode = Some(mode.clone());
+        }
+        if let Some(max_sz) = cfg.index_max_file_size {
+            search_cfg.index.max_file_size = Some(max_sz);
+        }
+        if let Some(large_policy) = cfg.index_large_file_policy.as_ref() {
+            search_cfg.index.large_file_policy = Some(large_policy.clone());
+        }
+        if let Some(execution) = cfg.index_execution.as_ref() {
+            search_cfg.index.execution = Some(execution.clone());
+        }
+        if let Some(chunk_size) = cfg.index_chunk_size {
+            search_cfg.index.chunk_size = Some(chunk_size);
+        }
 
         let t_scan = Instant::now();
         let files = scan_workspace(&self.workspace_root)?;
@@ -181,8 +226,14 @@ impl DoctorEngine {
             coverage = build_index_coverage(s);
             quality = build_index_quality(s);
 
-            let cov_ratio = coverage.get("coverage_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let cov_state = coverage.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let cov_ratio = coverage
+                .get("coverage_ratio")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let cov_state = coverage
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
 
             if s.parse_fail > 0 {
                 findings.push(DoctorFinding {
@@ -193,31 +244,34 @@ impl DoctorEngine {
             }
 
             if let Some(limit) = thresholds.max_parse_fail
-                && s.parse_fail > limit {
-                    findings.push(DoctorFinding {
-                        severity: "high".to_string(),
-                        code: "doctor_parse_fail_exceeded".to_string(),
-                        message: format!("parse_fail={} exceeded limit={}", s.parse_fail, limit),
-                    });
-                }
+                && s.parse_fail > limit
+            {
+                findings.push(DoctorFinding {
+                    severity: "high".to_string(),
+                    code: "doctor_parse_fail_exceeded".to_string(),
+                    message: format!("parse_fail={} exceeded limit={}", s.parse_fail, limit),
+                });
+            }
 
             if let Some(min_cov) = thresholds.min_coverage_ratio
-                && cov_ratio < min_cov {
-                    findings.push(DoctorFinding {
-                        severity: "high".to_string(),
-                        code: "doctor_coverage_ratio_below_min".to_string(),
-                        message: format!("coverage_ratio={:.4} below min={:.4}", cov_ratio, min_cov),
-                    });
-                }
+                && cov_ratio < min_cov
+            {
+                findings.push(DoctorFinding {
+                    severity: "high".to_string(),
+                    code: "doctor_coverage_ratio_below_min".to_string(),
+                    message: format!("coverage_ratio={:.4} below min={:.4}", cov_ratio, min_cov),
+                });
+            }
 
             if let Some(ref req_state) = thresholds.require_coverage_state
-                && cov_state != req_state {
-                    findings.push(DoctorFinding {
-                        severity: "high".to_string(),
-                        code: "doctor_coverage_state_mismatch".to_string(),
-                        message: format!("coverage_state='{}' required='{}'", cov_state, req_state),
-                    });
-                }
+                && cov_state != req_state
+            {
+                findings.push(DoctorFinding {
+                    severity: "high".to_string(),
+                    code: "doctor_coverage_state_mismatch".to_string(),
+                    message: format!("coverage_state='{}' required='{}'", cov_state, req_state),
+                });
+            }
 
             let should_compute_inventory = thresholds.min_symbol_count.is_some()
                 || thresholds.min_symbols_per_k_files.is_some()
@@ -227,7 +281,11 @@ impl DoctorEngine {
             if should_compute_inventory {
                 let symbols = se.search("", None)?;
                 let count = symbols.len();
-                let density = if s.total_files == 0 { 0.0 } else { (count as f64 * 1000.0) / s.total_files as f64 };
+                let density = if s.total_files == 0 {
+                    0.0
+                } else {
+                    (count as f64 * 1000.0) / s.total_files as f64
+                };
                 inventory = SymbolInventoryStats {
                     computed: true,
                     symbol_count: Some(count),
@@ -235,13 +293,14 @@ impl DoctorEngine {
                 };
 
                 if let Some(min_c) = thresholds.min_symbol_count
-                    && count < min_c {
-                        findings.push(DoctorFinding {
-                            severity: "high".to_string(),
-                            code: "doctor_symbol_count_below_min".to_string(),
-                            message: format!("symbol_count={} below min={}", count, min_c),
-                        });
-                    }
+                    && count < min_c
+                {
+                    findings.push(DoctorFinding {
+                        severity: "high".to_string(),
+                        code: "doctor_symbol_count_below_min".to_string(),
+                        message: format!("symbol_count={} below min={}", count, min_c),
+                    });
+                }
 
                 if thresholds.parity_rerun {
                     let fp1 = symbol_fingerprint(&symbols);
@@ -271,7 +330,11 @@ impl DoctorEngine {
                     let full_ids: HashSet<_> = symbols_full.iter().map(|s| s.id.as_str()).collect();
                     let cur_ids: HashSet<_> = symbols.iter().map(|s| s.id.as_str()).collect();
                     let overlap_count = cur_ids.intersection(&full_ids).count();
-                    let overlap = if full_ids.is_empty() { 1.0 } else { overlap_count as f64 / full_ids.len() as f64 };
+                    let overlap = if full_ids.is_empty() {
+                        1.0
+                    } else {
+                        overlap_count as f64 / full_ids.len() as f64
+                    };
                     comparison = ModeComparisonStats {
                         enabled: true,
                         overlap_with_full: Some(overlap),
@@ -280,24 +343,37 @@ impl DoctorEngine {
                         overlap_symbol_count: Some(overlap_count),
                     };
                     if let Some(min_o) = thresholds.min_overlap_with_full
-                        && overlap < min_o {
-                            findings.push(DoctorFinding {
-                                severity: "high".to_string(),
-                                code: "doctor_overlap_with_full_below_min".to_string(),
-                                message: format!("overlap={:.4} below min={:.4}", overlap, min_o),
-                            });
-                        }
+                        && overlap < min_o
+                    {
+                        findings.push(DoctorFinding {
+                            severity: "high".to_string(),
+                            code: "doctor_overlap_with_full_below_min".to_string(),
+                            message: format!("overlap={:.4} below min={:.4}", overlap, min_o),
+                        });
+                    }
                 }
             }
         }
 
-        let status = if findings.iter().any(|f| f.severity == "high") { "fail" } else if findings.is_empty() { "ok" } else { "warn" };
-        
+        let status = if findings.iter().any(|f| f.severity == "high") {
+            "fail"
+        } else if findings.is_empty() {
+            "ok"
+        } else {
+            "warn"
+        };
+
         let mut report = DoctorReport {
             status: status.to_string(),
             workspace_root: self.workspace_root.clone(),
-            scan: ScanStats { files_found: files.len(), scan_ms },
-            index_probe: IndexProbeStats { wall_ms: index_wall_ms, stats: stats.clone() },
+            scan: ScanStats {
+                files_found: files.len(),
+                scan_ms,
+            },
+            index_probe: IndexProbeStats {
+                wall_ms: index_wall_ms,
+                stats: stats.clone(),
+            },
             coverage,
             quality,
             symbol_inventory: inventory,
@@ -319,36 +395,72 @@ impl DoctorEngine {
 
     fn generate_summary(&self, r: &DoctorReport) -> String {
         let mut out = String::new();
-        out.push_str(&format!("CURD DOCTOR REPORT: {}\n", r.status.to_uppercase()));
+        out.push_str(&format!(
+            "CURD DOCTOR REPORT: {}\n",
+            r.status.to_uppercase()
+        ));
         out.push_str(&format!("Workspace: {}\n", r.workspace_root.display()));
         out.push_str("--------------------------------------------------\n");
-        out.push_str(&format!("Scan:    {} files in {}ms\n", r.scan.files_found, r.scan.scan_ms));
+        out.push_str(&format!(
+            "Scan:    {} files in {}ms\n",
+            r.scan.files_found, r.scan.scan_ms
+        ));
         out.push_str(&format!("Index:   {}ms wall time\n", r.index_probe.wall_ms));
-        
+
         if let Some(ref s) = r.index_probe.stats {
-            out.push_str(&format!("  Cache: {} hits, {} misses\n", s.cache_hits, s.cache_misses));
-            out.push_str(&format!("  Parse: {} success, {} fail\n", s.cache_misses.saturating_sub(s.parse_fail), s.parse_fail));
+            out.push_str(&format!(
+                "  Cache: {} hits, {} misses\n",
+                s.cache_hits, s.cache_misses
+            ));
+            out.push_str(&format!(
+                "  Parse: {} success, {} fail\n",
+                s.cache_misses.saturating_sub(s.parse_fail),
+                s.parse_fail
+            ));
         }
 
-        let cov_ratio = r.coverage.get("coverage_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let cov_state = r.coverage.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
-        out.push_str(&format!("Coverage: {:.1}% ({})\n", cov_ratio * 100.0, cov_state));
+        let cov_ratio = r
+            .coverage
+            .get("coverage_ratio")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let cov_state = r
+            .coverage
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        out.push_str(&format!(
+            "Coverage: {:.1}% ({})\n",
+            cov_ratio * 100.0,
+            cov_state
+        ));
 
-        let qual_status = r.quality.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let qual_status = r
+            .quality
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         out.push_str(&format!("Quality:  {}\n", qual_status));
 
         if r.symbol_inventory.computed {
-            out.push_str(&format!("Symbols:  {} total ({:.2} per 1k files)\n", 
+            out.push_str(&format!(
+                "Symbols:  {} total ({:.2} per 1k files)\n",
                 r.symbol_inventory.symbol_count.unwrap_or(0),
-                r.symbol_inventory.symbols_per_k_files.unwrap_or(0.0)));
+                r.symbol_inventory.symbols_per_k_files.unwrap_or(0.0)
+            ));
         }
 
         if !r.findings.is_empty() {
             out.push_str("\nFINDINGS:\n");
             for f in &r.findings {
-                out.push_str(&format!("  [{}] ({}) {}\n", f.severity.to_uppercase(), f.code, f.message));
+                out.push_str(&format!(
+                    "  [{}] ({}) {}\n",
+                    f.severity.to_uppercase(),
+                    f.code,
+                    f.message
+                ));
             }
-            
+
             // Show detailed parse failure samples if available
             if let Some(ref s) = r.index_probe.stats {
                 if !s.parse_fail_samples.is_empty() {
@@ -401,19 +513,41 @@ impl FromStr for DoctorProfile {
 fn apply_profile_defaults(t: &mut DoctorThresholds, profile: DoctorProfile) {
     match profile {
         DoctorProfile::CiFast => {
-            if t.max_parse_fail.is_none() { t.max_parse_fail = Some(0); }
-            if t.min_coverage_ratio.is_none() { t.min_coverage_ratio = Some(0.90); }
-            if t.max_skipped_large_ratio.is_none() { t.max_skipped_large_ratio = Some(0.30); }
-            if t.min_symbols_per_k_files.is_none() { t.min_symbols_per_k_files = Some(0.5); }
+            if t.max_parse_fail.is_none() {
+                t.max_parse_fail = Some(0);
+            }
+            if t.min_coverage_ratio.is_none() {
+                t.min_coverage_ratio = Some(0.90);
+            }
+            if t.max_skipped_large_ratio.is_none() {
+                t.max_skipped_large_ratio = Some(0.30);
+            }
+            if t.min_symbols_per_k_files.is_none() {
+                t.min_symbols_per_k_files = Some(0.5);
+            }
         }
         DoctorProfile::CiStrict => {
-            if t.max_parse_fail.is_none() { t.max_parse_fail = Some(0); }
-            if t.max_no_symbols_ratio.is_none() { t.max_no_symbols_ratio = Some(0.90); }
-            if t.max_skipped_large_ratio.is_none() { t.max_skipped_large_ratio = Some(0.20); }
-            if t.min_coverage_ratio.is_none() { t.min_coverage_ratio = Some(0.99); }
-            if t.require_coverage_state.is_none() { t.require_coverage_state = Some("full".to_string()); }
-            if t.min_symbols_per_k_files.is_none() { t.min_symbols_per_k_files = Some(1.0); }
-            if t.min_overlap_with_full.is_none() { t.min_overlap_with_full = Some(0.95); }
+            if t.max_parse_fail.is_none() {
+                t.max_parse_fail = Some(0);
+            }
+            if t.max_no_symbols_ratio.is_none() {
+                t.max_no_symbols_ratio = Some(0.90);
+            }
+            if t.max_skipped_large_ratio.is_none() {
+                t.max_skipped_large_ratio = Some(0.20);
+            }
+            if t.min_coverage_ratio.is_none() {
+                t.min_coverage_ratio = Some(0.99);
+            }
+            if t.require_coverage_state.is_none() {
+                t.require_coverage_state = Some("full".to_string());
+            }
+            if t.min_symbols_per_k_files.is_none() {
+                t.min_symbols_per_k_files = Some(1.0);
+            }
+            if t.min_overlap_with_full.is_none() {
+                t.min_overlap_with_full = Some(0.95);
+            }
         }
     }
 }
@@ -421,14 +555,23 @@ fn apply_profile_defaults(t: &mut DoctorThresholds, profile: DoctorProfile) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn test_doctor_profile_parsing() {
-        assert_eq!(DoctorProfile::from_str("ci_fast").unwrap(), DoctorProfile::CiFast);
-        assert_eq!(DoctorProfile::from_str("cifast").unwrap(), DoctorProfile::CiFast);
-        assert_eq!(DoctorProfile::from_str("ci_strict").unwrap(), DoctorProfile::CiStrict);
+        assert_eq!(
+            DoctorProfile::from_str("ci_fast").unwrap(),
+            DoctorProfile::CiFast
+        );
+        assert_eq!(
+            DoctorProfile::from_str("cifast").unwrap(),
+            DoctorProfile::CiFast
+        );
+        assert_eq!(
+            DoctorProfile::from_str("ci_strict").unwrap(),
+            DoctorProfile::CiStrict
+        );
         assert!(DoctorProfile::from_str("unknown").is_err());
     }
 
@@ -438,7 +581,7 @@ mod tests {
         apply_profile_defaults(&mut t, DoctorProfile::CiFast);
         assert_eq!(t.max_parse_fail, Some(0));
         assert_eq!(t.min_coverage_ratio, Some(0.90));
-        
+
         let mut t2 = DoctorThresholds::default();
         apply_profile_defaults(&mut t2, DoctorProfile::CiStrict);
         assert_eq!(t2.min_coverage_ratio, Some(0.99));
@@ -451,10 +594,17 @@ mod tests {
         let root = dir.path();
         fs::create_dir_all(root.join(".curd")).unwrap();
         fs::write(root.join("curd.toml"), "").unwrap();
-        
+
         let engine = DoctorEngine::new(root);
-        let report = engine.run(false, DoctorThresholds::default(), None, DoctorIndexConfig::default()).unwrap();
-        
+        let report = engine
+            .run(
+                false,
+                DoctorThresholds::default(),
+                None,
+                DoctorIndexConfig::default(),
+            )
+            .unwrap();
+
         assert_eq!(report.status, "ok"); // an empty workspace shouldn't fail unless thresholds demand it
         assert_eq!(report.scan.files_found, 0); // scan_workspace skips non-source or dot files usually, or empty is 0
     }

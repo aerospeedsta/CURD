@@ -1,6 +1,6 @@
 [package]
 name = "curd-gpu-worker"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 edition = "2021"
 
 [dependencies]

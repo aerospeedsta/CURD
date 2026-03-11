@@ -406,8 +406,8 @@ fn supports_stateful_replay(language: &str) -> bool {
 }
 
 pub(crate) const DEBUG_NOISE_WORDS: [&str; 13] = [
-    "panic", "thread", "error", "warning", "info", "trace", "debug", "caused", "causes",
-    "cause", "stack", "frame", "at",
+    "panic", "thread", "error", "warning", "info", "trace", "debug", "caused", "causes", "cause",
+    "stack", "frame", "at",
 ];
 
 // ── Sandboxed DAP Infrastructure ────────────────────────────────────────
@@ -510,8 +510,10 @@ mod tests {
 
     #[test]
     fn extracts_debug_tokens_without_noise() {
-        let tokens =
-            crate::trace::extract_tokens("panic in caller: callee at src/lib.rs:12", &DEBUG_NOISE_WORDS);
+        let tokens = crate::trace::extract_tokens(
+            "panic in caller: callee at src/lib.rs:12",
+            &DEBUG_NOISE_WORDS,
+        );
         assert!(tokens.iter().any(|t| t == "caller"));
         assert!(tokens.iter().any(|t| t == "callee"));
         assert!(!tokens.iter().any(|t| t == "at"));
@@ -571,7 +573,8 @@ mod tests {
             .expect("commit indexing");
 
         let engine = DebugEngine::new(root);
-        let enriched = engine.graph_context_for_output(None, "", "panic in caller caused by callee");
+        let enriched =
+            engine.graph_context_for_output(None, "", "panic in caller caused by callee");
         assert!(enriched["seed_nodes"].as_array().is_some());
         assert!(enriched["graph"]["detailed_edges"].as_array().is_some());
     }

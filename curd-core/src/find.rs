@@ -124,33 +124,37 @@ impl FindEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn test_find_engine() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        
+
         fs::create_dir_all(root.join(".curd")).unwrap();
         fs::write(root.join("curd.toml"), "").unwrap();
-        
+
         let src_dir = root.join("src");
         fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("main.py"), "def target_func():\n    magic_string = 'foobar'\n    return magic_string\n").unwrap();
-        
+        fs::write(
+            src_dir.join("main.py"),
+            "def target_func():\n    magic_string = 'foobar'\n    return magic_string\n",
+        )
+        .unwrap();
+
         let engine = FindEngine::new(root);
-        
+
         let res = engine.find("foobar").unwrap();
         let count = res.get("count").and_then(|v| v.as_u64()).unwrap();
         assert_eq!(count, 1);
-        
+
         let results = res.get("results").and_then(|v| v.as_array()).unwrap();
         let first = results.first().unwrap();
-        
+
         let match_text = first.get("match").and_then(|v| v.as_str()).unwrap();
         assert_eq!(match_text, "foobar");
-        
+
         let context_type = first.get("context_type").and_then(|v| v.as_str()).unwrap();
         assert_eq!(context_type, "module");
     }

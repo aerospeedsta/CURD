@@ -1,5 +1,5 @@
-use curd_core::{CurdConfig, EngineContext, Plan, dispatch_tool};
 use curd_core::plan::{PlanNode, ToolOperation};
+use curd_core::{CurdConfig, EngineContext, Plan, dispatch_tool};
 use serde_json::json;
 use std::fs;
 use std::time::Duration;
@@ -81,7 +81,10 @@ async fn configurable_collaboration_and_variant_flow_works() {
     )
     .await;
     assert_eq!(create_variant["status"], "ok");
-    let variant_id = create_variant["variant"]["id"].as_str().unwrap().to_string();
+    let variant_id = create_variant["variant"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let simulate = dispatch_tool(
         "simulate_plan_variant",
@@ -356,7 +359,11 @@ async fn retention_prunes_old_plan_sets_and_variant_workspaces() {
     let mut config = CurdConfig::default();
     config.variants.retain_plan_sets = 1;
     config.variants.retain_variant_workspaces = 1;
-    fs::write(root.join(".curd/settings.toml"), toml::to_string(&config).unwrap()).unwrap();
+    fs::write(
+        root.join(".curd/settings.toml"),
+        toml::to_string(&config).unwrap(),
+    )
+    .unwrap();
 
     let ctx = EngineContext::new(root.to_str().unwrap());
     let bind = dispatch_tool(
@@ -398,8 +405,17 @@ async fn retention_prunes_old_plan_sets_and_variant_workspaces() {
     assert_eq!(second_set["status"], "ok");
     let second_set_id = second_set["plan_set"]["id"].as_str().unwrap().to_string();
     assert_ne!(first_set_id, second_set_id);
-    assert!(!root.join(".curd/plansets").join(format!("{first_set_id}.json")).exists());
-    assert!(root.join(".curd/plansets").join(format!("{second_set_id}.json")).exists());
+    assert!(
+        !root
+            .join(".curd/plansets")
+            .join(format!("{first_set_id}.json"))
+            .exists()
+    );
+    assert!(
+        root.join(".curd/plansets")
+            .join(format!("{second_set_id}.json"))
+            .exists()
+    );
 
     let v1 = dispatch_tool(
         "create_plan_variant",
@@ -450,6 +466,19 @@ async fn retention_prunes_old_plan_sets_and_variant_workspaces() {
     .await;
     assert_eq!(s2["status"], "ok", "{s2}");
 
-    assert!(!root.join(".curd/variants").join(&second_set_id).join(&v1_id).join("workspace").exists());
-    assert!(root.join(".curd/variants").join(&second_set_id).join(&v2_id).join("workspace").exists());
+    assert!(
+        !root
+            .join(".curd/variants")
+            .join(&second_set_id)
+            .join(&v1_id)
+            .join("workspace")
+            .exists()
+    );
+    assert!(
+        root.join(".curd/variants")
+            .join(&second_set_id)
+            .join(&v2_id)
+            .join("workspace")
+            .exists()
+    );
 }

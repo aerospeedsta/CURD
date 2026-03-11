@@ -146,10 +146,10 @@ release-freebsd-x86:
 DIST_DIR := $(CURDIR)/dist
 ARCHS := x86_64 aarch64
 
-.PHONY: dist dist-cli dist-windows dist-python dist-node dist-prep dist-arch dist-oci dist-deb dist-rpm dist-freebsd dist-nix dist-win-installer map test-dist
+.PHONY: dist dist-cli dist-windows dist-python dist-node dist-package-managers dist-prep dist-arch dist-oci dist-deb dist-rpm dist-freebsd dist-nix dist-win-installer map test-dist
 
 dist: dist-prep
-	$(MAKE) -j2 dist-cli dist-windows dist-win-installer dist-python dist-node dist-arch dist-oci dist-deb dist-rpm dist-freebsd dist-nix
+	$(MAKE) -j2 dist-cli dist-windows dist-win-installer dist-python dist-node dist-arch dist-oci dist-deb dist-rpm dist-freebsd dist-nix dist-package-managers
 	@$(MAKE) map
 
 # Windows Interactive Installer (.exe)
@@ -176,7 +176,7 @@ dist-nix:
   in { \
     packages.$${system}.default = pkgs.rustPlatform.buildRustPackage { \
       pname = "curd"; \
-      version = "0.7.0-beta"; \
+      version = "0.7.1-beta"; \
       src = ./.; \
       cargoLock.lockFile = ./Cargo.lock; \
     }; \
@@ -358,6 +358,10 @@ dist-node:
 	@mkdir -p $(DIST_DIR)/node
 	@cp curd-node/*.node $(DIST_DIR)/node/
 	cd curd-node && npm pack --pack-destination $(DIST_DIR)/node
+
+dist-package-managers:
+	@echo "Generating package manager manifests and install snippets..."
+	@python3 scripts/generate_package_manager_assets.py --output $(DIST_DIR)/package-managers --dist-dir $(DIST_DIR)
 
 # 4c regression diagnostics
 doctor:

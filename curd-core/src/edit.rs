@@ -49,47 +49,66 @@ impl EditEngine {
             let current_hash = storage.compute_state_hash()?;
 
             if current_hash != expected_hash {
-                anyhow::bail!("STALE_STATE_CONFLICT: The workspace state has changed. Expected hash {}, but found {}. Please pull the latest graph.", expected_hash, current_hash);
+                anyhow::bail!(
+                    "STALE_STATE_CONFLICT: The workspace state has changed. Expected hash {}, but found {}. Please pull the latest graph.",
+                    expected_hash,
+                    current_hash
+                );
             }
         }
 
         // Safety: If no cwd_override provided, check if we are modifying the real workspace root.
         // If another session has a lock, we must refuse direct edits.
         if cwd_override.is_none() && crate::workspace::is_workspace_locked(&self.workspace_root) {
-            anyhow::bail!("Cannot edit '{}': Workspace is locked by another active session. Open a CURD session or close the existing one.", uri);
+            anyhow::bail!(
+                "Cannot edit '{}': Workspace is locked by another active session. Open a CURD session or close the existing one.",
+                uri
+            );
         }
 
-        if uri.starts_with('@') && let Some(idx) = uri.find("::") {
-                let alias = &uri[..idx];
-                actual_uri = &uri[idx + 2..];
-                
-                let registry = crate::context_link::ContextRegistry::load(&self.workspace_root);
-                if let Some(link) = registry.contexts.get(alias) {
-                    if link.mode != crate::context_link::ContextMode::Write {
-                        return Err(anyhow::anyhow!("Context '{}' is linked in {:?} mode. Writes are prohibited.", alias, link.mode));
-                    }
-                    target_root = link.path.clone();
-                } else {
-                    return Err(anyhow::anyhow!("Context alias '{}' not found in registry.", alias));
+        if uri.starts_with('@')
+            && let Some(idx) = uri.find("::")
+        {
+            let alias = &uri[..idx];
+            actual_uri = &uri[idx + 2..];
+
+            let registry = crate::context_link::ContextRegistry::load(&self.workspace_root);
+            if let Some(link) = registry.contexts.get(alias) {
+                if link.mode != crate::context_link::ContextMode::Write {
+                    return Err(anyhow::anyhow!(
+                        "Context '{}' is linked in {:?} mode. Writes are prohibited.",
+                        alias,
+                        link.mode
+                    ));
                 }
+                target_root = link.path.clone();
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Context alias '{}' not found in registry.",
+                    alias
+                ));
             }
+        }
 
         let parts: Vec<&str> = actual_uri.split("::").collect();
         let file_part = parts.first().copied().unwrap_or("");
-        
+
         // Support nested symbols: Class::method
         let (symbol_name, line_part) = if parts.len() > 3 {
-             // file::Class::method::line
-             (format!("{}::{}", parts[1], parts[2]), parts.get(3).copied().and_then(|l| l.parse::<usize>().ok()))
+            // file::Class::method::line
+            (
+                format!("{}::{}", parts[1], parts[2]),
+                parts.get(3).copied().and_then(|l| l.parse::<usize>().ok()),
+            )
         } else if parts.len() == 3 {
-             // file::Class::method OR file::symbol::line
-             if let Ok(line) = parts[2].parse::<usize>() {
-                 (parts[1].to_string(), Some(line))
-             } else {
-                 (format!("{}::{}", parts[1], parts[2]), None)
-             }
+            // file::Class::method OR file::symbol::line
+            if let Ok(line) = parts[2].parse::<usize>() {
+                (parts[1].to_string(), Some(line))
+            } else {
+                (format!("{}::{}", parts[1], parts[2]), None)
+            }
         } else {
-             (parts.get(1).copied().unwrap_or("").to_string(), None)
+            (parts.get(1).copied().unwrap_or("").to_string(), None)
         };
 
         let file_path = crate::workspace::validate_sandboxed_path(&target_root, file_part)?;
@@ -173,16 +192,19 @@ impl EditEngine {
 
         let source_code = std::fs::read_to_string(file_path).context("read source")?;
         let curd_dir = crate::workspace::get_curd_dir(&self.workspace_root);
-        let mut manager = ParserManager::new(curd_dir.join("grammars"))
-            .context("ParserManager::new")?;
+        let mut manager =
+            ParserManager::new(curd_dir.join("grammars")).context("ParserManager::new")?;
         let search = SearchEngine::new(&self.workspace_root);
 
         let symbols = search
             .parse_file(file_path, &mut manager)
             .context("parse_file")?;
-            
-        let mut matches: Vec<_> = symbols.into_iter().filter(|s| s.name == symbol_name).collect();
-        
+
+        let mut matches: Vec<_> = symbols
+            .into_iter()
+            .filter(|s| s.name == symbol_name)
+            .collect();
+
         // If no direct match, try matching by suffix (e.g., 'to_dict' matches 'Task::to_dict')
         if matches.is_empty() && !symbol_name.contains("::") {
             matches = search
@@ -199,10 +221,22 @@ impl EditEngine {
                 let mut options = Vec::new();
                 for m in matches {
                     let text = &source_code[m.start_byte..m.end_byte.min(source_code.len())];
-                    let sig = text.lines().next().unwrap_or("").trim_end_matches(" {").trim_end_matches('{').trim().to_string();
+                    let sig = text
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches(" {")
+                        .trim_end_matches('{')
+                        .trim()
+                        .to_string();
                     options.push(format!("{}::{}: {}", m.id, m.start_line, sig));
                 }
-                return Err(anyhow::anyhow!("Symbol '{}' is overloaded. Please disambiguate by appending the line number to the URI (e.g., '{}::LINE_NUMBER').\nAvailable options:\n{}", symbol_name, uri, options.join("\n")));
+                return Err(anyhow::anyhow!(
+                    "Symbol '{}' is overloaded. Please disambiguate by appending the line number to the URI (e.g., '{}::LINE_NUMBER').\nAvailable options:\n{}",
+                    symbol_name,
+                    uri,
+                    options.join("\n")
+                ));
             }
         } else {
             matches.into_iter().next()
@@ -223,10 +257,12 @@ impl EditEngine {
             // leaving ghost code or double newlines.
             let start = t.start_byte.min(source_code.len());
             let mut end = t.end_byte.min(source_code.len()).max(start);
-            
+
             // Expand end to include trailing whitespace and exactly one newline if present
             let bytes = source_code.as_bytes();
-            while end < bytes.len() && (bytes[end] == b' ' || bytes[end] == b'\t' || bytes[end] == b'\r') {
+            while end < bytes.len()
+                && (bytes[end] == b' ' || bytes[end] == b'\t' || bytes[end] == b'\r')
+            {
                 end += 1;
             }
             if end < bytes.len() && bytes[end] == b'\n' {
@@ -238,7 +274,7 @@ impl EditEngine {
             updated.push_str(new_code);
             // Ensure the new code ends with a newline if the old range did and the new one doesn't
             if !new_code.ends_with('\n') {
-                 updated.push('\n');
+                updated.push('\n');
             }
             updated.push_str(&source_code[end..]);
             final_code = updated;
@@ -282,7 +318,7 @@ impl EditEngine {
         let target_nodes = manager.count_nodes(language_name, target_snippet)?;
 
         let config = crate::config::CurdConfig::load_from_workspace(&self.workspace_root);
-        
+
         let limit = if total_nodes <= config.edit.small_file_nodes {
             config.edit.churn_small_limit
         } else if total_nodes >= config.edit.massive_file_nodes {
@@ -304,7 +340,7 @@ impl EditEngine {
             } else {
                 "Standard file"
             };
-            
+
             anyhow::bail!(
                 "AST Churn Limit Exceeded: Modification replaces {:.1}% of the file's AST nodes, which exceeds the current limit of {:.1}% for a {} ({} nodes). Break this into smaller semantic edits.",
                 churn * 100.0,
@@ -316,7 +352,13 @@ impl EditEngine {
         Ok(())
     }
 
-    fn delete_symbol(&self, file_path: &Path, symbol_name: &str, line_part: Option<usize>, uri: &str) -> Result<Value> {
+    fn delete_symbol(
+        &self,
+        file_path: &Path,
+        symbol_name: &str,
+        line_part: Option<usize>,
+        uri: &str,
+    ) -> Result<Value> {
         if !file_path.exists() {
             return Err(anyhow::anyhow!("File not found"));
         }
@@ -326,7 +368,10 @@ impl EditEngine {
         let search = SearchEngine::new(&self.workspace_root);
 
         let symbols = search.parse_file(file_path, &mut manager)?;
-        let matches: Vec<_> = symbols.into_iter().filter(|s| s.name == symbol_name).collect();
+        let matches: Vec<_> = symbols
+            .into_iter()
+            .filter(|s| s.name == symbol_name)
+            .collect();
         let target = if matches.len() > 1 {
             if let Some(target_line) = line_part {
                 matches.into_iter().find(|s| s.start_line == target_line)
@@ -334,10 +379,22 @@ impl EditEngine {
                 let mut options = Vec::new();
                 for m in matches {
                     let text = &source_code[m.start_byte..m.end_byte.min(source_code.len())];
-                    let sig = text.lines().next().unwrap_or("").trim_end_matches(" {").trim_end_matches('{').trim().to_string();
+                    let sig = text
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches(" {")
+                        .trim_end_matches('{')
+                        .trim()
+                        .to_string();
                     options.push(format!("{}::{}: {}", m.id, m.start_line, sig));
                 }
-                return Err(anyhow::anyhow!("Symbol '{}' is overloaded. Please disambiguate by appending the line number to the URI (e.g., '{}::LINE_NUMBER').\nAvailable options:\n{}", symbol_name, uri, options.join("\n")));
+                return Err(anyhow::anyhow!(
+                    "Symbol '{}' is overloaded. Please disambiguate by appending the line number to the URI (e.g., '{}::LINE_NUMBER').\nAvailable options:\n{}",
+                    symbol_name,
+                    uri,
+                    options.join("\n")
+                ));
             }
         } else {
             matches.into_iter().next()
@@ -387,7 +444,11 @@ fn b() {
         std::fs::write(root.join("test.rs"), code).unwrap();
 
         // 2. Create CURD.toml with a strict limit
-        std::fs::write(root.join("CURD.toml"), "[edit]\nchurn_limit = 0.1\nsmall_file_nodes = 0\n").unwrap();
+        std::fs::write(
+            root.join("CURD.toml"),
+            "[edit]\nchurn_limit = 0.1\nsmall_file_nodes = 0\n",
+        )
+        .unwrap();
 
         let engine = EditEngine::new(root);
 
@@ -415,7 +476,13 @@ fn b() {
 
         let engine = EditEngine::new(root);
         // Replace one small function out of 20 (5% churn) - should be allowed by 50% limit
-        let result = engine.edit("test.rs::a::1", "fn a() { println!(); }", "upsert", None, None);
+        let result = engine.edit(
+            "test.rs::a::1",
+            "fn a() { println!(); }",
+            "upsert",
+            None,
+            None,
+        );
         if let Err(ref e) = result {
             println!(
                 "test_churn_limit_allows_small_change FAILED. Error: {:?}",

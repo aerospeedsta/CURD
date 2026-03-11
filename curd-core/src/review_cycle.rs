@@ -149,7 +149,7 @@ impl ReviewCycleEngine {
             };
             s.clone()
         };
-        
+
         let changes = self.compute_raw_changes(&session)?;
         let mut findings: Vec<Finding> = Vec::new();
         let mut changed_files: Vec<String> = Vec::new();
@@ -245,7 +245,8 @@ impl ReviewCycleEngine {
 
         // Join with tool call history for provenance
         let history = crate::HistoryEngine::new(&self.workspace_root);
-        let provenance: Vec<_> = history.get_history(1000)
+        let provenance: Vec<_> = history
+            .get_history(1000)
             .into_iter()
             .filter(|e| e.transaction_id == Some(session.id))
             .map(|e| {
@@ -274,7 +275,11 @@ impl ReviewCycleEngine {
         }))
     }
 
-    fn diff_graphs(&self, old: &crate::graph::DependencyGraph, new: &crate::graph::DependencyGraph) -> Value {
+    fn diff_graphs(
+        &self,
+        old: &crate::graph::DependencyGraph,
+        new: &crate::graph::DependencyGraph,
+    ) -> Value {
         let mut added_nodes = Vec::new();
         let mut removed_nodes = Vec::new();
         let mut added_edges = Vec::new();
@@ -405,7 +410,9 @@ impl ReviewCycleEngine {
         Ok(())
     }
     fn head_id_str(&self) -> Option<String> {
-        fs::read_to_string(self.head_path()).ok().map(|s| s.trim().to_string())
+        fs::read_to_string(self.head_path())
+            .ok()
+            .map(|s| s.trim().to_string())
     }
     fn save_session(&self, state: &ReviewCycleState) -> Result<()> {
         let path = self.session_path(state.id);

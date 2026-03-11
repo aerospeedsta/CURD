@@ -41,6 +41,10 @@ pub struct CurdConfig {
     #[serde(default)]
     pub budget: BudgetConfig,
     #[serde(default)]
+    pub runtime: RuntimeConfig,
+    #[serde(default)]
+    pub profiles: HashMap<String, AgentProfileConfig>,
+    #[serde(default)]
     pub collaboration: CollaborationConfig,
     #[serde(default)]
     pub variants: VariantsConfig,
@@ -52,6 +56,36 @@ pub struct CurdConfig {
     pub policy: crate::policy::PolicyConfig,
     #[serde(skip)]
     pub source_path: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RuntimeConfig {
+    #[serde(default = "default_runtime_ceiling")]
+    pub ceiling: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AgentProfileConfig {
+    #[serde(default = "default_profile_role")]
+    pub role: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default = "default_true")]
+    pub session_required_for_change: bool,
+    #[serde(default = "default_profile_promotion")]
+    pub promotion: String,
+    #[serde(default)]
+    pub allowed_tasks: Vec<String>,
+    #[serde(default)]
+    pub allowed_groups: Vec<String>,
+    #[serde(default)]
+    pub denied_groups: Vec<String>,
+    #[serde(default)]
+    pub require_approval_for: Vec<String>,
+    #[serde(default = "default_disclosure_default")]
+    pub disclosure_default: String,
+    #[serde(default)]
+    pub hook_permissions: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -156,47 +190,177 @@ pub struct PluginConfig {
     pub external_mcp_restart_backoff_ms: u64,
 }
 
-fn default_collaboration_enabled() -> bool { true }
-fn default_workspace_require_open_for_all_tools() -> bool { false }
-fn default_require_bound_participants() -> bool { true }
-fn default_require_session_token_for_agents() -> bool { true }
-fn default_bootstrap_owner_human_only() -> bool { true }
-fn default_human_override_ttl_secs() -> u64 { 300 }
-fn default_default_human_role() -> String { "owner".to_string() }
-fn default_default_agent_role() -> String { "planner".to_string() }
-fn default_editor_can_promote() -> bool { false }
-fn default_session_challenge_ttl_secs() -> u64 { 120 }
-fn default_require_authorized_agents_file() -> bool { true }
-fn default_variants_enabled() -> bool { true }
-fn default_variant_backend() -> String { "shadow".to_string() }
-fn default_allow_worktree_backend() -> bool { false }
-fn default_variant_materialization() -> String { "workspace_copy".to_string() }
-fn default_keep_workspaces() -> bool { true }
-fn default_max_compare_files() -> usize { 200 }
-fn default_max_plan_bytes() -> usize { 512 * 1024 }
-fn default_max_materialized_bytes() -> u64 { 64 * 1024 * 1024 }
-fn default_max_variants_per_plan_set() -> usize { 12 }
-fn default_max_plan_sets() -> usize { 64 }
-fn default_retain_plan_sets() -> usize { 32 }
-fn default_retain_variant_workspaces() -> usize { 24 }
-fn default_require_review_for_promotion() -> bool { false }
-fn default_provenance_enabled() -> bool { true }
-fn default_provenance_hash_chain() -> bool { true }
-fn default_provenance_checkpoint_every() -> usize { 50 }
-fn default_provenance_local_only() -> bool { true }
-fn default_plugins_enabled() -> bool { true }
-fn default_plugin_install_root() -> String { ".curd/plugins".to_string() }
-fn default_plugin_trusted_keys_file() -> String { ".curd/plugins/trusted_keys.json".to_string() }
-fn default_plugin_require_signatures() -> bool { true }
-fn default_plugin_allow_unsigned_dev_plugins() -> bool { false }
-fn default_plugin_allow_native_language_dylibs() -> bool { true }
-fn default_plugin_tool_runtime() -> String { "sidecar_stdio".to_string() }
-fn default_plugin_allow_wasm_language_fallback() -> bool { false }
-fn default_plugin_allow_external_mcp_tool_groups() -> bool { true }
-fn default_plugin_external_mcp_timeout_secs() -> u64 { 15 }
-fn default_plugin_external_mcp_max_output_bytes() -> usize { 512 * 1024 }
-fn default_plugin_external_mcp_max_restarts() -> u32 { 2 }
-fn default_plugin_external_mcp_restart_backoff_ms() -> u64 { 250 }
+fn default_collaboration_enabled() -> bool {
+    true
+}
+fn default_workspace_require_open_for_all_tools() -> bool {
+    false
+}
+fn default_require_bound_participants() -> bool {
+    true
+}
+fn default_require_session_token_for_agents() -> bool {
+    true
+}
+fn default_bootstrap_owner_human_only() -> bool {
+    true
+}
+fn default_human_override_ttl_secs() -> u64 {
+    300
+}
+fn default_default_human_role() -> String {
+    "owner".to_string()
+}
+fn default_default_agent_role() -> String {
+    "planner".to_string()
+}
+fn default_editor_can_promote() -> bool {
+    false
+}
+fn default_session_challenge_ttl_secs() -> u64 {
+    120
+}
+fn default_require_authorized_agents_file() -> bool {
+    true
+}
+fn default_variants_enabled() -> bool {
+    true
+}
+fn default_variant_backend() -> String {
+    "shadow".to_string()
+}
+fn default_allow_worktree_backend() -> bool {
+    false
+}
+fn default_variant_materialization() -> String {
+    "workspace_copy".to_string()
+}
+fn default_keep_workspaces() -> bool {
+    true
+}
+fn default_max_compare_files() -> usize {
+    200
+}
+fn default_max_plan_bytes() -> usize {
+    512 * 1024
+}
+fn default_max_materialized_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+fn default_max_variants_per_plan_set() -> usize {
+    12
+}
+fn default_max_plan_sets() -> usize {
+    64
+}
+fn default_retain_plan_sets() -> usize {
+    32
+}
+fn default_retain_variant_workspaces() -> usize {
+    24
+}
+fn default_require_review_for_promotion() -> bool {
+    false
+}
+fn default_provenance_enabled() -> bool {
+    true
+}
+fn default_provenance_hash_chain() -> bool {
+    true
+}
+fn default_provenance_checkpoint_every() -> usize {
+    50
+}
+fn default_provenance_local_only() -> bool {
+    true
+}
+fn default_plugins_enabled() -> bool {
+    true
+}
+fn default_true() -> bool {
+    true
+}
+fn default_runtime_ceiling() -> String {
+    "full".to_string()
+}
+fn default_profile_role() -> String {
+    "human_core".to_string()
+}
+fn default_profile_promotion() -> String {
+    "user_only".to_string()
+}
+fn default_disclosure_default() -> String {
+    "l1".to_string()
+}
+fn default_plugin_install_root() -> String {
+    ".curd/plugins".to_string()
+}
+fn default_plugin_trusted_keys_file() -> String {
+    ".curd/plugins/trusted_keys.json".to_string()
+}
+fn default_plugin_require_signatures() -> bool {
+    true
+}
+fn default_plugin_allow_unsigned_dev_plugins() -> bool {
+    false
+}
+fn default_plugin_allow_native_language_dylibs() -> bool {
+    true
+}
+fn default_plugin_tool_runtime() -> String {
+    "sidecar_stdio".to_string()
+}
+fn default_plugin_allow_wasm_language_fallback() -> bool {
+    false
+}
+fn default_plugin_allow_external_mcp_tool_groups() -> bool {
+    true
+}
+fn default_plugin_external_mcp_timeout_secs() -> u64 {
+    15
+}
+fn default_plugin_external_mcp_max_output_bytes() -> usize {
+    512 * 1024
+}
+fn default_plugin_external_mcp_max_restarts() -> u32 {
+    2
+}
+fn default_plugin_external_mcp_restart_backoff_ms() -> u64 {
+    250
+}
+
+fn is_valid_capability_atom(capability: &str) -> bool {
+    matches!(
+        capability,
+        "lookup"
+            | "traverse"
+            | "read"
+            | "plugin.manage"
+            | "plugin.trust"
+            | "change.prepare"
+            | "change.apply"
+            | "change.revert"
+            | "session.begin"
+            | "session.verify"
+            | "session.commit"
+            | "session.rollback"
+            | "exec.task"
+            | "exec.command"
+            | "plan.create"
+            | "plan.execute"
+            | "plan.parallel"
+            | "review.run"
+            | "hook.run"
+            | "context"
+    )
+}
+
+fn is_valid_profile_promotion(mode: &str) -> bool {
+    matches!(
+        mode,
+        "forbidden" | "user_only" | "approval_required" | "policy_gated"
+    )
+}
 
 impl Default for CollaborationConfig {
     fn default() -> Self {
@@ -211,6 +375,14 @@ impl Default for CollaborationConfig {
             editor_can_promote: default_editor_can_promote(),
             session_challenge_ttl_secs: default_session_challenge_ttl_secs(),
             require_authorized_agents_file: default_require_authorized_agents_file(),
+        }
+    }
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            ceiling: default_runtime_ceiling(),
         }
     }
 }
@@ -286,13 +458,27 @@ pub struct EditConfig {
     pub enforce_transactional: bool,
 }
 
-fn default_churn_limit() -> f64 { 0.3 }
-fn default_churn_small_limit() -> f64 { 1.0 }
-fn default_churn_large_limit() -> f64 { 0.15 }
-fn default_churn_massive_limit() -> f64 { 0.05 }
-fn default_small_file_nodes() -> usize { 100 }
-fn default_large_file_nodes() -> usize { 500 }
-fn default_massive_file_nodes() -> usize { 2000 }
+fn default_churn_limit() -> f64 {
+    0.3
+}
+fn default_churn_small_limit() -> f64 {
+    1.0
+}
+fn default_churn_large_limit() -> f64 {
+    0.15
+}
+fn default_churn_massive_limit() -> f64 {
+    0.05
+}
+fn default_small_file_nodes() -> usize {
+    100
+}
+fn default_large_file_nodes() -> usize {
+    500
+}
+fn default_massive_file_nodes() -> usize {
+    2000
+}
 
 fn default_enforce_transactional() -> bool {
     true
@@ -366,6 +552,37 @@ impl CurdConfig {
 
     pub fn validate(&self) -> Vec<ConfigFinding> {
         let mut out = Vec::new();
+        if !matches!(self.runtime.ceiling.as_str(), "full" | "lite") {
+            out.push(ConfigFinding {
+                severity: "high".to_string(),
+                code: "config_runtime_ceiling_invalid".to_string(),
+                message: format!("Unsupported [runtime].ceiling='{}'", self.runtime.ceiling),
+            });
+        }
+        for (name, profile) in &self.profiles {
+            for capability in &profile.capabilities {
+                if !is_valid_capability_atom(capability) {
+                    out.push(ConfigFinding {
+                        severity: "high".to_string(),
+                        code: "config_profile_capability_invalid".to_string(),
+                        message: format!(
+                            "Unsupported capability '{}' in [profiles.{}]",
+                            capability, name
+                        ),
+                    });
+                }
+            }
+            if !is_valid_profile_promotion(&profile.promotion) {
+                out.push(ConfigFinding {
+                    severity: "high".to_string(),
+                    code: "config_profile_promotion_invalid".to_string(),
+                    message: format!(
+                        "Unsupported promotion mode '{}' in [profiles.{}]",
+                        profile.promotion, name
+                    ),
+                });
+            }
+        }
         if let Some(mode) = self.index.mode.as_deref()
             && !matches!(mode, "full" | "fast" | "lazy" | "scoped")
         {
@@ -570,7 +787,10 @@ impl CurdConfig {
                 ),
             });
         }
-        if !matches!(self.variants.materialization.as_str(), "workspace_copy" | "shadow") {
+        if !matches!(
+            self.variants.materialization.as_str(),
+            "workspace_copy" | "shadow"
+        ) {
             out.push(ConfigFinding {
                 severity: "medium".to_string(),
                 code: "config_variants_materialization_invalid".to_string(),
@@ -589,7 +809,10 @@ impl CurdConfig {
             out.push(ConfigFinding {
                 severity: "high".to_string(),
                 code: "config_plugins_install_root_invalid".to_string(),
-                message: format!("Unsafe [plugins].install_root='{}'", self.plugins.install_root),
+                message: format!(
+                    "Unsafe [plugins].install_root='{}'",
+                    self.plugins.install_root
+                ),
             });
         }
         let trust_file = self.plugins.trusted_keys_file.trim();
@@ -663,11 +886,7 @@ pub fn check_workspace_config(root: &Path) -> Result<(), Vec<ConfigFinding>> {
         .filter(|f| f.severity.eq_ignore_ascii_case("high"))
         .cloned()
         .collect();
-    if highs.is_empty() {
-        Ok(())
-    } else {
-        Err(highs)
-    }
+    if highs.is_empty() { Ok(()) } else { Err(highs) }
 }
 
 pub fn validate_workspace_config(root: &Path) -> anyhow::Result<()> {

@@ -1,6 +1,10 @@
-use crate::{CurdConfig, ParserManager, Symbol, SymbolKind, scan_workspace, storage::Storage, symbols::SymbolRole};
+use crate::{
+    CurdConfig, ParserManager, Symbol, SymbolKind, scan_workspace, storage::Storage,
+    symbols::SymbolRole,
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,8 +13,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tree_sitter::{Parser, Query, StreamingIterator};
-use sha2::Digest;
-use rusqlite::params;
 
 use crate::plan::SystemEvent;
 use rayon::prelude::*;
@@ -138,7 +140,10 @@ impl SearchEngine {
     }
 
     pub fn invalidate_index(&self) {
-        let cfg = self.config_override.clone().unwrap_or_else(|| CurdConfig::load_from_workspace(&self.workspace_root));
+        let cfg = self
+            .config_override
+            .clone()
+            .unwrap_or_else(|| CurdConfig::load_from_workspace(&self.workspace_root));
         let storage = Storage::open(&self.workspace_root, &cfg).ok();
         if let Some(s) = storage {
             let _ = s.conn.execute("DELETE FROM files", []);
@@ -150,24 +155,35 @@ impl SearchEngine {
     pub fn search(&self, query_str: &str, kind_filter: Option<SymbolKind>) -> Result<Vec<Symbol>> {
         let mut target_alias = None;
         let mut actual_query = query_str;
-        
+
         if query_str.starts_with('@')
-            && let Some(idx) = query_str.find("::") {
-                target_alias = Some(&query_str[..idx]);
-                actual_query = &query_str[idx + 2..];
-            }
+            && let Some(idx) = query_str.find("::")
+        {
+            target_alias = Some(&query_str[..idx]);
+            actual_query = &query_str[idx + 2..];
+        }
 
         let mut all_symbols = Vec::new();
         let registry = crate::context_link::ContextRegistry::load(&self.workspace_root);
 
         if target_alias.is_none() || target_alias == Some("@local") {
-            let mut local_syms = self.search_workspace(actual_query, kind_filter.clone(), &self.workspace_root, None)?;
+            let mut local_syms = self.search_workspace(
+                actual_query,
+                kind_filter.clone(),
+                &self.workspace_root,
+                None,
+            )?;
             all_symbols.append(&mut local_syms);
         }
 
         for (alias, link) in &registry.contexts {
             if target_alias.is_none() || target_alias == Some(alias) {
-                let mut ext_syms = self.search_workspace(actual_query, kind_filter.clone(), &link.path, Some(alias))?;
+                let mut ext_syms = self.search_workspace(
+                    actual_query,
+                    kind_filter.clone(),
+                    &link.path,
+                    Some(alias),
+                )?;
                 all_symbols.append(&mut ext_syms);
             }
         }
@@ -175,12 +191,22 @@ impl SearchEngine {
         Ok(all_symbols)
     }
 
-    fn search_workspace(&self, query_str: &str, kind_filter: Option<SymbolKind>, root: &Path, prefix: Option<&str>) -> Result<Vec<Symbol>> {
-        let cfg = self.config_override.clone().unwrap_or_else(|| CurdConfig::load_from_workspace(root));
+    fn search_workspace(
+        &self,
+        query_str: &str,
+        kind_filter: Option<SymbolKind>,
+        root: &Path,
+        prefix: Option<&str>,
+    ) -> Result<Vec<Symbol>> {
+        let cfg = self
+            .config_override
+            .clone()
+            .unwrap_or_else(|| CurdConfig::load_from_workspace(root));
         let mode = index_mode(&cfg);
 
         if mode == "lazy" {
-            let mut syms = self.search_cached_only(&query_str.to_lowercase(), kind_filter.clone(), &cfg);
+            let mut syms =
+                self.search_cached_only(&query_str.to_lowercase(), kind_filter.clone(), &cfg);
             if let Some(pfx) = prefix {
                 for s in &mut syms {
                     s.id = format!("{}::{}", pfx, s.id);
@@ -193,21 +219,28 @@ impl SearchEngine {
                 return Ok(syms);
             }
         }
-        
+
         let mut manager = ParserManager::new_with_backend(
             root.join(".curd/grammars"),
             parser_backend_name(&cfg),
         )?;
-        
-        let query_hint = if mode == "fast" { Some(query_str) } else { None };
-        
-        let se = if prefix.is_some() { SearchEngine::new(root) } else { self.clone_for_local() };
-        // load_or_build_index now only handles ensuring DB is current
-        let _ = se.load_or_build_index(&mut manager, query_hint, &cfg, |_| true)?;
+
+        let query_hint = if mode == "fast" {
+            Some(query_str)
+        } else {
+            None
+        };
+
+        let se = if prefix.is_some() {
+            SearchEngine::new(root)
+        } else {
+            self.clone_for_local()
+        };
+        se.ensure_index_with_manager(&mut manager, &cfg, query_hint)?;
 
         // ALWAYS query from SQLite for search results to be fast
         let mut final_syms = se.search_cached_only(&query_str.to_lowercase(), kind_filter, &cfg);
-        
+
         if let Some(pfx) = prefix {
             for s in &mut final_syms {
                 s.id = format!("{}::{}", pfx, s.id);
@@ -232,6 +265,46 @@ impl SearchEngine {
 
     pub fn last_index_stats(&self) -> Option<IndexBuildStats> {
         self.last_stats.lock().ok().and_then(|g| g.clone())
+    }
+
+    pub fn ensure_index(&self) -> Result<()> {
+        let cfg = self
+            .config_override
+            .clone()
+            .unwrap_or_else(|| CurdConfig::load_from_workspace(&self.workspace_root));
+        self.ensure_index_with_config(&cfg, None)
+    }
+
+    pub fn get_all_symbols(&self) -> Result<Vec<Symbol>> {
+        let cfg = self
+            .config_override
+            .clone()
+            .unwrap_or_else(|| CurdConfig::load_from_workspace(&self.workspace_root));
+        self.ensure_index_with_config(&cfg, None)?;
+        self.get_all_symbols_cached(&cfg)
+    }
+
+    fn ensure_index_with_config(&self, cfg: &CurdConfig, query_hint: Option<&str>) -> Result<()> {
+        let mut manager = ParserManager::new_with_backend(
+            self.workspace_root.join(".curd/grammars"),
+            parser_backend_name(cfg),
+        )?;
+        self.ensure_index_with_manager(&mut manager, cfg, query_hint)
+    }
+
+    fn ensure_index_with_manager(
+        &self,
+        manager: &mut ParserManager,
+        cfg: &CurdConfig,
+        query_hint: Option<&str>,
+    ) -> Result<()> {
+        let _ = self.load_or_build_index(manager, query_hint, cfg, |_| true)?;
+        Ok(())
+    }
+
+    fn get_all_symbols_cached(&self, cfg: &CurdConfig) -> Result<Vec<Symbol>> {
+        let storage = Storage::open(&self.workspace_root, cfg)?;
+        storage.get_all_symbols()
     }
 
     fn parse_chunk_via_worker(
@@ -275,7 +348,10 @@ impl SearchEngine {
     }
 
     pub fn get_symbols_for_file(&self, rel_path: &str) -> Option<Vec<Symbol>> {
-        let cfg = self.config_override.clone().unwrap_or_else(|| CurdConfig::load_from_workspace(&self.workspace_root));
+        let cfg = self
+            .config_override
+            .clone()
+            .unwrap_or_else(|| CurdConfig::load_from_workspace(&self.workspace_root));
         let storage = Storage::open(&self.workspace_root, &cfg).ok()?;
         storage.get_symbols_for_file(rel_path).ok()
     }
@@ -297,7 +373,7 @@ impl SearchEngine {
         let max_file_size = max_file_size(cfg);
         let large_policy = large_file_policy(cfg);
         let execution = index_execution_model(cfg);
-        
+
         if mode == "scoped" {
             let scopes = configured_scopes(cfg);
             if !scopes.is_empty() {
@@ -313,16 +389,16 @@ impl SearchEngine {
             }
         }
         let scan_ms = t_start.elapsed().as_millis() as u64;
-        
+
         let mut storage = Storage::open(&self.workspace_root, cfg)?;
         let total_files = all_files.len();
         let chunk_size = index_chunk_size(cfg);
-        
+
         let processed = Arc::new(AtomicUsize::new(0));
         let cache_hits = AtomicUsize::new(0);
         let cache_misses = AtomicUsize::new(0);
         let query_hint_lower = query_hint.map(|s| s.to_lowercase());
-        
+
         let mut seen_files = std::collections::HashSet::new();
 
         // RAPID DELTA DETECTION: Load ALL metadata in one query
@@ -331,21 +407,24 @@ impl SearchEngine {
         let cache_load_ms = t_cache_load.elapsed().as_millis() as u64;
 
         // PRE-FILTER CACHE HITS using Memory Map
-        let files_to_parse: Vec<PathBuf> = all_files.into_par_iter().filter_map(|file| {
-            let abs_path = fs::canonicalize(&file).unwrap_or(file);
-            let abs_path_str = abs_path.to_string_lossy().to_string();
-            let (mtime_ms, file_size) = file_meta(&abs_path).unwrap_or((0, 0));
+        let files_to_parse: Vec<PathBuf> = all_files
+            .into_par_iter()
+            .filter_map(|file| {
+                let abs_path = fs::canonicalize(&file).unwrap_or(file);
+                let abs_path_str = abs_path.to_string_lossy().to_string();
+                let (mtime_ms, file_size) = file_meta(&abs_path).unwrap_or((0, 0));
 
-            if let Some(meta) = all_meta.get(&abs_path_str) {
-                if meta.0 == mtime_ms && meta.1 == file_size {
-                    cache_hits.fetch_add(1, Ordering::Relaxed);
-                    processed.fetch_add(1, Ordering::Relaxed);
-                    // Hit! Don't parse.
-                    return None;
+                if let Some(meta) = all_meta.get(&abs_path_str) {
+                    if meta.0 == mtime_ms && meta.1 == file_size {
+                        cache_hits.fetch_add(1, Ordering::Relaxed);
+                        processed.fetch_add(1, Ordering::Relaxed);
+                        // Hit! Don't parse.
+                        return None;
+                    }
                 }
-            }
-            Some(abs_path)
-        }).collect();
+                Some(abs_path)
+            })
+            .collect();
 
         let files = files_to_parse;
         let chunk_count = if files.is_empty() {
@@ -370,7 +449,7 @@ impl SearchEngine {
         let native_requested = parser_backend == "native";
         let stall_threshold_ms = index_stall_threshold_ms(cfg);
         let stall_stop = Arc::new(AtomicBool::new(false));
-        
+
         let stall_thread = if let Some(tx) = self.tx_events.clone() {
             let processed_watch = Arc::clone(&processed);
             let stop = Arc::clone(&stall_stop);
@@ -433,7 +512,7 @@ impl SearchEngine {
                 );
                 parse_time_micros
                     .fetch_add(worker_start.elapsed().as_micros() as u64, Ordering::Relaxed);
-                
+
                 if let Some(out) = worker_out {
                     unsupported_lang.fetch_add(out.unsupported_lang, Ordering::Relaxed);
                     skipped_too_large.fetch_add(out.skipped_too_large, Ordering::Relaxed);
@@ -445,7 +524,7 @@ impl SearchEngine {
                     native_files.fetch_add(out.native_files, Ordering::Relaxed);
                     wasm_files.fetch_add(out.wasm_files, Ordering::Relaxed);
                     native_fallbacks.fetch_add(out.native_fallbacks, Ordering::Relaxed);
-                    
+
                     for entry in out.entries {
                         seen_files.insert(entry.rel.clone());
                         all_new_entries.push(entry);
@@ -482,8 +561,12 @@ impl SearchEngine {
                         }
                         "skeleton" => {
                             large_file_skeleton.fetch_add(1, Ordering::Relaxed);
-                            let symbols =
-                                extract_skeleton_symbols(file, &self.workspace_root, &lang_name, None);
+                            let symbols = extract_skeleton_symbols(
+                                file,
+                                &self.workspace_root,
+                                &lang_name,
+                                None,
+                            );
                             return Some((rel, mtime_ms, file_size, symbols));
                         }
                         _ => {
@@ -585,16 +668,15 @@ impl SearchEngine {
         // RAPID INITIAL INDEXING: Use a single transaction for all database updates
         let t_serialize = Instant::now();
         if !all_new_entries.is_empty() {
-            if let Err(_e) = storage.commit_indexing_results(&all_new_entries) {
-            }
+            if let Err(_e) = storage.commit_indexing_results(&all_new_entries) {}
         }
-        
+
         let total_ms = t_start.elapsed().as_millis() as u64;
         stall_stop.store(true, Ordering::Relaxed);
         if let Some(handle) = stall_thread {
             let _ = handle.join();
         }
-        
+
         let parse_fail_sample_list = {
             let mut rows: Vec<(String, usize)> = parse_fail_samples
                 .lock()
@@ -602,14 +684,21 @@ impl SearchEngine {
                 .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
                 .unwrap_or_default();
             rows.sort_by(|a, b| b.1.cmp(&a.1));
-            rows.into_iter().take(5).map(|(k, v)| format!("{}={}", k, v)).collect()
+            rows.into_iter()
+                .take(5)
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect()
         };
 
         let stats = IndexBuildStats {
             index_mode: mode,
             parser_backend: parser_backend.clone(),
             parser_backend_effective: parser_backend,
-            compute_backend_effective: self.compute_backend.get().and_then(|b| b.as_ref().map(|b| b.backend_type().to_string())).unwrap_or_else(|| "cpu_fallback".to_string()),
+            compute_backend_effective: self
+                .compute_backend
+                .get()
+                .and_then(|b| b.as_ref().map(|b| b.backend_type().to_string()))
+                .unwrap_or_else(|| "cpu_fallback".to_string()),
             execution_model: execution.clone(),
             max_file_size,
             large_file_policy: large_policy.clone(),
@@ -660,7 +749,7 @@ impl SearchEngine {
 
     fn search_cached_only(
         &self,
-        query_lower: &str,
+        query: &str,
         kind_filter: Option<SymbolKind>,
         cfg: &CurdConfig,
     ) -> Vec<Symbol> {
@@ -668,78 +757,24 @@ impl SearchEngine {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        
-        let mut stmt = match storage.conn.prepare(
-            "SELECT id, name, kind, role, link_name, filepath, start_byte, end_byte, start_line, end_line, semantic_hash, fault_id 
-             FROM symbols WHERE name LIKE ?1"
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        
-        let query_param = format!("%{}%", query_lower);
-        let rows = stmt.query_map(params![query_param], |row| {
-            let id: String = row.get(0)?;
-            let name: String = row.get(1)?;
-            let kind_str: String = row.get(2)?;
-            let role_str: String = row.get(3)?;
-            let link_name: Option<String> = row.get(4)?;
-            let filepath_str: String = row.get(5)?;
-            let start_byte: i64 = row.get(6)?;
-            let end_byte: i64 = row.get(7)?;
-            let start_line: i64 = row.get(8)?;
-            let end_line: i64 = row.get(9)?;
-            let semantic_hash: Option<String> = row.get(10)?;
-            let fault_id: Option<String> = row.get(11)?;
 
-            let kind = match kind_str.as_str() {
-                "function" => SymbolKind::Function,
-                "class" => SymbolKind::Class,
-                "struct" => SymbolKind::Struct,
-                "interface" => SymbolKind::Interface,
-                "module" => SymbolKind::Module,
-                "variable" => SymbolKind::Variable,
-                "method" => SymbolKind::Method,
-                _ => SymbolKind::Unknown,
-            };
-            let role = match role_str.as_str() {
-                "stub" => SymbolRole::Stub,
-                "reference" => SymbolRole::Reference,
-                _ => SymbolRole::Definition,
-            };
-            
-            Ok(Symbol {
-                id,
-                name,
-                kind,
-                role,
-                link_name,
-                filepath: PathBuf::from(filepath_str),
-                start_byte: start_byte as usize,
-                end_byte: end_byte as usize,
-                start_line: start_line as usize,
-                end_line: end_line as usize,
-                signature: None,
-                semantic_hash,
-                fault_id,
-            })
-        }).ok();
+        let mut results = storage.search_ranked(query, Some(100)).unwrap_or_default();
 
-        let mut results = Vec::new();
-        if let Some(rows) = rows {
-            for row in rows.flatten() {
-                if let Some(kind) = kind_filter.as_ref() {
-                    if row.kind != *kind { continue; }
-                }
-                results.push(row);
-            }
+        if let Some(kind) = kind_filter {
+            results.retain(|s| s.kind == kind);
         }
+
         results
     }
 
     pub fn parse_file(&self, path: &Path, manager: &mut ParserManager) -> Result<Vec<Symbol>> {
-        let cfg = self.config_override.clone().unwrap_or_else(|| CurdConfig::load_from_workspace(&self.workspace_root));
-        let lang = self.lang_for_path(path, &cfg).ok_or_else(|| anyhow::anyhow!("Unsupported language"))?;
+        let cfg = self
+            .config_override
+            .clone()
+            .unwrap_or_else(|| CurdConfig::load_from_workspace(&self.workspace_root));
+        let lang = self
+            .lang_for_path(path, &cfg)
+            .ok_or_else(|| anyhow::anyhow!("Unsupported language"))?;
         let mut ctx = ThreadParseContext {
             manager: manager.clone(),
             parsers: HashMap::new(),
@@ -749,7 +784,11 @@ impl SearchEngine {
     }
 
     fn lang_for_path(&self, path: &Path, _cfg: &CurdConfig) -> Option<String> {
-        let ext = path.extension()?.to_str()?.trim_start_matches('.').to_lowercase();
+        let ext = path
+            .extension()?
+            .to_str()?
+            .trim_start_matches('.')
+            .to_lowercase();
         self.registry.lang_for_extension(&ext)
     }
 
@@ -789,7 +828,12 @@ impl SearchEngine {
                 // Actually, the sidecar can just handle them directly in its 'parse' handler.
             }
 
-            return client.parse(lang_name, rel_path.to_str().unwrap_or(""), &source_code, &q_src);
+            return client.parse(
+                lang_name,
+                rel_path.to_str().unwrap_or(""),
+                &source_code,
+                &q_src,
+            );
         }
         // --- END SIDECAR FLOW ---
 
@@ -798,7 +842,9 @@ impl SearchEngine {
         } else {
             let p = ctx.manager.create_parser(lang_name)?;
             ctx.parsers.insert(lang_name.to_string(), p);
-            ctx.parsers.get_mut(lang_name).unwrap()
+            ctx.parsers
+                .get_mut(lang_name)
+                .ok_or_else(|| anyhow::anyhow!("parser cache missing language '{}'", lang_name))?
         };
 
         let query = if let Some(q) = ctx.queries.get(lang_name) {
@@ -808,9 +854,14 @@ impl SearchEngine {
             if q_src.is_empty() {
                 return Ok(Vec::new());
             }
-            let q = tree_sitter::Query::new(&parser.language().unwrap(), &q_src)?;
+            let language = parser.language().ok_or_else(|| {
+                anyhow::anyhow!("parser language unavailable for '{}'", lang_name)
+            })?;
+            let q = tree_sitter::Query::new(&language, &q_src)?;
             ctx.queries.insert(lang_name.to_string(), q);
-            ctx.queries.get(lang_name).unwrap()
+            ctx.queries
+                .get(lang_name)
+                .ok_or_else(|| anyhow::anyhow!("query cache missing language '{}'", lang_name))?
         };
 
         let tree = parser
@@ -832,10 +883,10 @@ impl SearchEngine {
             let cap = mat.captures[*cap_idx];
             let node = cap.node;
             let capture_name = &query.capture_names()[cap.index as usize];
-            
+
             let mut role = SymbolRole::Definition;
             let link_name = None;
-            
+
             match &capture_name[..] {
                 "stub" => role = SymbolRole::Stub,
                 "def" | "definition" => role = SymbolRole::Definition,
@@ -846,23 +897,36 @@ impl SearchEngine {
 
             // Heuristic for kind based on node kind
             let symbol_kind = match node.kind() {
-                "function_item" | "function_declaration" | "function_definition" | "method_declaration" | "method_definition" | "function" => SymbolKind::Function,
+                "function_item"
+                | "function_declaration"
+                | "function_definition"
+                | "method_declaration"
+                | "method_definition"
+                | "function" => SymbolKind::Function,
                 "class_declaration" | "class_definition" | "class" => SymbolKind::Class,
                 "struct_item" | "struct_specifier" | "struct" => SymbolKind::Struct,
-                "interface_declaration" | "interface" | "type_alias_declaration" => SymbolKind::Interface,
+                "interface_declaration" | "interface" | "type_alias_declaration" => {
+                    SymbolKind::Interface
+                }
                 _ => SymbolKind::Unknown,
             };
 
             // For captures, we often just want the name of the node itself if it's an identifier,
             // or we look for a child named 'name' or 'identifier'
-            let mut symbol_name = node.utf8_text(source_code.as_bytes()).unwrap_or("unknown").to_string();
-            
+            let mut symbol_name = node
+                .utf8_text(source_code.as_bytes())
+                .unwrap_or("unknown")
+                .to_string();
+
             // Always prefer a dedicated 'name' field if the grammar provides one
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source_code.as_bytes()) {
                     symbol_name = name_text.to_string();
                 }
-            } else if symbol_name.len() > 64 || symbol_name.contains('{') || symbol_name.contains('\n') {
+            } else if symbol_name.len() > 64
+                || symbol_name.contains('{')
+                || symbol_name.contains('\n')
+            {
                 // Fallback for languages that might not use 'name' fields consistently
                 // We'll just truncate or leave it, but it shouldn't happen often with good queries
             }
@@ -875,7 +939,12 @@ impl SearchEngine {
             let id = if *count == 0 {
                 format!("{}::{}", rel_path.to_string_lossy(), symbol_name)
             } else {
-                format!("{}::{}::#{}", rel_path.to_string_lossy(), symbol_name, count)
+                format!(
+                    "{}::{}::#{}",
+                    rel_path.to_string_lossy(),
+                    symbol_name,
+                    count
+                )
             };
             *count += 1;
 
@@ -907,7 +976,7 @@ pub fn run_index_worker(req: IndexWorkerRequest) -> Result<IndexWorkerResponse> 
         PathBuf::from(&req.workspace_root).join(".curd/grammars"),
         req.parser_backend.clone(),
     )?;
-    
+
     let mut entries = Vec::new();
     let mut unsupported_lang = 0;
     let mut skipped_too_large = 0;
@@ -951,7 +1020,12 @@ pub fn run_index_worker(req: IndexWorkerRequest) -> Result<IndexWorkerResponse> 
                 }
                 "skeleton" => {
                     large_file_skeleton += 1;
-                    let _symbols = extract_skeleton_symbols(&full_path, Path::new(&req.workspace_root), &lang_name, None);
+                    let _symbols = extract_skeleton_symbols(
+                        &full_path,
+                        Path::new(&req.workspace_root),
+                        &lang_name,
+                        None,
+                    );
                     entries.push(IndexWorkerEntry {
                         rel,
                         mtime_ms,
@@ -991,7 +1065,11 @@ pub fn run_index_worker(req: IndexWorkerRequest) -> Result<IndexWorkerResponse> 
                 if symbols.is_empty() {
                     no_symbols += 1;
                 }
-                match ctx.manager.resolved_backend_for_language(&lang_name).as_deref() {
+                match ctx
+                    .manager
+                    .resolved_backend_for_language(&lang_name)
+                    .as_deref()
+                {
                     Some("native") => native_files += 1,
                     Some("wasm") => {
                         wasm_files += 1;
@@ -1084,10 +1162,15 @@ fn supports_index_worker_subcommand(bin: &Path) -> bool {
         Ok(file) => file,
         Err(_) => return false,
     };
-    if fs::write(req_tmp.path(), match serde_json::to_vec(&req) {
-        Ok(bytes) => bytes,
-        Err(_) => return false,
-    }).is_err() {
+    if fs::write(
+        req_tmp.path(),
+        match serde_json::to_vec(&req) {
+            Ok(bytes) => bytes,
+            Err(_) => return false,
+        },
+    )
+    .is_err()
+    {
         return false;
     }
     let status = Command::new(bin)
@@ -1205,6 +1288,33 @@ fn max_file_size(cfg: &CurdConfig) -> u64 {
         .unwrap_or(MAX_FILE_SIZE)
 }
 
-fn extract_skeleton_symbols(_path: &Path, _root: &Path, _lang: &str, _compute: Option<&str>) -> Vec<Symbol> {
+fn extract_skeleton_symbols(
+    _path: &Path,
+    _root: &Path,
+    _lang: &str,
+    _compute: Option<&str>,
+) -> Vec<Symbol> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SearchEngine;
+    use tempfile::tempdir;
+
+    #[test]
+    fn get_all_symbols_builds_index_for_fresh_workspace() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).expect("src dir");
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "fn main() {}\nfn helper() { main(); }\n",
+        )
+        .expect("write source");
+
+        let symbols = SearchEngine::new(root).get_all_symbols().expect("symbols");
+        assert!(symbols.iter().any(|symbol| symbol.name == "main"));
+        assert!(symbols.iter().any(|symbol| symbol.name == "helper"));
+    }
 }

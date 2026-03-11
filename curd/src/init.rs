@@ -49,9 +49,13 @@ When a user proposes a large-scale change:
 Do NOT under any circumstances attempt to read, write, list or execute operations on the `.curd/` directory using any tool, including native shell or Python interpreters. It contains agentic private keys and transactional system states!
 "#;
 
-pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, workspace_root: &Path) -> Result<()> {
+pub fn init_agent(
+    name_override: Option<&str>,
+    harness_override: Option<&str>,
+    workspace_root: &Path,
+) -> Result<()> {
     let mut targets = Vec::new();
-    
+
     // 1. Determine what to install
     let mut install_mcp = false;
     let mut install_skills = false;
@@ -60,7 +64,10 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
     {
         use std::io::IsTerminal;
         if std::io::stdout().is_terminal() {
-            let options = vec!["Install MCP Server (Direct agent tool access)", "Install CURD Skills (Propose-Plan logic)"];
+            let options = vec![
+                "Install MCP Server (Direct agent tool access)",
+                "Install CURD Skills (Propose-Plan logic)",
+            ];
             if let Ok(selections) = dialoguer::MultiSelect::new()
                 .with_prompt("Select installation targets (Space to select, Enter to confirm):")
                 .items(&options)
@@ -68,8 +75,12 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
                 .interact()
             {
                 for idx in selections {
-                    if idx == 0 { install_mcp = true; }
-                    if idx == 1 { install_skills = true; }
+                    if idx == 0 {
+                        install_mcp = true;
+                    }
+                    if idx == 1 {
+                        install_skills = true;
+                    }
                 }
             } else {
                 install_mcp = true;
@@ -97,22 +108,36 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
     } else {
         let mut detected = Vec::new();
         if let Some(home) = get_home_dir() {
-            if home.join(".gemini").exists() || workspace_root.join("GEMINI.md").exists() { detected.push("gemini".to_string()); }
-            
-            // Copilot & Codex
-            if home.join(".copilot").exists() || workspace_root.join(".copilot").exists() { detected.push("copilot".to_string()); }
-            if home.join(".codex").exists() || workspace_root.join(".codex").exists() { detected.push("codex".to_string()); }
+            if home.join(".gemini").exists() || workspace_root.join("GEMINI.md").exists() {
+                detected.push("gemini".to_string());
+            }
 
-            if workspace_root.join(".cursor").exists() || home.join("Library/Application Support/Cursor").exists() || home.join("AppData/Roaming/Cursor").exists() {
+            // Copilot & Codex
+            if home.join(".copilot").exists() || workspace_root.join(".copilot").exists() {
+                detected.push("copilot".to_string());
+            }
+            if home.join(".codex").exists() || workspace_root.join(".codex").exists() {
+                detected.push("codex".to_string());
+            }
+
+            if workspace_root.join(".cursor").exists()
+                || home.join("Library/Application Support/Cursor").exists()
+                || home.join("AppData/Roaming/Cursor").exists()
+            {
                 detected.push("cursor".to_string());
             }
             let claude_path = if cfg!(target_os = "macos") {
                 home.join("Library/Application Support/Claude/claude_desktop_config.json")
             } else {
-                PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("Claude/claude_desktop_config.json")
+                PathBuf::from(std::env::var("APPDATA").unwrap_or_default())
+                    .join("Claude/claude_desktop_config.json")
             };
-            if claude_path.exists() || workspace_root.join("CLAUDE.md").exists() { detected.push("claude_desktop".to_string()); }
-            if workspace_root.join(".mcp.json").exists() { detected.push("claude_code".to_string()); }
+            if claude_path.exists() || workspace_root.join("CLAUDE.md").exists() {
+                detected.push("claude_desktop".to_string());
+            }
+            if workspace_root.join(".mcp.json").exists() {
+                detected.push("claude_code".to_string());
+            }
 
             // Cline
             let cline_global = if cfg!(target_os = "macos") {
@@ -122,7 +147,9 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
             } else {
                 home.join(".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
             };
-            if cline_global.exists() || workspace_root.join(".cline").exists() { detected.push("cline".to_string()); }
+            if cline_global.exists() || workspace_root.join(".cline").exists() {
+                detected.push("cline".to_string());
+            }
 
             // Roo Code
             let roo_global = if cfg!(target_os = "macos") {
@@ -132,19 +159,26 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
             } else {
                 home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json")
             };
-            if roo_global.exists() || workspace_root.join(".roo").exists() { detected.push("roo_code".to_string()); }
+            if roo_global.exists() || workspace_root.join(".roo").exists() {
+                detected.push("roo_code".to_string());
+            }
 
             // Windsurf
             let windsurf_global = home.join(".codeium/windsurf/mcp_config.json");
-            if windsurf_global.exists() { detected.push("windsurf".to_string()); }
+            if windsurf_global.exists() {
+                detected.push("windsurf".to_string());
+            }
 
             // Zed
             let zed_global = if cfg!(target_os = "windows") {
-                PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("Zed/settings.json")
+                PathBuf::from(std::env::var("APPDATA").unwrap_or_default())
+                    .join("Zed/settings.json")
             } else {
                 home.join(".config/zed/settings.json")
             };
-            if zed_global.exists() || workspace_root.join(".zed").exists() { detected.push("zed".to_string()); }
+            if zed_global.exists() || workspace_root.join(".zed").exists() {
+                detected.push("zed".to_string());
+            }
         }
 
         if detected.len() > 1 {
@@ -152,7 +186,9 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
             if std::io::stdout().is_terminal() {
                 println!("Multiple AI harnesses detected.");
                 if let Ok(selections) = dialoguer::MultiSelect::new()
-                    .with_prompt("Select which harnesses to configure (Space to select, Enter to confirm):")
+                    .with_prompt(
+                        "Select which harnesses to configure (Space to select, Enter to confirm):",
+                    )
                     .items(&detected)
                     .defaults(&vec![true; detected.len()])
                     .interact()
@@ -191,11 +227,15 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
 
             // Save public key
             let auth_file = workspace_root.join(".curd").join("authorized_agents.json");
-            if let Some(parent) = auth_file.parent() { let _ = fs::create_dir_all(parent); }
+            if let Some(parent) = auth_file.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
             use std::collections::HashMap;
             let mut authorized: HashMap<String, String> = if auth_file.exists() {
                 serde_json::from_str(&fs::read_to_string(&auth_file)?).unwrap_or_default()
-            } else { HashMap::new() };
+            } else {
+                HashMap::new()
+            };
             authorized.insert(agent_name.to_string(), pub_hex);
             fs::write(&auth_file, serde_json::to_string_pretty(&authorized)?)?;
 
@@ -208,16 +248,44 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
             });
 
             let (config_path_opt, block_key) = match harness.as_str() {
-                "gemini" => (Some(workspace_root.join(".gemini").join("settings.json")), "mcpServers"),
-                "copilot" => (Some(workspace_root.join(".copilot").join("mcp-config.json")), "mcpServers"),
-                "codex" => (Some(workspace_root.join(".codex").join("config.json")), "mcpServers"),
-                "cursor" => (Some(workspace_root.join(".cursor").join("mcp.json")), "mcpServers"),
+                "gemini" => (
+                    Some(workspace_root.join(".gemini").join("settings.json")),
+                    "mcpServers",
+                ),
+                "copilot" => (
+                    Some(workspace_root.join(".copilot").join("mcp-config.json")),
+                    "mcpServers",
+                ),
+                "codex" => (
+                    Some(workspace_root.join(".codex").join("config.json")),
+                    "mcpServers",
+                ),
+                "cursor" => (
+                    Some(workspace_root.join(".cursor").join("mcp.json")),
+                    "mcpServers",
+                ),
                 "claude_desktop" => (Some(workspace_root.join(".mcp.json")), "mcpServers"),
                 "claude_code" => (Some(workspace_root.join(".mcp.json")), "mcpServers"),
-                "cline" => (Some(workspace_root.join(".cline").join("cline_mcp_settings.json")), "mcpServers"),
-                "roo_code" => (Some(workspace_root.join(".roo").join("cline_mcp_settings.json")), "mcpServers"),
-                "windsurf" => (Some(workspace_root.join(".windsurf").join("mcp_config.json")), "mcpServers"),
-                "zed" => (Some(workspace_root.join(".zed").join("settings.json")), "context_servers"),
+                "cline" => (
+                    Some(
+                        workspace_root
+                            .join(".cline")
+                            .join("cline_mcp_settings.json"),
+                    ),
+                    "mcpServers",
+                ),
+                "roo_code" => (
+                    Some(workspace_root.join(".roo").join("cline_mcp_settings.json")),
+                    "mcpServers",
+                ),
+                "windsurf" => (
+                    Some(workspace_root.join(".windsurf").join("mcp_config.json")),
+                    "mcpServers",
+                ),
+                "zed" => (
+                    Some(workspace_root.join(".zed").join("settings.json")),
+                    "context_servers",
+                ),
                 _ => (None, ""),
             };
 
@@ -227,21 +295,34 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
                 } else {
                     "curd".to_string()
                 };
-                if let Some(parent) = config_path.parent() { let _ = fs::create_dir_all(parent); }
+                if let Some(parent) = config_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
                 let mut config_json = if config_path.exists() {
                     serde_json::from_str(&fs::read_to_string(&config_path)?).unwrap_or(json!({}))
-                } else { json!({}) };
+                } else {
+                    json!({})
+                };
 
                 if let Some(obj) = config_json.as_object_mut() {
-                    if !obj.contains_key(block_key) { obj.insert(block_key.to_string(), json!({})); }
+                    if !obj.contains_key(block_key) {
+                        obj.insert(block_key.to_string(), json!({}));
+                    }
                     if let Some(servers) = obj.get_mut(block_key).and_then(|v| v.as_object_mut()) {
                         servers.insert(server_name, server_config);
                         fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
-                        println!("  - Injected MCP identity '{}' into {}", agent_name, config_path.display());
+                        println!(
+                            "  - Injected MCP identity '{}' into {}",
+                            agent_name,
+                            config_path.display()
+                        );
                     }
                 }
             } else {
-                println!("  ! Warning: Manual configuration required for harness '{}' (MCP)", harness);
+                println!(
+                    "  ! Warning: Manual configuration required for harness '{}' (MCP)",
+                    harness
+                );
             }
         }
 
@@ -250,19 +331,25 @@ pub fn init_agent(name_override: Option<&str>, harness_override: Option<&str>, w
             println!("Installing CURD Skills for harness: {}...", harness);
             match harness.as_str() {
                 "gemini" => {
-                    let skill_dir = workspace_root.join(".gemini").join("skills").join("propose-plan");
+                    let skill_dir = workspace_root
+                        .join(".gemini")
+                        .join("skills")
+                        .join("propose-plan");
                     let _ = fs::create_dir_all(&skill_dir);
                     let _ = fs::write(skill_dir.join("SKILL.md"), PROPOSE_PLAN_SKILL_MD);
                     println!("  - Installed Gemini Skill to {}", skill_dir.display());
-                },
+                }
                 "cursor" => {
                     let rule_dir = workspace_root.join(".cursor").join("rules");
                     let _ = fs::create_dir_all(&rule_dir);
                     let _ = fs::write(rule_dir.join("propose-plan.mdc"), PROPOSE_PLAN_RULE_MDC);
                     println!("  - Installed Cursor Rule to {}", rule_dir.display());
-                },
+                }
                 _ => {
-                    println!("  ! Skill logic handles via tools natively for harness '{}'", harness);
+                    println!(
+                        "  ! Skill logic handles via tools natively for harness '{}'",
+                        harness
+                    );
                 }
             }
         }

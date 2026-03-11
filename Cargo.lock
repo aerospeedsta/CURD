@@ -612,13 +612,17 @@ dependencies = [
 
 [[package]]
 name = "curd"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 dependencies = [
  "anyhow",
  "clap",
  "colored",
  "curd-core",
  "dialoguer",
+ "ed25519-dalek",
+ "getrandom 0.4.2",
+ "log",
+ "petgraph",
  "rustyline",
  "serde",
  "serde_json",
@@ -630,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "curd-core"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -672,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "curd-gpu-worker"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 dependencies = [
  "anyhow",
  "curd-core",
@@ -683,9 +687,10 @@ dependencies = [
 
 [[package]]
 name = "curd-node"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 dependencies = [
  "anyhow",
+ "curd",
  "curd-core",
  "napi",
  "napi-build",
@@ -696,9 +701,10 @@ dependencies = [
 
 [[package]]
 name = "curd-python"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 dependencies = [
  "anyhow",
+ "curd",
  "curd-core",
  "pyo3",
  "pythonize",

@@ -62,17 +62,34 @@ backend = "native"
 
 impl GrammarRegistry {
     pub fn load(workspace_root: &Path) -> Self {
-        let mut registry: GrammarRegistry = toml::from_str(DEFAULT_LANGUAGES_TOML).unwrap_or_default();
-        
+        let mut registry: GrammarRegistry =
+            toml::from_str(DEFAULT_LANGUAGES_TOML).unwrap_or_default();
+
         // Attach default queries
-        if let Some(rust) = registry.languages.get_mut("rust") { rust.embedded_query = Some(crate::symbols::RUST_QUERY); }
-        if let Some(python) = registry.languages.get_mut("python") { python.embedded_query = Some(crate::symbols::PYTHON_QUERY); }
-        if let Some(js) = registry.languages.get_mut("javascript") { js.embedded_query = Some(crate::symbols::JS_QUERY); }
-        if let Some(ts) = registry.languages.get_mut("typescript") { ts.embedded_query = Some(crate::symbols::TS_QUERY); }
-        if let Some(go) = registry.languages.get_mut("go") { go.embedded_query = Some(crate::symbols::GO_QUERY); }
-        if let Some(c) = registry.languages.get_mut("c") { c.embedded_query = Some(crate::symbols::C_QUERY); }
-        if let Some(cpp) = registry.languages.get_mut("cpp") { cpp.embedded_query = Some(crate::symbols::CPP_QUERY); }
-        if let Some(java) = registry.languages.get_mut("java") { java.embedded_query = Some(crate::symbols::JAVA_QUERY); }
+        if let Some(rust) = registry.languages.get_mut("rust") {
+            rust.embedded_query = Some(crate::symbols::RUST_QUERY);
+        }
+        if let Some(python) = registry.languages.get_mut("python") {
+            python.embedded_query = Some(crate::symbols::PYTHON_QUERY);
+        }
+        if let Some(js) = registry.languages.get_mut("javascript") {
+            js.embedded_query = Some(crate::symbols::JS_QUERY);
+        }
+        if let Some(ts) = registry.languages.get_mut("typescript") {
+            ts.embedded_query = Some(crate::symbols::TS_QUERY);
+        }
+        if let Some(go) = registry.languages.get_mut("go") {
+            go.embedded_query = Some(crate::symbols::GO_QUERY);
+        }
+        if let Some(c) = registry.languages.get_mut("c") {
+            c.embedded_query = Some(crate::symbols::C_QUERY);
+        }
+        if let Some(cpp) = registry.languages.get_mut("cpp") {
+            cpp.embedded_query = Some(crate::symbols::CPP_QUERY);
+        }
+        if let Some(java) = registry.languages.get_mut("java") {
+            java.embedded_query = Some(crate::symbols::JAVA_QUERY);
+        }
 
         for custom_toml in [
             workspace_root.join(".curd/grammars/languages.toml"),
@@ -80,11 +97,12 @@ impl GrammarRegistry {
         ] {
             if custom_toml.exists()
                 && let Ok(content) = fs::read_to_string(&custom_toml)
-                    && let Ok(custom_reg) = toml::from_str::<GrammarRegistry>(&content) {
-                        for (name, def) in custom_reg.languages {
-                            registry.languages.insert(name, def);
-                        }
-                    }
+                && let Ok(custom_reg) = toml::from_str::<GrammarRegistry>(&content)
+            {
+                for (name, def) in custom_reg.languages {
+                    registry.languages.insert(name, def);
+                }
+            }
         }
         registry
     }

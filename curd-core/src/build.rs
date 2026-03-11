@@ -1,6 +1,7 @@
 use crate::CurdConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -63,8 +64,11 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
     }
 
     let mut untrusted_confirmation_required = false;
-    
+
     let (mut steps, adapter) = if let Some(cmd) = req.command {
+        if req.execute && !cfg.policy.exec.allow_raw_command {
+            anyhow::bail!("Raw build commands are disabled by [policy.exec].");
+        }
         if !req.allow_untrusted && req.execute {
             untrusted_confirmation_required = true;
         }
@@ -74,8 +78,12 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
         } else {
             std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
         };
-        let shell_flag = if cfg!(target_os = "windows") { "/C" } else { "-lc" };
-        
+        let shell_flag = if cfg!(target_os = "windows") {
+            "/C"
+        } else {
+            "-lc"
+        };
+
         (
             vec![BuildStep {
                 adapter: "custom-shell".to_string(),
@@ -100,6 +108,10 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
                 | "ninja"
                 | "make"
                 | "uv"
+                | "poetry"
+                | "pip"
+                | "conda"
+                | "mamba"
                 | "go"
                 | "gradle"
                 | "maven"
@@ -139,7 +151,7 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
         let _ = std::fs::create_dir_all(&builds_dir);
         let log_path = builds_dir.join("latest.log");
         let mut log_file = std::fs::File::create(&log_path).ok();
-        
+
         for step in &mut steps {
             if step.command.is_empty() {
                 step.status = Some(1);
@@ -147,18 +159,18 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
                 ok = false;
                 continue;
             }
-            
+
             use std::io::Write;
             if let Some(f) = log_file.as_mut() {
                 let _ = writeln!(f, "=== Executing: {} ===", step.command.join(" "));
             }
-            
+
             let mut cmd = sandbox.build_std_command(&step.command[0], &step.command[1..]);
             cmd.current_dir(&step.cwd);
-            
+
             cmd.stdout(std::process::Stdio::inherit());
             cmd.stderr(std::process::Stdio::piped());
-            
+
             if let Ok(mut child) = cmd.spawn() {
                 let mut captured_stderr = String::new();
                 if let Some(stderr) = child.stderr.take() {
@@ -177,12 +189,12 @@ pub fn run_build(root: &Path, mut req: BuildRequest) -> Result<BuildResponse> {
                         }
                     }
                 }
-                
+
                 if let Ok(status) = child.wait() {
                     step.status = status.code();
                     let success = status.success();
                     step.success = Some(success);
-                    
+
                     if !success {
                         ok = false;
                         parse_and_propagate_faults(&root, &captured_stderr);
@@ -248,6 +260,10 @@ fn detect_adapter(root: &Path, cfg: &CurdConfig) -> String {
         }
     }
 
+    if let Some(adapter) = detect_language_plugin_adapter(root, cfg) {
+        return adapter;
+    }
+
     if root.join("Cargo.toml").exists() {
         return "cargo".to_string();
     }
@@ -260,8 +276,24 @@ fn detect_adapter(root: &Path, cfg: &CurdConfig) -> String {
     if root.join("Makefile").exists() || root.join("makefile").exists() {
         return "make".to_string();
     }
+    if root.join("poetry.lock").exists() {
+        return "poetry".to_string();
+    }
     if root.join("pyproject.toml").exists() || root.join("uv.lock").exists() {
         return "uv".to_string();
+    }
+    if root.join("environment.yml").exists()
+        || root.join("environment.yaml").exists()
+        || root.join("conda.yml").exists()
+    {
+        return "conda".to_string();
+    }
+    if root.join("requirements.txt").exists()
+        || root.join("requirements-dev.txt").exists()
+        || root.join("setup.py").exists()
+        || root.join("setup.cfg").exists()
+    {
+        return "pip".to_string();
     }
     if root.join("go.mod").exists() {
         return "go".to_string();
@@ -296,7 +328,11 @@ fn detect_adapter(root: &Path, cfg: &CurdConfig) -> String {
     if root.join("pom.xml").exists() {
         return "maven".to_string();
     }
-    if root.join("WORKSPACE").exists() || root.join("WORKSPACE.bazel").exists() || root.join("BUILD").exists() || root.join("BUILD.bazel").exists() {
+    if root.join("WORKSPACE").exists()
+        || root.join("WORKSPACE.bazel").exists()
+        || root.join("BUILD").exists()
+        || root.join("BUILD.bazel").exists()
+    {
         return "bazel".to_string();
     }
     if root.join("meson.build").exists() {
@@ -306,6 +342,104 @@ fn detect_adapter(root: &Path, cfg: &CurdConfig) -> String {
         return "buck2".to_string();
     }
     "make".to_string()
+}
+
+fn detect_language_plugin_adapter(root: &Path, cfg: &CurdConfig) -> Option<String> {
+    if !cfg.plugins.enabled {
+        return None;
+    }
+    let installed = crate::plugin_packages::load_installed_plugins(
+        root,
+        &cfg.plugins,
+        crate::plugin_packages::PluginKind::Language,
+    )
+    .ok()?;
+    let mut by_adapter: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for record in installed {
+        let Some(spec) = record.language else {
+            continue;
+        };
+        let Some(build_system) = spec.build_system.filter(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        if !adapter_known(cfg, &build_system) {
+            continue;
+        }
+        for ext in spec.extensions {
+            if !ext.trim().is_empty() {
+                by_adapter
+                    .entry(build_system.clone())
+                    .or_default()
+                    .push(ext.trim_start_matches('.').to_string());
+            }
+        }
+    }
+    for (adapter, extensions) in by_adapter {
+        if workspace_has_any_extension(root, &extensions) {
+            return Some(adapter);
+        }
+    }
+    None
+}
+
+fn adapter_known(cfg: &CurdConfig, adapter: &str) -> bool {
+    matches!(
+        adapter,
+        "cargo"
+            | "cmake"
+            | "ninja"
+            | "make"
+            | "uv"
+            | "poetry"
+            | "pip"
+            | "conda"
+            | "mamba"
+            | "go"
+            | "gradle"
+            | "maven"
+            | "bazel"
+            | "meson"
+            | "buck2"
+            | "npm"
+            | "yarn"
+            | "pnpm"
+            | "bun"
+            | "pixi"
+            | "mise"
+    ) || cfg.build.adapters.contains_key(adapter)
+}
+
+fn workspace_has_any_extension(root: &Path, extensions: &[String]) -> bool {
+    if extensions.is_empty() {
+        return false;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let skip = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == ".git" || n == ".curd" || n == "target" || n == "node_modules")
+                    .unwrap_or(false);
+                if !skip {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                continue;
+            };
+            if extensions.iter().any(|candidate| candidate == ext) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn plan_steps(
@@ -439,6 +573,62 @@ fn plan_steps(
                 success: None,
             });
         }
+        "poetry" => {
+            let mut cmd = vec!["poetry".to_string(), "build".to_string()];
+            if let Some(t) = target.clone() {
+                cmd.push("-f".to_string());
+                cmd.push(t);
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "pip" => {
+            let mut cmd = vec![
+                "python".to_string(),
+                "-m".to_string(),
+                "pip".to_string(),
+                "wheel".to_string(),
+            ];
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            } else {
+                cmd.push(".".to_string());
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
+        "conda" | "mamba" => {
+            let mut cmd = vec![
+                adapter.to_string(),
+                "run".to_string(),
+                "python".to_string(),
+                "-m".to_string(),
+                "build".to_string(),
+            ];
+            if let Some(t) = target.clone() {
+                cmd.push(t);
+            }
+            cmd.extend(trailing_args.iter().cloned());
+            steps.push(BuildStep {
+                adapter: adapter.to_string(),
+                cwd: root_s,
+                command: cmd,
+                status: None,
+                success: None,
+            });
+        }
         "go" => {
             let mut cmd = vec!["go".to_string(), "build".to_string()];
             cmd.extend(trailing_args.iter().cloned());
@@ -520,7 +710,12 @@ fn plan_steps(
             });
         }
         "meson" => {
-            let mut cmd = vec!["meson".to_string(), "compile".to_string(), "-C".to_string(), build_dir_s];
+            let mut cmd = vec![
+                "meson".to_string(),
+                "compile".to_string(),
+                "-C".to_string(),
+                build_dir_s,
+            ];
             if let Some(t) = target.clone() {
                 cmd.push(t);
             }
@@ -728,12 +923,17 @@ fn parse_and_propagate_faults(root: &Path, stderr: &str) {
             } else {
                 root.join(clean_path)
             };
-            
+
             let canon_path = std::fs::canonicalize(&abs_path).unwrap_or(abs_path);
             let abs_path_str = canon_path.to_string_lossy().to_string();
 
             if let Ok(Some(symbol_id)) = storage.get_symbol_at_line(&abs_path_str, line_num) {
-                log::info!("Mapped build error at {}:{} to semantic symbol: {}", clean_path, line_num, symbol_id);
+                log::info!(
+                    "Mapped build error at {}:{} to semantic symbol: {}",
+                    clean_path,
+                    line_num,
+                    symbol_id
+                );
                 let _ = graph_engine.annotate_fault(&symbol_id, uuid::Uuid::new_v4());
             }
         }
@@ -743,7 +943,91 @@ fn parse_and_propagate_faults(root: &Path, stderr: &str) {
 #[cfg(test)]
 mod tests {
     use super::{BuildRequest, run_build};
+    use base64::Engine;
+    use ed25519_dalek::{Signer, SigningKey};
     use tempfile::tempdir;
+
+    fn install_language_plugin(
+        root: &std::path::Path,
+        package_id: &str,
+        language_id: &str,
+        extensions: Vec<&str>,
+        build_system: Option<&str>,
+    ) {
+        let mut secret = [11u8; 32];
+        secret[0] = 27;
+        let signer = SigningKey::from_bytes(&secret);
+        let pubkey_hex: String = signer
+            .verifying_key()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        let cfg = crate::config::PluginConfig::default();
+        crate::plugin_packages::store_trusted_keys(
+            root,
+            &cfg,
+            &crate::plugin_packages::TrustedPluginKeySet {
+                keys: vec![
+                    crate::plugin_packages::create_trusted_plugin_key(
+                        "lang",
+                        &pubkey_hex,
+                        Some("lang".to_string()),
+                        vec![crate::plugin_packages::PluginKind::Language],
+                        true,
+                    )
+                    .unwrap(),
+                ],
+            },
+        )
+        .unwrap();
+        let payload = b"fake-dylib";
+        let manifest = crate::plugin_packages::PluginManifest {
+            schema_version: 1,
+            package_id: package_id.to_string(),
+            version: "0.1.0".to_string(),
+            kind: crate::plugin_packages::PluginKind::Language,
+            signer_pubkey_hex: pubkey_hex,
+            description: Some("demo language".to_string()),
+            files: vec![crate::plugin_packages::PluginFileManifest {
+                path: "lib/demo.dylib".to_string(),
+                sha256: crate::plugin_packages::sha256_hex(payload),
+                size: payload.len(),
+                executable: false,
+            }],
+            tool: None,
+            language: Some(crate::plugin_packages::LanguagePluginSpec {
+                language_id: language_id.to_string(),
+                extensions: extensions.into_iter().map(|s| s.to_string()).collect(),
+                grammar_library_path: "lib/demo.dylib".to_string(),
+                grammar_symbol: format!("tree_sitter_{}", language_id),
+                query_path: None,
+                build_system: build_system.map(|s| s.to_string()),
+                lsp_adapter: None,
+                debug_adapter: None,
+            }),
+        };
+        let signature: String = signer
+            .sign(&serde_json::to_vec(&manifest).unwrap())
+            .to_bytes()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        let archive = crate::plugin_packages::PluginArchive {
+            manifest,
+            payload_files: vec![crate::plugin_packages::PluginPayloadFile {
+                path: "lib/demo.dylib".to_string(),
+                content_b64: base64::engine::general_purpose::STANDARD.encode(payload),
+                executable: false,
+            }],
+            signature_hex: Some(signature),
+        };
+        let archive_path = root.join(format!("{}.curdl", package_id));
+        std::fs::write(&archive_path, serde_json::to_vec(&archive).unwrap()).unwrap();
+        crate::lang_plugin::LangPluginEngine::new(root, cfg)
+            .add_archive(&archive_path)
+            .unwrap();
+    }
 
     #[test]
     fn build_detects_cargo_and_plans_debug() {
@@ -873,5 +1157,151 @@ build_dir = "../outside_build"
         .expect("write cmake");
         let err = run_build(dir.path(), BuildRequest::default()).expect_err("expected error");
         assert!(err.to_string().contains("Unsafe path"));
+    }
+
+    #[test]
+    fn build_detects_poetry_and_plans_build() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[tool.poetry]\nname='x'\nversion='0.1.0'\n",
+        )
+        .expect("write pyproject");
+        std::fs::write(dir.path().join("poetry.lock"), "").expect("write poetry lock");
+        let res = run_build(dir.path(), BuildRequest::default()).expect("run_build");
+        assert_eq!(res.adapter, "poetry");
+        assert_eq!(res.steps[0].command, vec!["poetry", "build"]);
+    }
+
+    #[test]
+    fn build_detects_pip_from_requirements() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("requirements.txt"), "requests==2.0.0\n")
+            .expect("write requirements");
+        let res = run_build(dir.path(), BuildRequest::default()).expect("run_build");
+        assert_eq!(res.adapter, "pip");
+        assert_eq!(
+            res.steps[0].command,
+            vec!["python", "-m", "pip", "wheel", "."]
+        );
+    }
+
+    #[test]
+    fn build_detects_conda_from_environment_file() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("environment.yml"), "name: test\n").expect("write env");
+        let res = run_build(dir.path(), BuildRequest::default()).expect("run_build");
+        assert_eq!(res.adapter, "conda");
+        assert_eq!(
+            res.steps[0].command,
+            vec!["conda", "run", "python", "-m", "build"]
+        );
+    }
+
+    #[test]
+    fn build_supports_manual_mamba_adapter() {
+        let dir = tempdir().expect("tempdir");
+        let res = run_build(
+            dir.path(),
+            BuildRequest {
+                adapter: Some("mamba".to_string()),
+                ..BuildRequest::default()
+            },
+        )
+        .expect("run_build");
+        assert_eq!(res.adapter, "mamba");
+        assert_eq!(
+            res.steps[0].command,
+            vec!["mamba", "run", "python", "-m", "build"]
+        );
+    }
+
+    #[test]
+    fn build_blocks_executing_raw_command_when_policy_disables_it() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("settings.toml"),
+            r#"
+[policy.exec]
+allow_raw_command = false
+"#,
+        )
+        .expect("write settings");
+        let err = run_build(
+            dir.path(),
+            BuildRequest {
+                command: Some("echo hi".to_string()),
+                execute: true,
+                ..BuildRequest::default()
+            },
+        )
+        .expect_err("expected raw command policy denial");
+        assert!(err.to_string().contains("Raw build commands are disabled"));
+    }
+
+    #[test]
+    fn build_detects_plugin_defined_custom_adapter() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("settings.toml"),
+            r#"
+[build.adapters.acme-build]
+detect_files = ["acme.build"]
+steps = [["echo", "plugin-build"]]
+"#,
+        )
+        .expect("write settings");
+        std::fs::write(dir.path().join("src.acme"), "entity X").expect("write source");
+        std::fs::write(dir.path().join("acme.build"), "manifest").expect("write marker");
+        install_language_plugin(
+            dir.path(),
+            "acme-lang",
+            "acme",
+            vec!["acme"],
+            Some("acme-build"),
+        );
+        let res = run_build(dir.path(), BuildRequest::default()).expect("run_build");
+        assert_eq!(res.adapter, "acme-build");
+        assert_eq!(res.steps[0].command, vec!["echo", "plugin-build"]);
+    }
+
+    #[test]
+    fn build_ignores_unknown_plugin_build_system() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("src.acme"), "entity X").expect("write source");
+        std::fs::write(dir.path().join("Makefile"), "all:\n\t@echo ok\n").expect("write make");
+        install_language_plugin(
+            dir.path(),
+            "acme-lang",
+            "acme",
+            vec!["acme"],
+            Some("unknown-build"),
+        );
+        let res = run_build(dir.path(), BuildRequest::default()).expect("run_build");
+        assert_eq!(res.adapter, "make");
+    }
+
+    #[test]
+    fn build_ignores_language_plugins_when_plugins_disabled() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("settings.toml"),
+            r#"
+[plugins]
+enabled = false
+"#,
+        )
+        .expect("write settings");
+        std::fs::write(dir.path().join("src.acme"), "entity X").expect("write source");
+        std::fs::write(dir.path().join("Makefile"), "all:\n\t@echo ok\n").expect("write make");
+        install_language_plugin(
+            dir.path(),
+            "acme-lang",
+            "acme",
+            vec!["acme"],
+            Some("acme-build"),
+        );
+        let res = run_build(dir.path(), BuildRequest::default()).expect("run_build");
+        assert_eq!(res.adapter, "make");
     }
 }

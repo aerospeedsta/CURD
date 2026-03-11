@@ -77,7 +77,9 @@ impl LspEngine {
             .parse(source_code, None)
             .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
         let root = tree.root_node();
-        let lang = parser.language().unwrap();
+        let lang = parser
+            .language()
+            .ok_or_else(|| anyhow::anyhow!("Parser language unavailable for '{}'", language))?;
 
         let mut diags = Vec::new();
 
@@ -451,10 +453,11 @@ impl LspEngine {
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             if let Some(lang) = manager.registry.lang_for_extension(extension)
-                && let Ok(range) = manager.bind_fault_to_ast(&lang, &source_code, ts_line, column) {
-                    fault.end_line = Some(range.end_point.row);
-                    fault.end_column = Some(range.end_point.column);
-                }
+                && let Ok(range) = manager.bind_fault_to_ast(&lang, &source_code, ts_line, column)
+            {
+                fault.end_line = Some(range.end_point.row);
+                fault.end_column = Some(range.end_point.column);
+            }
 
             faults.push(fault);
         }
@@ -595,7 +598,11 @@ impl LspEngine {
                 }
             }
             "go" => ("go", vec!["build".to_string(), rel_safe.clone()], "short"),
-            "java" => ("javac", vec!["-Xlint".to_string(), rel_safe.clone()], "short"),
+            "java" => (
+                "javac",
+                vec!["-Xlint".to_string(), rel_safe.clone()],
+                "short",
+            ),
             "c" | "h" => (
                 "clang",
                 vec!["-fsyntax-only".to_string(), rel_safe.clone()],

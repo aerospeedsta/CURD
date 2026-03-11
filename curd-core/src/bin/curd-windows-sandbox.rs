@@ -1,26 +1,28 @@
 #[cfg(windows)]
 use anyhow::{Context, Result};
 #[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
-use windows::Win32::Security::{TokenRestrictedDeviceGroups, CreateRestrictedToken, DISABLE_MAX_PRIVILEGE};
+use windows::Win32::Security::{
+    CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, TokenRestrictedDeviceGroups,
+};
 #[cfg(windows)]
 use windows::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-    JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThread, OpenProcessToken, ResumeThread, CREATE_SUSPENDED,
-    PROCESS_ALL_ACCESS, TOKEN_ALL_ACCESS,
+    CREATE_SUSPENDED, GetCurrentProcess, GetCurrentThread, OpenProcessToken, PROCESS_ALL_ACCESS,
+    ResumeThread, TOKEN_ALL_ACCESS,
 };
-#[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
 
 #[cfg(not(windows))]
 fn main() {
@@ -57,7 +59,8 @@ fn main() -> Result<()> {
         // ... (Token logic can be complex, skipping for MVP Job Object isolation) ...
 
         // 4. Assign THIS wrapper process to the Job Object
-        AssignProcessToJobObject(job, GetCurrentProcess()).context("Failed to assign to Job Object")?;
+        AssignProcessToJobObject(job, GetCurrentProcess())
+            .context("Failed to assign to Job Object")?;
 
         // 5. Spawn the target process. It will inherit the Job Object constraints.
         let mut child = Command::new(target_cmd)

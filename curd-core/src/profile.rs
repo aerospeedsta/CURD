@@ -14,7 +14,11 @@ pub struct ProfileEngine {
 }
 
 impl ProfileEngine {
-    pub fn new(workspace_root: impl AsRef<Path>, config: crate::config::ShellConfig, policy: crate::policy::PolicyConfig) -> Self {
+    pub fn new(
+        workspace_root: impl AsRef<Path>,
+        config: crate::config::ShellConfig,
+        policy: crate::policy::PolicyConfig,
+    ) -> Self {
         let root = workspace_root.as_ref().to_path_buf();
         Self {
             workspace_root: std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()),
@@ -34,7 +38,11 @@ impl ProfileEngine {
     ) -> Result<Value> {
         let sampling_capabilities = self.sampling_capabilities();
         let runtime = if let Some(cmd) = command {
-            let shell_engine = crate::ShellEngine::new(&self.workspace_root, self.config.clone(), self.policy.clone());
+            let shell_engine = crate::ShellEngine::new(
+                &self.workspace_root,
+                self.config.clone(),
+                self.policy.clone(),
+            );
             let shell_res = shell_engine.shell(cmd, None, false).await?;
 
             Some(json!({
@@ -51,22 +59,23 @@ impl ProfileEngine {
         if let Some(cmd) = command
             && looks_like_python_command(cmd)
             && command_exists("py-spy", &self.workspace_root)
-            && let Ok(sampled) = self.profile_with_py_spy(cmd, format).await {
-                return Ok(json!({
-                    "format": format,
-                    "roots": roots,
-                    "up_depth": up_depth,
-                    "down_depth": down_depth,
-                    "runtime": runtime,
-                    "sampling": {
-                        "engine": "py-spy",
-                        "mode": "sampled",
-                        "capabilities": sampling_capabilities
-                    },
-                    "folded": sampled.get("folded").cloned().unwrap_or_else(|| json!("")),
-                    "flamegraph": sampled.get("flamegraph").cloned().unwrap_or_else(|| json!(""))
-                }));
-            }
+            && let Ok(sampled) = self.profile_with_py_spy(cmd, format).await
+        {
+            return Ok(json!({
+                "format": format,
+                "roots": roots,
+                "up_depth": up_depth,
+                "down_depth": down_depth,
+                "runtime": runtime,
+                "sampling": {
+                    "engine": "py-spy",
+                    "mode": "sampled",
+                    "capabilities": sampling_capabilities
+                },
+                "folded": sampled.get("folded").cloned().unwrap_or_else(|| json!("")),
+                "flamegraph": sampled.get("flamegraph").cloned().unwrap_or_else(|| json!(""))
+            }));
+        }
 
         let graph_engine = GraphEngine::new(&self.workspace_root);
         let graph_payload = graph_engine.graph_with_depths(roots.clone(), up_depth, down_depth)?;
@@ -170,7 +179,11 @@ impl ProfileEngine {
     }
 
     async fn profile_with_py_spy(&self, command: &str, format: &str) -> Result<Value> {
-        let shell_engine = crate::ShellEngine::new(&self.workspace_root, self.config.clone(), self.policy.clone());
+        let shell_engine = crate::ShellEngine::new(
+            &self.workspace_root,
+            self.config.clone(),
+            self.policy.clone(),
+        );
         shell_engine.validate_command(command)?;
         shell_engine.check_package_manager_policy(command)?;
 

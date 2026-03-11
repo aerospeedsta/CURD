@@ -35,12 +35,20 @@ fn detect_languages(root: &Path) -> Vec<String> {
 
     let checks: &[(&str, &[&str], &[&str])] = &[
         ("Rust", &["Cargo.toml"], &["rs"]),
-        ("Python", &["pyproject.toml", "setup.py", "requirements.txt"], &["py"]),
+        (
+            "Python",
+            &["pyproject.toml", "setup.py", "requirements.txt"],
+            &["py"],
+        ),
         ("JavaScript", &["package.json"], &["js", "jsx", "mjs"]),
         ("TypeScript", &["tsconfig.json"], &["ts", "tsx"]),
         ("Go", &["go.mod"], &["go"]),
         ("Java", &["pom.xml", "build.gradle"], &["java"]),
-        ("C/C++", &["CMakeLists.txt", "Makefile", "meson.build"], &["c", "cpp", "cc", "h", "hpp"]),
+        (
+            "C/C++",
+            &["CMakeLists.txt", "Makefile", "meson.build"],
+            &["c", "cpp", "cc", "h", "hpp"],
+        ),
         ("Swift", &["Package.swift"], &["swift"]),
         ("Zig", &["build.zig"], &["zig"]),
         ("C#/.NET", &["*.csproj", "*.sln"], &["cs"]),
@@ -83,7 +91,9 @@ fn detect_languages(root: &Path) -> Vec<String> {
                         }
                     }
                 }
-                if found { break; }
+                if found {
+                    break;
+                }
             }
         }
     }
@@ -99,24 +109,44 @@ fn detect_build_systems(root: &Path) -> Vec<BuildSystemMatch> {
     let checks: &[(&str, &str, &str)] = &[
         // (name, detect_file, capture_hint)
         ("Cargo", "Cargo.toml", "--message-format=json"),
-        ("CMake", "CMakeLists.txt", "CMAKE_EXPORT_COMPILE_COMMANDS=ON"),
+        (
+            "CMake",
+            "CMakeLists.txt",
+            "CMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ),
         ("Makefile", "Makefile", "tee .curd/builds/latest.jsonl"),
         ("npm", "package.json", "wrapper script in scripts"),
         ("Go", "go.mod", "-json flag on go build/test"),
         ("Gradle", "build.gradle", "--console=plain capture"),
-        ("Gradle (Kotlin)", "build.gradle.kts", "--console=plain capture"),
+        (
+            "Gradle (Kotlin)",
+            "build.gradle.kts",
+            "--console=plain capture",
+        ),
         ("Gradle", "settings.gradle", "--console=plain capture"),
-        ("Gradle (Kotlin)", "settings.gradle.kts", "--console=plain capture"),
+        (
+            "Gradle (Kotlin)",
+            "settings.gradle.kts",
+            "--console=plain capture",
+        ),
         ("Gradle", "gradlew", "--console=plain capture"),
         ("Maven", "pom.xml", "-B batch mode + output redirect"),
         ("Bazel", "BUILD", "--build_event_json_file"),
         ("Bazel", "WORKSPACE", "--build_event_json_file"),
         ("Buck2", ".buckconfig", "--console=simple + BEP output"),
         ("Meson", "meson.build", "compile_commands.json from setup"),
-        ("Swift PM", "Package.swift", "swift build structured diagnostics"),
+        (
+            "Swift PM",
+            "Package.swift",
+            "swift build structured diagnostics",
+        ),
         ("Zig", "build.zig", "--verbose capture"),
         ("Mix", "mix.exs", "--formatter json"),
-        ("Poetry/uv", "pyproject.toml", "pip install --report (PEP 668)"),
+        (
+            "Poetry/uv",
+            "pyproject.toml",
+            "pip install --report (PEP 668)",
+        ),
     ];
 
     for (name, detect_file, hint) in checks {
@@ -155,7 +185,78 @@ fn detect_build_systems(root: &Path) -> Vec<BuildSystemMatch> {
         }
     }
 
+    append_language_plugin_build_systems(root, &mut matches);
+
     matches
+}
+
+fn append_language_plugin_build_systems(root: &Path, matches: &mut Vec<BuildSystemMatch>) {
+    let cfg = curd_core::CurdConfig::load_from_workspace(root);
+    if !cfg.plugins.enabled {
+        return;
+    }
+    let Ok(installed) = curd_core::plugin_packages::load_installed_plugins(
+        root,
+        &cfg.plugins,
+        curd_core::plugin_packages::PluginKind::Language,
+    ) else {
+        return;
+    };
+    for record in installed {
+        let Some(spec) = record.language else {
+            continue;
+        };
+        let Some(build_system) = spec.build_system.filter(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        if !workspace_has_any_extension(root, &spec.extensions) {
+            continue;
+        }
+        if matches.iter().any(|m| m.name == build_system) {
+            continue;
+        }
+        matches.push(BuildSystemMatch {
+            name: Box::leak(build_system.into_boxed_str()),
+            detected_by: "installed .curdl plugin",
+            capture_hint: "configure matching [build.adapters.<name>] or use built-in adapter",
+        });
+    }
+}
+
+fn workspace_has_any_extension(root: &Path, extensions: &[String]) -> bool {
+    if extensions.is_empty() {
+        return false;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let skip = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == ".git" || n == ".curd" || n == "target" || n == "node_modules")
+                    .unwrap_or(false);
+                if !skip {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                continue;
+            };
+            if extensions
+                .iter()
+                .any(|candidate| candidate.trim_start_matches('.') == ext)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Scaffold the `.curd/` directory structure.
@@ -233,7 +334,7 @@ strict = false
                 _ => {}
             }
         }
-        
+
         if !added_tasks {
             default_config.push_str("# build = \"make build\"\n");
             default_config.push_str("# release = \"make release\"\n");
@@ -325,7 +426,10 @@ pub fn run_init(root: &Path) -> Result<()> {
     let se = curd_core::SearchEngine::new(root);
     match se.search("", None) {
         Ok(results) => {
-            println!("  ✅ Indexed {} symbols across the workspace.", results.len());
+            println!(
+                "  ✅ Indexed {} symbols across the workspace.",
+                results.len()
+            );
         }
         Err(e) => {
             println!("  ⚠️  Initial indexing completed with issues: {}", e);
@@ -334,7 +438,10 @@ pub fn run_init(root: &Path) -> Result<()> {
     }
 
     // Show config status
-    if root.join("curd.toml").exists() || root.join("settings.toml").exists() || root.join("CURD.toml").exists() {
+    if root.join("curd.toml").exists()
+        || root.join("settings.toml").exists()
+        || root.join("CURD.toml").exists()
+    {
         println!("  ✅ Workspace config found.");
     }
 
@@ -377,8 +484,14 @@ pub fn cleanup_agent_configs(root: &Path) {
         (root.join(".codex").join("config.json"), "mcpServers"),
         (root.join(".cursor").join("mcp.json"), "mcpServers"),
         (root.join(".mcp.json"), "mcpServers"), // claude_desktop / claude_code
-        (root.join(".cline").join("cline_mcp_settings.json"), "mcpServers"),
-        (root.join(".roo").join("cline_mcp_settings.json"), "mcpServers"),
+        (
+            root.join(".cline").join("cline_mcp_settings.json"),
+            "mcpServers",
+        ),
+        (
+            root.join(".roo").join("cline_mcp_settings.json"),
+            "mcpServers",
+        ),
         (root.join(".windsurf").join("mcp_config.json"), "mcpServers"),
         (root.join(".zed").join("settings.json"), "context_servers"),
     ];
@@ -389,7 +502,9 @@ pub fn cleanup_agent_configs(root: &Path) {
                 if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) {
                     let mut modified = false;
                     if let Some(obj) = config.as_object_mut() {
-                        if let Some(servers) = obj.get_mut(block_key).and_then(|v| v.as_object_mut()) {
+                        if let Some(servers) =
+                            obj.get_mut(block_key).and_then(|v| v.as_object_mut())
+                        {
                             let keys_to_remove: Vec<String> = servers
                                 .keys()
                                 .filter(|k| k.starts_with("curd_"))
@@ -402,19 +517,24 @@ pub fn cleanup_agent_configs(root: &Path) {
                         }
                     }
                     if modified {
-                        let _ = fs::write(&target_path, serde_json::to_string_pretty(&config).unwrap_or_default());
+                        let _ = fs::write(
+                            &target_path,
+                            serde_json::to_string_pretty(&config).unwrap_or_default(),
+                        );
                         println!("Removed CURD blocks from {}", target_path.display());
                     }
                 }
             }
         }
     }
-    
+
     // Clean up specific skills silently
     let gemini_skill = root.join(".gemini/skills/propose-plan/SKILL.md");
     if gemini_skill.exists() {
         let _ = fs::remove_file(&gemini_skill);
-        if let Some(p) = gemini_skill.parent() { let _ = fs::remove_dir(p); }
+        if let Some(p) = gemini_skill.parent() {
+            let _ = fs::remove_dir(p);
+        }
     }
     let cursor_rule = root.join(".cursor/rules/propose-plan.mdc");
     if cursor_rule.exists() {
@@ -427,13 +547,52 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn install_language_plugin(
+        root: &Path,
+        package_id: &str,
+        language_id: &str,
+        extensions: Vec<&str>,
+        build_system: Option<&str>,
+    ) {
+        let cfg = curd_core::config::PluginConfig::default();
+        let install_dir = curd_core::plugin_packages::plugin_install_root(root, &cfg)
+            .join("lang")
+            .join(package_id);
+        fs::create_dir_all(install_dir.join("lib")).unwrap();
+        fs::write(install_dir.join("lib/demo.dylib"), b"fake-dylib").unwrap();
+        let record = curd_core::plugin_packages::InstalledPluginRecord {
+            package_id: package_id.to_string(),
+            version: "0.1.0".to_string(),
+            kind: curd_core::plugin_packages::PluginKind::Language,
+            signer_pubkey_hex: "dev".to_string(),
+            install_dir: install_dir.clone(),
+            manifest_path: install_dir.join("manifest.json"),
+            tool: None,
+            language: Some(curd_core::plugin_packages::LanguagePluginSpec {
+                language_id: language_id.to_string(),
+                extensions: extensions.into_iter().map(|s| s.to_string()).collect(),
+                grammar_library_path: "lib/demo.dylib".to_string(),
+                grammar_symbol: format!("tree_sitter_{}", language_id),
+                query_path: None,
+                build_system: build_system.map(|s| s.to_string()),
+                lsp_adapter: None,
+                debug_adapter: None,
+            }),
+        };
+        fs::write(
+            install_dir.join("installed.json"),
+            serde_json::to_vec_pretty(&record).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn test_detect_vcs() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        
+
         assert_eq!(detect_vcs(root), None);
-        
+
         fs::create_dir(root.join(".git")).unwrap();
         assert_eq!(detect_vcs(root).unwrap(), "git");
     }
@@ -442,14 +601,14 @@ mod tests {
     fn test_detect_languages_and_build_systems() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        
+
         fs::write(root.join("Cargo.toml"), "").unwrap();
         fs::write(root.join("package.json"), "").unwrap();
-        
+
         let langs = detect_languages(root);
         assert!(langs.contains(&"Rust".to_string()));
         assert!(langs.contains(&"JavaScript".to_string()));
-        
+
         let builds = detect_build_systems(root);
         assert!(builds.iter().any(|b| b.name == "Cargo"));
         assert!(builds.iter().any(|b| b.name == "npm"));
@@ -469,14 +628,38 @@ mod tests {
             build_systems: vec![],
         };
 
-        scaffold_curd_dir(root, &info).unwrap();        
+        scaffold_curd_dir(root, &info).unwrap();
         assert!(root.join(".curd/builds").exists());
         assert!(root.join(".curd/feedback").exists());
         assert!(root.join(".curd/wiki").exists());
         assert!(root.join(".curd/commits").exists());
         assert!(root.join(".curd/curd.toml").exists());
-        
+
         let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
         assert!(gitignore.contains(".curd/"));
+    }
+
+    #[test]
+    fn test_detect_plugin_build_systems() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("src.acme"), "entity X").unwrap();
+        install_language_plugin(root, "acme-lang", "acme", vec!["acme"], Some("acme-build"));
+
+        let builds = detect_build_systems(root);
+        let plugin_build = builds.iter().find(|b| b.name == "acme-build").unwrap();
+        assert_eq!(plugin_build.detected_by, "installed .curdl plugin");
+    }
+
+    #[test]
+    fn test_disabled_plugins_hide_plugin_build_systems() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("settings.toml"), "[plugins]\nenabled = false\n").unwrap();
+        fs::write(root.join("src.acme"), "entity X").unwrap();
+        install_language_plugin(root, "acme-lang", "acme", vec!["acme"], Some("acme-build"));
+
+        let builds = detect_build_systems(root);
+        assert!(!builds.iter().any(|b| b.name == "acme-build"));
     }
 }

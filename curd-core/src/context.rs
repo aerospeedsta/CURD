@@ -1,23 +1,22 @@
 use crate::{
     CollaborationStore, CurdConfig, DebugEngine, DiagramEngine, DocEngine, DslNode, EditEngine,
-    FileEngine, FindEngine, GraphEngine, HistoryEngine, IndexBuildStats, LspEngine,
-    LangPluginEngine, MutationEngine, ParticipantRole, Plan, PlanEngine, ProfileEngine,
-    ReadEngine, ReplState, ReviewCycleEngine, SearchEngine, ShellEngine, SymbolKind,
-    ToolGroupEngine, ToolPluginEngine, VariantStore,
-    VariantWorkspaceBackend, Watchdog, WorkspaceEngine,
+    FileEngine, FindEngine, GraphEngine, HistoryEngine, IndexBuildStats, LangPluginEngine,
+    LspEngine, MutationEngine, ParticipantRole, Plan, PlanEngine, ProfileEngine, ReadEngine,
+    ReplState, ReviewCycleEngine, SearchEngine, ShellEngine, SymbolKind, ToolGroupEngine,
+    ToolPluginEngine, VariantStore, VariantWorkspaceBackend, Watchdog, WorkspaceEngine,
     doctor::{DoctorEngine, DoctorIndexConfig, DoctorProfile, DoctorThresholds},
     plan::{SystemEvent, SystemEventEnvelope},
     read_recent_index_runs,
 };
-use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
@@ -29,7 +28,9 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
-    fn is_risky(&self) -> bool { false }
+    fn is_risky(&self) -> bool {
+        false
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value>;
 }
 
@@ -38,12 +39,18 @@ macro_rules! define_legacy_tool {
     ($struct_name:ident, $name_str:expr, $handler_fn:ident, $risky:expr) => {
         pub struct $struct_name;
         impl Tool for $struct_name {
-            fn name(&self) -> &'static str { $name_str }
-            fn is_risky(&self) -> bool { $risky }
-            fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-                Box::pin(async move {
-                    $handler_fn(params, ctx).await
-                })
+            fn name(&self) -> &'static str {
+                $name_str
+            }
+            fn is_risky(&self) -> bool {
+                $risky
+            }
+            fn call<'a>(
+                &'a self,
+                params: &'a Value,
+                ctx: &'a EngineContext,
+            ) -> BoxFuture<'a, Value> {
+                Box::pin(async move { $handler_fn(params, ctx).await })
             }
         }
     };
@@ -53,12 +60,18 @@ macro_rules! define_stateless_tool {
     ($struct_name:ident, $name_str:expr, $handler_fn:ident, $risky:expr) => {
         pub struct $struct_name;
         impl Tool for $struct_name {
-            fn name(&self) -> &'static str { $name_str }
-            fn is_risky(&self) -> bool { $risky }
-            fn call<'a>(&'a self, params: &'a Value, _ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-                Box::pin(async move {
-                    $handler_fn(params).await
-                })
+            fn name(&self) -> &'static str {
+                $name_str
+            }
+            fn is_risky(&self) -> bool {
+                $risky
+            }
+            fn call<'a>(
+                &'a self,
+                params: &'a Value,
+                _ctx: &'a EngineContext,
+            ) -> BoxFuture<'a, Value> {
+                Box::pin(async move { $handler_fn(params).await })
             }
         }
     };
@@ -73,73 +86,174 @@ define_legacy_tool!(CheckpointTool, "checkpoint", handle_checkpoint, false);
 define_legacy_tool!(DelegateTool, "delegate", handle_delegate, false);
 define_legacy_tool!(FrontierTool, "frontier", handle_frontier, false);
 define_legacy_tool!(CrawlTool, "crawl", handle_crawl, false);
-define_legacy_tool!(RegisterPlanTool, "register_plan", handle_register_plan, false);
-define_legacy_tool!(BindParticipantRoleTool, "bind_participant_role", handle_bind_participant_role, false);
-define_legacy_tool!(ListSessionParticipantsTool, "list_session_participants", handle_list_session_participants, false);
-define_legacy_tool!(ListCollaborationParticipantsTool, "list_collaboration_participants", handle_list_session_participants, false);
-define_legacy_tool!(ClaimHumanOverrideTool, "claim_human_override", handle_claim_human_override, false);
-define_legacy_tool!(ReleaseHumanOverrideTool, "release_human_override", handle_release_human_override, false);
-define_legacy_tool!(CreatePlanSetTool, "create_plan_set", handle_create_plan_set, false);
-define_legacy_tool!(ListPlanSetsTool, "list_plan_sets", handle_list_plan_sets, false);
-define_legacy_tool!(CreatePlanVariantTool, "create_plan_variant", handle_create_plan_variant, false);
-define_legacy_tool!(ListPlanVariantsTool, "list_plan_variants", handle_list_plan_variants, false);
-define_legacy_tool!(SimulatePlanVariantTool, "simulate_plan_variant", handle_simulate_plan_variant, false);
-define_legacy_tool!(ComparePlanVariantsTool, "compare_plan_variants", handle_compare_plan_variants, false);
-define_legacy_tool!(ReviewPlanVariantTool, "review_plan_variant", handle_review_plan_variant, false);
-define_legacy_tool!(PromotePlanVariantTool, "promote_plan_variant", handle_promote_plan_variant, true);
-define_legacy_tool!(ToolPluginManageTool, "plugin_tool", handle_tool_plugin, false);
-define_legacy_tool!(LanguagePluginManageTool, "plugin_language", handle_language_plugin, false);
+define_legacy_tool!(
+    RegisterPlanTool,
+    "register_plan",
+    handle_register_plan,
+    false
+);
+define_legacy_tool!(
+    BindParticipantRoleTool,
+    "bind_participant_role",
+    handle_bind_participant_role,
+    false
+);
+define_legacy_tool!(
+    ListSessionParticipantsTool,
+    "list_session_participants",
+    handle_list_session_participants,
+    false
+);
+define_legacy_tool!(
+    ListCollaborationParticipantsTool,
+    "list_collaboration_participants",
+    handle_list_session_participants,
+    false
+);
+define_legacy_tool!(
+    ClaimHumanOverrideTool,
+    "claim_human_override",
+    handle_claim_human_override,
+    false
+);
+define_legacy_tool!(
+    ReleaseHumanOverrideTool,
+    "release_human_override",
+    handle_release_human_override,
+    false
+);
+define_legacy_tool!(
+    CreatePlanSetTool,
+    "create_plan_set",
+    handle_create_plan_set,
+    false
+);
+define_legacy_tool!(
+    ListPlanSetsTool,
+    "list_plan_sets",
+    handle_list_plan_sets,
+    false
+);
+define_legacy_tool!(
+    CreatePlanVariantTool,
+    "create_plan_variant",
+    handle_create_plan_variant,
+    false
+);
+define_legacy_tool!(
+    ListPlanVariantsTool,
+    "list_plan_variants",
+    handle_list_plan_variants,
+    false
+);
+define_legacy_tool!(
+    SimulatePlanVariantTool,
+    "simulate_plan_variant",
+    handle_simulate_plan_variant,
+    false
+);
+define_legacy_tool!(
+    ComparePlanVariantsTool,
+    "compare_plan_variants",
+    handle_compare_plan_variants,
+    false
+);
+define_legacy_tool!(
+    ReviewPlanVariantTool,
+    "review_plan_variant",
+    handle_review_plan_variant,
+    false
+);
+define_legacy_tool!(
+    PromotePlanVariantTool,
+    "promote_plan_variant",
+    handle_promote_plan_variant,
+    true
+);
+define_legacy_tool!(
+    ToolPluginManageTool,
+    "plugin_tool",
+    handle_tool_plugin,
+    false
+);
+define_legacy_tool!(
+    LanguagePluginManageTool,
+    "plugin_language",
+    handle_language_plugin,
+    false
+);
 define_legacy_tool!(ToolGroupManageTool, "tool_group", handle_tool_group, false);
-define_legacy_tool!(PluginTrustManageTool, "plugin_trust", handle_plugin_trust, false);
+define_legacy_tool!(
+    PluginTrustManageTool,
+    "plugin_trust",
+    handle_plugin_trust,
+    false
+);
+define_legacy_tool!(
+    VerifyImpactTool,
+    "verify_impact",
+    handle_verify_impact,
+    false
+);
 
-use crate::mcp::{handle_connection_open, handle_connection_verify};
+use crate::connection::{handle_connection_open, handle_connection_verify};
 
 pub struct SessionOpenTool;
 impl Tool for SessionOpenTool {
-    fn name(&self) -> &'static str { "session_open" }
+    fn name(&self) -> &'static str {
+        "session_open"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_connection_open(params, ctx).await
-        })
+        Box::pin(async move { handle_connection_open(params, ctx).await })
     }
 }
 
 pub struct SessionVerifyTool;
 impl Tool for SessionVerifyTool {
-    fn name(&self) -> &'static str { "session_verify" }
+    fn name(&self) -> &'static str {
+        "session_verify"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_connection_verify(params, ctx).await
-        })
+        Box::pin(async move { handle_connection_verify(params, ctx).await })
     }
 }
 
 pub struct ConnectionOpenTool;
 impl Tool for ConnectionOpenTool {
-    fn name(&self) -> &'static str { "connection_open" }
+    fn name(&self) -> &'static str {
+        "connection_open"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_connection_open(params, ctx).await
-        })
+        Box::pin(async move { handle_connection_open(params, ctx).await })
     }
 }
 
 pub struct ConnectionVerifyTool;
 impl Tool for ConnectionVerifyTool {
-    fn name(&self) -> &'static str { "connection_verify" }
-    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_connection_verify(params, ctx).await
-        })
+    fn name(&self) -> &'static str {
+        "connection_verify"
     }
+    fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
+        Box::pin(async move { handle_connection_verify(params, ctx).await })
+    }
+}
+
+fn current_shadow_root(ctx: &EngineContext) -> Option<std::path::PathBuf> {
+    ctx.we
+        .shadow
+        .lock()
+        .ok()
+        .and_then(|shadow| shadow.get_shadow_root().cloned())
 }
 
 pub struct ReadTool;
 impl Tool for ReadTool {
-    fn name(&self) -> &'static str { "read" }
+    fn name(&self) -> &'static str {
+        "read"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_read(params, Arc::clone(&ctx.re), shadow_root).await
         })
     }
@@ -147,11 +261,15 @@ impl Tool for ReadTool {
 
 pub struct EditTool;
 impl Tool for EditTool {
-    fn name(&self) -> &'static str { "edit" }
-    fn is_risky(&self) -> bool { true }
+    fn name(&self) -> &'static str {
+        "edit"
+    }
+    fn is_risky(&self) -> bool {
+        true
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_edit(params, Arc::clone(&ctx.ee), shadow_root).await
         })
     }
@@ -159,11 +277,15 @@ impl Tool for EditTool {
 
 pub struct ManageFileTool;
 impl Tool for ManageFileTool {
-    fn name(&self) -> &'static str { "manage_file" }
-    fn is_risky(&self) -> bool { true }
+    fn name(&self) -> &'static str {
+        "manage_file"
+    }
+    fn is_risky(&self) -> bool {
+        true
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_manage_file(params, Arc::clone(&ctx.fie), shadow_root).await
         })
     }
@@ -171,11 +293,15 @@ impl Tool for ManageFileTool {
 
 pub struct MutateTool;
 impl Tool for MutateTool {
-    fn name(&self) -> &'static str { "mutate" }
-    fn is_risky(&self) -> bool { true }
+    fn name(&self) -> &'static str {
+        "mutate"
+    }
+    fn is_risky(&self) -> bool {
+        true
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_mutate(params, Arc::clone(&ctx.mu), shadow_root).await
         })
     }
@@ -183,11 +309,15 @@ impl Tool for MutateTool {
 
 pub struct ShellTool;
 impl Tool for ShellTool {
-    fn name(&self) -> &'static str { "shell" }
-    fn is_risky(&self) -> bool { true }
+    fn name(&self) -> &'static str {
+        "shell"
+    }
+    fn is_risky(&self) -> bool {
+        true
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_shell(params, &ctx.she, shadow_root.as_deref()).await
         })
     }
@@ -195,10 +325,12 @@ impl Tool for ShellTool {
 
 pub struct ShellStatusTool;
 impl Tool for ShellStatusTool {
-    fn name(&self) -> &'static str { "shell_status" }
+    fn name(&self) -> &'static str {
+        "shell_status"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_shell(params, &ctx.she, shadow_root.as_deref()).await
         })
     }
@@ -206,10 +338,12 @@ impl Tool for ShellStatusTool {
 
 pub struct TerminateTool;
 impl Tool for TerminateTool {
-    fn name(&self) -> &'static str { "terminate" }
+    fn name(&self) -> &'static str {
+        "terminate"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_shell(params, &ctx.she, shadow_root.as_deref()).await
         })
     }
@@ -217,89 +351,95 @@ impl Tool for TerminateTool {
 
 pub struct GraphTool;
 impl Tool for GraphTool {
-    fn name(&self) -> &'static str { "graph" }
+    fn name(&self) -> &'static str {
+        "graph"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_graph(params, Arc::clone(&ctx.ge)).await
-        })
+        Box::pin(async move { handle_graph(params, Arc::clone(&ctx.ge)).await })
     }
 }
 
 pub struct DiagramTool;
 impl Tool for DiagramTool {
-    fn name(&self) -> &'static str { "diagram" }
+    fn name(&self) -> &'static str {
+        "diagram"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_diagram(params, Arc::clone(&ctx.de)).await
-        })
+        Box::pin(async move { handle_diagram(params, Arc::clone(&ctx.de)).await })
     }
 }
 
 pub struct LspTool;
 impl Tool for LspTool {
-    fn name(&self) -> &'static str { "lsp" }
+    fn name(&self) -> &'static str {
+        "lsp"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_lsp(params, &ctx.le).await
-        })
+        Box::pin(async move { handle_lsp(params, &ctx.le).await })
     }
 }
 
 pub struct ProfileTool;
 impl Tool for ProfileTool {
-    fn name(&self) -> &'static str { "profile" }
+    fn name(&self) -> &'static str {
+        "profile"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_profile(params, &ctx.pe).await
-        })
+        Box::pin(async move { handle_profile(params, &ctx.pe).await })
     }
 }
 
 pub struct DebugTool;
 impl Tool for DebugTool {
-    fn name(&self) -> &'static str { "debug" }
-    fn is_risky(&self) -> bool { true }
+    fn name(&self) -> &'static str {
+        "debug"
+    }
+    fn is_risky(&self) -> bool {
+        true
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_debug_dispatcher(params, &ctx.dbe).await
-        })
+        Box::pin(async move { handle_debug_dispatcher(params, &ctx.dbe).await })
     }
 }
 
 pub struct SessionTool;
 impl Tool for SessionTool {
-    fn name(&self) -> &'static str { "session" }
+    fn name(&self) -> &'static str {
+        "session"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_review_cycle_dispatcher(params, &ctx.rce).await
-        })
+        Box::pin(async move { handle_review_cycle_dispatcher(params, &ctx.rce).await })
     }
 }
 
 pub struct ReviewCycleTool;
 impl Tool for ReviewCycleTool {
-    fn name(&self) -> &'static str { "review_cycle" }
+    fn name(&self) -> &'static str {
+        "review_cycle"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_review_cycle_dispatcher(params, &ctx.rce).await
-        })
+        Box::pin(async move { handle_review_cycle_dispatcher(params, &ctx.rce).await })
     }
 }
 
 pub struct DoctorTool;
 impl Tool for DoctorTool {
-    fn name(&self) -> &'static str { "doctor" }
+    fn name(&self) -> &'static str {
+        "doctor"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_doctor(params, &ctx.doctore).await
-        })
+        Box::pin(async move { handle_doctor(params, &ctx.doctore).await })
     }
 }
 
 pub struct RefactorTool;
 impl Tool for RefactorTool {
-    fn name(&self) -> &'static str { "refactor" }
-    fn is_risky(&self) -> bool { true }
+    fn name(&self) -> &'static str {
+        "refactor"
+    }
+    fn is_risky(&self) -> bool {
+        true
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
             let _ = params;
@@ -311,22 +451,24 @@ impl Tool for RefactorTool {
 
 pub struct TemplateTool;
 impl Tool for TemplateTool {
-    fn name(&self) -> &'static str { "template" }
+    fn name(&self) -> &'static str {
+        "template"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_template(params, ctx).await
-        })
+        Box::pin(async move { handle_template(params, ctx).await })
     }
 }
 
 pub struct ProposalTool;
 impl Tool for ProposalTool {
-    fn name(&self) -> &'static str { "proposal" }
-    fn is_risky(&self) -> bool { true }
+    fn name(&self) -> &'static str {
+        "proposal"
+    }
+    fn is_risky(&self) -> bool {
+        true
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_proposal(params, ctx).await
-        })
+        Box::pin(async move { handle_proposal(params, ctx).await })
     }
 }
 
@@ -335,30 +477,33 @@ define_stateless_tool!(SimulateTool, "simulate", handle_simulate, false);
 
 pub struct ProposePlanTool;
 impl Tool for ProposePlanTool {
-    fn name(&self) -> &'static str { "propose_plan" }
+    fn name(&self) -> &'static str {
+        "propose_plan"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_propose_plan(params, ctx).await
-        })
+        Box::pin(async move { handle_propose_plan(params, ctx).await })
     }
 }
 
 pub struct ExecuteActivePlanTool;
 impl Tool for ExecuteActivePlanTool {
-    fn name(&self) -> &'static str { "execute_active_plan" }
+    fn name(&self) -> &'static str {
+        "execute_active_plan"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_execute_active_plan(params, ctx).await
-        })
+        Box::pin(async move { handle_execute_active_plan(params, ctx).await })
     }
 }
 
 pub struct BenchmarkTool;
 impl Tool for BenchmarkTool {
-    fn name(&self) -> &'static str { "benchmark" }
+    fn name(&self) -> &'static str {
+        "benchmark"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
         Box::pin(async move {
-            let allow_bench = cfg!(debug_assertions) || std::env::var("CURD_ALLOW_BENCHMARK").is_ok();
+            let allow_bench =
+                cfg!(debug_assertions) || std::env::var("CURD_ALLOW_BENCHMARK").is_ok();
             if allow_bench {
                 handle_benchmark(params, ctx).await
             } else {
@@ -370,11 +515,11 @@ impl Tool for BenchmarkTool {
 
 pub struct DocTool;
 impl Tool for DocTool {
-    fn name(&self) -> &'static str { "doc" }
+    fn name(&self) -> &'static str {
+        "doc"
+    }
     fn call<'a>(&'a self, params: &'a Value, ctx: &'a EngineContext) -> BoxFuture<'a, Value> {
-        Box::pin(async move {
-            handle_doc(params, ctx).await
-        })
+        Box::pin(async move { handle_doc(params, ctx).await })
     }
 }
 
@@ -514,16 +659,18 @@ impl EngineContext {
         }
 
         if crate::workspace::is_workspace_locked(&root_path) {
-            log::warn!("Workspace is locked by another active transaction. Starting in READ-ONLY mode.");
+            log::warn!(
+                "Workspace is locked by another active transaction. Starting in READ-ONLY mode."
+            );
             read_only = true;
         } else {
             let _ = fs::write(&lock_path, std::process::id().to_string());
         }
 
         let config = CurdConfig::load_from_workspace(&root_path);
-        
+
         let mut registry_map: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-        
+
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(SearchTool),
             Arc::new(ContractTool),
@@ -577,6 +724,7 @@ impl EngineContext {
             Arc::new(SimulateTool),
             Arc::new(ProposePlanTool),
             Arc::new(ExecuteActivePlanTool),
+            Arc::new(VerifyImpactTool),
             Arc::new(BenchmarkTool),
             Arc::new(DocTool),
         ];
@@ -596,12 +744,20 @@ impl EngineContext {
             ee: Arc::new(EditEngine::new(root).with_watchdog(watchdog.clone())),
             ge: Arc::new(GraphEngine::new(root)),
             we: Arc::new(WorkspaceEngine::new(root)),
-            she: Arc::new(ShellEngine::new(root, config.shell.clone(), config.policy.clone())),
+            she: Arc::new(ShellEngine::new(
+                root,
+                config.shell.clone(),
+                config.policy.clone(),
+            )),
             fe: Arc::new(FindEngine::new(root)),
             de: Arc::new(DiagramEngine::new(root)),
             fie: Arc::new(FileEngine::new(root)),
             le: Arc::new(LspEngine::new(root)),
-            pe: Arc::new(ProfileEngine::new(root, config.shell.clone(), config.policy.clone())),
+            pe: Arc::new(ProfileEngine::new(
+                root,
+                config.shell.clone(),
+                config.policy.clone(),
+            )),
             dbe: Arc::new(DebugEngine::new(root)),
             rce: Arc::new(ReviewCycleEngine::new(root)),
             doce: Arc::new(DocEngine::new()),
@@ -663,7 +819,10 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
         });
     }
 
-    if ctx.config.workspace.require_open_for_all_tools && !workspace_optional_tool(name) && !workspace_active {
+    if ctx.config.workspace.require_open_for_all_tools
+        && !workspace_optional_tool(name)
+        && !workspace_active
+    {
         return json!({
             "error": format!(
                 "WORKSPACE_BARRIER: Cannot execute tool '{}': no active workspace transaction. Run workspace(action: 'begin') first or disable workspace.require_open_for_all_tools in settings.toml.",
@@ -685,25 +844,31 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
     if risky_tool(name) {
         let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
         if !uri.is_empty() {
-             let mut locks = ctx.locks.lock().await;
-             let now = now_secs();
-             // Clean up expired locks
-             locks.retain(|_, v| v.expires_at_secs > now);
-             
-             let agent_id = params.get("agent_id").and_then(|v| v.as_str()).unwrap_or("agent");
-             if let Some(lock) = locks.get(uri) {
-                 if lock.owner_id == "human" && agent_id != "human" {
-                      return json!({
-                          "error": "HUMAN_OVERRIDE_CONFLICT: This symbol is currently being edited by a human in the REPL. Agent edits are rejected to prevent state corruption."
-                      });
-                 }
-             }
-             
-             // Auto-lock for current caller
-             locks.insert(uri.to_string(), LockInfo {
-                 owner_id: agent_id.to_string(),
-                 expires_at_secs: now + 300, // 5 minute lock
-             });
+            let mut locks = ctx.locks.lock().await;
+            let now = now_secs();
+            // Clean up expired locks
+            locks.retain(|_, v| v.expires_at_secs > now);
+
+            let agent_id = params
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent");
+            if let Some(lock) = locks.get(uri) {
+                if lock.owner_id == "human" && agent_id != "human" {
+                    return json!({
+                        "error": "HUMAN_OVERRIDE_CONFLICT: This symbol is currently being edited by a human in the REPL. Agent edits are rejected to prevent state corruption."
+                    });
+                }
+            }
+
+            // Auto-lock for current caller
+            locks.insert(
+                uri.to_string(),
+                LockInfo {
+                    owner_id: agent_id.to_string(),
+                    expires_at_secs: now + 300, // 5 minute lock
+                },
+            );
         }
     }
 
@@ -726,41 +891,32 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
     }
 
     // 1. Policy Enforcement
-    match ctx.policy_engine.evaluate(name, params, is_human, &ctx.workspace_root) {
-        crate::policy::PolicyDecision::Deny(err) => {
-            return json!({"status": "policy_rejected", "error": err});
+    match crate::validate_tool_call_core(ctx, name, params, is_human) {
+        Ok(_) => {}
+        Err(err) => {
+            return json!({
+                "status": "policy_rejected",
+                "error": err.message,
+                "details": err.details
+            });
         }
-        crate::policy::PolicyDecision::Audit(msg) => {
-            ctx.he.log(
-                Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
-                ctx.collaboration_id,
-                None,
-                None,
-                name,
-                params.clone(),
-                json!({"status": "audit", "message": msg}),
-                None,
-                None,
-                true,
-                None,
-                None,
-            );
-        }
-        crate::policy::PolicyDecision::Allow => {}
     }
 
     // 1b. Plan Gating (Mandatory Planning)
     if !is_human && risky_tool(name) && ctx.config.policy.require_plan_for_mutations {
         let is_executing = if let Some(token) = connection_token {
             let connections = ctx.connections.lock().await;
-            connections.get(token).map(|e| e.state.is_executing_plan).unwrap_or(false)
+            connections
+                .get(token)
+                .map(|e| e.state.is_executing_plan)
+                .unwrap_or(false)
         } else {
             false
         };
-        
+
         if !is_executing {
             return json!({
-                "status": "policy_rejected", 
+                "status": "policy_rejected",
                 "error": "PLAN_REQUIRED: Your organization requires all mutations to be part of a registered plan. Register a plan first, then call execute_plan."
             });
         }
@@ -772,7 +928,7 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
         if let Some(entry) = connections.get_mut(token) {
             let now = now_secs();
             let elapsed = now.saturating_sub(entry.budget.started_at_secs);
-            
+
             // Check time budget
             if let Some(max_secs) = ctx.config.budget.max_session_secs {
                 if elapsed > max_secs {
@@ -797,9 +953,12 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
     // Capture response for budget tracking (tokens)
     let res = if let Some(tool) = ctx.registry.get(name) {
         // Apply global 60s timeout to prevent hanging the server
-        match tokio::time::timeout(std::time::Duration::from_secs(60), tool.call(params, ctx)).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(60), tool.call(params, ctx)).await
+        {
             Ok(r) => r,
-            Err(_) => json!({"error": format!("TOOL_TIMEOUT: Execution of '{}' exceeded the maximum allowed duration of 60s.", name)}),
+            Err(_) => {
+                json!({"error": format!("TOOL_TIMEOUT: Execution of '{}' exceeded the maximum allowed duration of 60s.", name)})
+            }
         }
     } else {
         match ctx.tpe.invoke(name, params).await {
@@ -807,7 +966,9 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
             Ok(None) => match ctx.tge.invoke(name, params).await {
                 Ok(Some(value)) => value,
                 Ok(None) => match name {
-                    "find" => json!({"error": "The 'find' tool has been merged into 'search'. Use 'search' with mode='text'."}),
+                    "find" => {
+                        json!({"error": "The 'find' tool has been merged into 'search'. Use 'search' with mode='text'."})
+                    }
                     _ => json!({"error": format!("Tool not found: {}", name)}),
                 },
                 Err(err) => json!({"error": format!("Tool group '{}' failed: {}", name, err)}),
@@ -827,30 +988,55 @@ pub async fn dispatch_tool(name: &str, params: &Value, ctx: &EngineContext) -> V
             if let Some(max_tokens) = ctx.config.budget.max_tokens {
                 if entry.budget.tokens_consumed > max_tokens {
                     // Note: We return the result but mark subsequent calls as blocked
-                    log::warn!("Session {} has exhausted token budget ({} consumed)", token, entry.budget.tokens_consumed);
+                    log::warn!(
+                        "Session {} has exhausted token budget ({} consumed)",
+                        token,
+                        entry.budget.tokens_consumed
+                    );
                 }
             }
         }
     }
 
-    let error = res.get("error").and_then(|e| e.as_str()).map(|s| s.to_string());
+    let error = res
+        .get("error")
+        .and_then(|e| e.as_str())
+        .map(|s| s.to_string());
     let success = error.is_none();
 
-    let transaction_id = ctx.we.shadow.lock().ok().and_then(|s| s.get_transaction_id());
+    let transaction_id = ctx
+        .we
+        .shadow
+        .lock()
+        .ok()
+        .and_then(|s| s.get_transaction_id());
 
-    let base_hash = params.get("base_state_hash").and_then(|v| v.as_str()).map(|s| s.to_string());
-    
+    let base_hash = params
+        .get("base_state_hash")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     // 5. Compute Post-Hash for Traceability
     let post_hash = if success && risky_tool(name) {
-        ctx.ge.storage().ok().and_then(|s: crate::storage::Storage| s.compute_state_hash().ok())
+        ctx.ge
+            .storage()
+            .ok()
+            .and_then(|s: crate::storage::Storage| s.compute_state_hash().ok())
     } else {
         None
     };
 
     let agent_id = if let Some(token) = connection_token {
-        ctx.connections.lock().await.get(token).map(|e| e.pubkey_hex.clone())
+        ctx.connections
+            .lock()
+            .await
+            .get(token)
+            .map(|e| e.pubkey_hex.clone())
     } else {
-        params.get("agent_id").and_then(|v| v.as_str()).map(|s| s.to_string())
+        params
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     };
 
     ctx.he.log(
@@ -884,17 +1070,16 @@ fn workspace_optional_tool(name: &str) -> bool {
     )
 }
 
-
 async fn execute_benchmark_target(operation: &str, params: &Value, ctx: &EngineContext) -> Value {
     match operation {
         "search" => handle_search(params, ctx).await,
         "contract" => handle_contract(params, ctx).await,
         "read" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_read(params, Arc::clone(&ctx.re), shadow_root).await
         }
         "edit" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_edit(params, Arc::clone(&ctx.ee), shadow_root).await
         }
         "graph" => handle_graph(params, Arc::clone(&ctx.ge)).await,
@@ -903,20 +1088,20 @@ async fn execute_benchmark_target(operation: &str, params: &Value, ctx: &EngineC
             json!({"error": "The 'find' tool has been merged into 'search'. Use 'search' with mode='text'."})
         }
         "shell" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_shell(params, &ctx.she, shadow_root.as_deref()).await
         }
         "shell_status" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_shell(params, &ctx.she, shadow_root.as_deref()).await
         }
         "terminate" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_shell(params, &ctx.she, shadow_root.as_deref()).await
         }
         "diagram" => handle_diagram(params, Arc::clone(&ctx.de)).await,
         "manage_file" => {
-            let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
+            let shadow_root = current_shadow_root(ctx);
             handle_manage_file(params, Arc::clone(&ctx.fie), shadow_root).await
         }
         "lsp" => handle_lsp(params, &ctx.le).await,
@@ -958,7 +1143,7 @@ async fn execute_benchmark_target(operation: &str, params: &Value, ctx: &EngineC
     }
 }
 
-fn is_known_tool_name(name: &str) -> bool {
+pub(crate) fn is_known_tool_name(name: &str) -> bool {
     matches!(
         name,
         "search"
@@ -1262,8 +1447,13 @@ pub async fn handle_contract(params: &Value, ctx: &EngineContext) -> Value {
         return json!({"error":"contract requires: uri"});
     }
 
-    let shadow_root = ctx.we.shadow.lock().unwrap().get_shadow_root().cloned();
-    let read = handle_read(&json!({"uris":[uri], "verbosity": 1}), Arc::clone(&ctx.re), shadow_root).await;
+    let shadow_root = current_shadow_root(ctx);
+    let read = handle_read(
+        &json!({"uris":[uri], "verbosity": 1}),
+        Arc::clone(&ctx.re),
+        shadow_root,
+    )
+    .await;
     if read.get("error").is_some() {
         return read;
     }
@@ -1317,7 +1507,7 @@ pub async fn handle_execute_active_plan(params: &Value, ctx: &EngineContext) -> 
         let mut connections = ctx.connections.lock().await;
         if let Some(entry) = connections.get_mut(token) {
             entry.state.is_executing_plan = true;
-            // Note: We don't want to hold the lock during execution, 
+            // Note: We don't want to hold the lock during execution,
             // but execute_active_plan needs &mut state.
             // This is a bit tricky with the current architecture.
             // For now, we'll just set the flag and rely on the fact that
@@ -1376,7 +1566,10 @@ async fn resolve_authenticated_actor(
         let Some(entry) = connections.get(token) else {
             return Err(json!({"error": "invalid or expired connection_token"}));
         };
-        return Ok(Some((entry.agent_id.clone(), Some(entry.pubkey_hex.clone()))));
+        return Ok(Some((
+            entry.agent_id.clone(),
+            Some(entry.pubkey_hex.clone()),
+        )));
     }
     Ok(None)
 }
@@ -1407,7 +1600,9 @@ async fn require_bound_role(
             && !binding.is_human
             && ctx.config.collaboration.require_session_token_for_agents
         {
-            return Err(json!({"error": "connection_token is required for bound agent participants"}));
+            return Err(
+                json!({"error": "connection_token is required for bound agent participants"}),
+            );
         }
         if let Some((_, pubkey)) = authenticated
             && let Some(expected) = binding.pubkey_hex.as_ref()
@@ -1421,11 +1616,18 @@ async fn require_bound_role(
             binding.is_human,
         ))
     } else if ctx.config.collaboration.require_bound_participants {
-        Err(json!({"error": format!("participant is not bound to collaboration: {}", participant_id)}))
+        Err(
+            json!({"error": format!("participant is not bound to collaboration: {}", participant_id)}),
+        )
     } else {
-        let inferred_human = params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false);
+        let inferred_human = params
+            .get("is_human")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !inferred_human && ctx.config.collaboration.require_session_token_for_agents {
-            return Err(json!({"error": format!("connection_token is required for agent participants: {}", participant_id)}));
+            return Err(
+                json!({"error": format!("connection_token is required for agent participants: {}", participant_id)}),
+            );
         }
         let role_raw = if inferred_human {
             ctx.config.collaboration.default_human_role.as_str()
@@ -1446,7 +1648,9 @@ async fn require_capability(
     if crate::role_allows(role.clone(), cap) {
         Ok((participant_id, role, is_human))
     } else {
-        Err(json!({"error": format!("participant role is not allowed to perform requested capability: {:?}", cap)}))
+        Err(
+            json!({"error": format!("participant role is not allowed to perform requested capability: {:?}", cap)}),
+        )
     }
 }
 
@@ -1460,7 +1664,12 @@ fn audit_action(
     actor: Option<String>,
     actor_kind: Option<&str>,
 ) {
-    let transaction_id = ctx.we.shadow.lock().ok().and_then(|s| s.get_transaction_id());
+    let transaction_id = ctx
+        .we
+        .shadow
+        .lock()
+        .ok()
+        .and_then(|s| s.get_transaction_id());
     let sequence_id = ctx.event_seq.load(Ordering::SeqCst);
     let resources = collect_contribution_resources(&input, &output);
     let kind = actor_kind
@@ -1495,7 +1704,8 @@ fn audit_action(
 }
 
 fn infer_actor_kind(actor: &Option<String>) -> String {
-    actor.as_deref()
+    actor
+        .as_deref()
         .map(|value| {
             if value.starts_with("human")
                 || value.contains("owner")
@@ -1553,7 +1763,10 @@ pub async fn handle_bind_participant_role(params: &Value, ctx: &EngineContext) -
     if !ctx.config.collaboration.enabled {
         return json!({"error": "collaboration is disabled in settings.toml"});
     }
-    let participant_id = params.get("participant_id").and_then(|v| v.as_str()).unwrap_or("");
+    let participant_id = params
+        .get("participant_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if participant_id.is_empty() {
         return json!({"error": "bind_participant_role requires: participant_id"});
     }
@@ -1563,36 +1776,75 @@ pub async fn handle_bind_participant_role(params: &Value, ctx: &EngineContext) -
         Ok(actor) => actor,
         Err(err) => return err,
     };
-    let binding_origin = if authenticated.is_some() { "remote_authenticated" } else { "local_direct" };
+    let binding_origin = if authenticated.is_some() {
+        "remote_authenticated"
+    } else {
+        "local_direct"
+    };
     let bootstrap = existing_state
         .as_ref()
         .map(|s| s.participants.is_empty())
         .unwrap_or(true);
     if let Ok(existing) = &existing_state {
         if existing.participants.is_empty() && ctx.config.collaboration.bootstrap_owner_human_only {
-            let is_human = params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false);
-            let role_raw = params.get("role").and_then(|v| v.as_str()).unwrap_or("observer");
+            let is_human = params
+                .get("is_human")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let role_raw = params
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("observer");
             if !(is_human && role_raw == "owner") {
                 let out = json!({"error": "first participant bootstrap must be a human owner per settings.toml"});
-                audit_action(ctx, "bind_participant_role", params.clone(), out.clone(), false, out.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id.to_string()), Some("human"));
+                audit_action(
+                    ctx,
+                    "bind_participant_role",
+                    params.clone(),
+                    out.clone(),
+                    false,
+                    out.get("error")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    Some(participant_id.to_string()),
+                    Some("human"),
+                );
                 return out;
             }
         } else if !existing.participants.is_empty() {
             let Ok((_actor, _role, _is_human)) =
-            require_capability(params, ctx, crate::CollaborationCapability::RoleBind).await
+                require_capability(params, ctx, crate::CollaborationCapability::RoleBind).await
             else {
                 let out = json!({"error": "bind_participant_role requires a bound owner/editor with RoleBind"});
-                audit_action(ctx, "bind_participant_role", params.clone(), out.clone(), false, out.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id.to_string()), None);
+                audit_action(
+                    ctx,
+                    "bind_participant_role",
+                    params.clone(),
+                    out.clone(),
+                    false,
+                    out.get("error")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    Some(participant_id.to_string()),
+                    None,
+                );
                 return out;
             };
         }
     }
-    let default_role = if params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false) {
+    let default_role = if params
+        .get("is_human")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         ctx.config.collaboration.default_human_role.as_str()
     } else {
         ctx.config.collaboration.default_agent_role.as_str()
     };
-    let role_raw = params.get("role").and_then(|v| v.as_str()).unwrap_or(default_role);
+    let role_raw = params
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or(default_role);
     let Some(role) = parse_role(role_raw) else {
         return json!({"error": format!("unsupported role: {role_raw}")});
     };
@@ -1601,8 +1853,14 @@ pub async fn handle_bind_participant_role(params: &Value, ctx: &EngineContext) -
         participant_id,
         params.get("display_name").and_then(|v| v.as_str()),
         role,
-        params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false),
-        params.get("pubkey_hex").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        params
+            .get("is_human")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        params
+            .get("pubkey_hex")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         authenticated.as_ref().map(|(id, _)| id.clone()),
         binding_origin,
         bootstrap,
@@ -1616,9 +1874,21 @@ pub async fn handle_bind_participant_role(params: &Value, ctx: &EngineContext) -
         params.clone(),
         res.clone(),
         res.get("error").is_none(),
-        res.get("error").and_then(|v| v.as_str()).map(str::to_string),
+        res.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         Some(participant_id.to_string()),
-        Some(if params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false) { "human" } else { "agent" }),
+        Some(
+            if params
+                .get("is_human")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                "human"
+            } else {
+                "agent"
+            },
+        ),
     );
     if res.get("error").is_none() {
         emit_system_event(
@@ -1626,7 +1896,10 @@ pub async fn handle_bind_participant_role(params: &Value, ctx: &EngineContext) -
             SystemEvent::ParticipantBound {
                 participant_id: participant_id.to_string(),
                 role: role_raw.to_string(),
-                is_human: params.get("is_human").and_then(|v| v.as_bool()).unwrap_or(false),
+                is_human: params
+                    .get("is_human")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             },
         );
     }
@@ -1653,7 +1926,10 @@ pub async fn handle_claim_human_override(params: &Value, ctx: &EngineContext) ->
     if !is_human {
         return json!({"error": "only human participants can claim human override"});
     }
-    let resource_key = params.get("resource_key").and_then(|v| v.as_str()).unwrap_or("");
+    let resource_key = params
+        .get("resource_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if resource_key.is_empty() {
         return json!({"error": "claim_human_override requires: resource_key"});
     }
@@ -1665,7 +1941,12 @@ pub async fn handle_claim_human_override(params: &Value, ctx: &EngineContext) ->
         .and_then(|v| v.as_u64())
         .unwrap_or(ctx.config.collaboration.human_override_ttl_secs);
     let store = CollaborationStore::new(&ctx.workspace_root);
-    let res = match store.claim_lock(ctx.collaboration_id, &participant_id, resource_key, ttl_secs) {
+    let res = match store.claim_lock(
+        ctx.collaboration_id,
+        &participant_id,
+        resource_key,
+        ttl_secs,
+    ) {
         Ok(state) => {
             ctx.locks.lock().await.insert(
                 resource_key.to_string(),
@@ -1678,12 +1959,27 @@ pub async fn handle_claim_human_override(params: &Value, ctx: &EngineContext) ->
         }
         Err(e) => json!({"error": e.to_string()}),
     };
-    audit_action(ctx, "claim_human_override", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), Some("human"));
+    audit_action(
+        ctx,
+        "claim_human_override",
+        params.clone(),
+        res.clone(),
+        res.get("error").is_none(),
+        res.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        Some(participant_id),
+        Some("human"),
+    );
     if res.get("error").is_none() {
         emit_system_event(
             ctx,
             SystemEvent::HumanOverrideClaimed {
-                participant_id: params.get("participant_id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                participant_id: params
+                    .get("participant_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 resource_key: resource_key.to_string(),
             },
         );
@@ -1700,7 +1996,10 @@ pub async fn handle_release_human_override(params: &Value, ctx: &EngineContext) 
     if !is_human {
         return json!({"error": "only human participants can release human override"});
     }
-    let resource_key = params.get("resource_key").and_then(|v| v.as_str()).unwrap_or("");
+    let resource_key = params
+        .get("resource_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if resource_key.is_empty() {
         return json!({"error": "release_human_override requires: resource_key"});
     }
@@ -1715,12 +2014,27 @@ pub async fn handle_release_human_override(params: &Value, ctx: &EngineContext) 
         }
         Err(e) => json!({"error": e.to_string()}),
     };
-    audit_action(ctx, "release_human_override", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), Some("human"));
+    audit_action(
+        ctx,
+        "release_human_override",
+        params.clone(),
+        res.clone(),
+        res.get("error").is_none(),
+        res.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        Some(participant_id),
+        Some("human"),
+    );
     if res.get("error").is_none() {
         emit_system_event(
             ctx,
             SystemEvent::HumanOverrideReleased {
-                participant_id: params.get("participant_id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                participant_id: params
+                    .get("participant_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 resource_key: resource_key.to_string(),
             },
         );
@@ -1738,18 +2052,46 @@ pub async fn handle_create_plan_set(params: &Value, ctx: &EngineContext) -> Valu
         return json!({"error": "create_plan_set requires a participant with plan creation capability"});
     };
     let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("");
-    let objective = params.get("objective").and_then(|v| v.as_str()).unwrap_or("");
+    let objective = params
+        .get("objective")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if title.is_empty() || objective.is_empty() {
         return json!({"error": "create_plan_set requires: title, objective"});
     }
-    let created_by = params.get("created_by").and_then(|v| v.as_str()).unwrap_or(&participant_id);
+    let created_by = params
+        .get("created_by")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&participant_id);
     let store = VariantStore::new(&ctx.workspace_root);
-    let res = match store.create_plan_set(&ctx.config, ctx.collaboration_id, title.to_string(), objective.to_string(), created_by.to_string()) {
+    let res = match store.create_plan_set(
+        &ctx.config,
+        ctx.collaboration_id,
+        title.to_string(),
+        objective.to_string(),
+        created_by.to_string(),
+    ) {
         Ok(plan_set) => json!({"status": "ok", "plan_set": plan_set}),
         Err(e) => json!({"error": e.to_string()}),
     };
-    audit_action(ctx, "create_plan_set", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), None);
-    if let Some(plan_set_id) = res.get("plan_set").and_then(|p| p.get("id")).and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) {
+    audit_action(
+        ctx,
+        "create_plan_set",
+        params.clone(),
+        res.clone(),
+        res.get("error").is_none(),
+        res.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        Some(participant_id),
+        None,
+    );
+    if let Some(plan_set_id) = res
+        .get("plan_set")
+        .and_then(|p| p.get("id"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
         emit_system_event(
             ctx,
             SystemEvent::PlanSetCreated {
@@ -1759,7 +2101,11 @@ pub async fn handle_create_plan_set(params: &Value, ctx: &EngineContext) -> Valu
         );
         if let Ok(retention) = store.enforce_retention(&ctx.config) {
             if let Some(pruned) = retention.get("pruned_plan_sets").and_then(|v| v.as_array()) {
-                for id in pruned.iter().filter_map(|v| v.as_str()).filter_map(|s| Uuid::parse_str(s).ok()) {
+                for id in pruned
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| Uuid::parse_str(s).ok())
+                {
                     emit_system_event(ctx, SystemEvent::PlanSetPruned { plan_set_id: id });
                 }
             }
@@ -1782,15 +2128,25 @@ pub async fn handle_create_plan_variant(params: &Value, ctx: &EngineContext) -> 
     else {
         return json!({"error": "create_plan_variant requires a participant with plan creation capability"});
     };
-    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(plan_set_id) = params
+        .get("plan_set_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "create_plan_variant requires valid plan_set_id"});
     };
     let title = params.get("title").and_then(|v| v.as_str()).unwrap_or("");
-    let strategy_summary = params.get("strategy_summary").and_then(|v| v.as_str()).unwrap_or("");
+    let strategy_summary = params
+        .get("strategy_summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if title.is_empty() {
         return json!({"error": "create_plan_variant requires: title"});
     }
-    let created_by = params.get("created_by").and_then(|v| v.as_str()).unwrap_or(&participant_id);
+    let created_by = params
+        .get("created_by")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&participant_id);
     let plan_value = if let Some(path) = match validated_plan_path(params, ctx) {
         Ok(path) => path,
         Err(err) => return err,
@@ -1812,7 +2168,9 @@ pub async fn handle_create_plan_variant(params: &Value, ctx: &EngineContext) -> 
     } else {
         params.get("plan").cloned().unwrap_or(Value::Null)
     };
-    let estimated_plan_bytes = serde_json::to_vec(&plan_value).map(|v| v.len()).unwrap_or(usize::MAX);
+    let estimated_plan_bytes = serde_json::to_vec(&plan_value)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX);
     if estimated_plan_bytes > ctx.config.variants.max_plan_bytes {
         return json!({"error": format!("plan payload exceeds max_plan_bytes ({})", ctx.config.variants.max_plan_bytes)});
     }
@@ -1820,7 +2178,10 @@ pub async fn handle_create_plan_variant(params: &Value, ctx: &EngineContext) -> 
         Ok(plan) => plan,
         Err(e) => return json!({"error": format!("invalid plan payload: {e}")}),
     };
-    let backend_raw = params.get("backend").and_then(|v| v.as_str()).unwrap_or(&ctx.config.variants.default_backend);
+    let backend_raw = params
+        .get("backend")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&ctx.config.variants.default_backend);
     if backend_raw == "worktree" && !ctx.config.variants.allow_worktree_backend {
         return json!({"error": "worktree backend is disabled in settings.toml"});
     }
@@ -1829,12 +2190,24 @@ pub async fn handle_create_plan_variant(params: &Value, ctx: &EngineContext) -> 
         "worktree" => VariantWorkspaceBackend::Worktree,
         _ => return json!({"error": format!("unsupported backend: {backend_raw}")}),
     };
-    let assumptions = params.get("assumptions").and_then(|v| v.as_array()).map(|a| {
-        a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>()
-    }).unwrap_or_default();
-    let risk_tags = params.get("risk_tags").and_then(|v| v.as_array()).map(|a| {
-        a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>()
-    }).unwrap_or_default();
+    let assumptions = params
+        .get("assumptions")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let risk_tags = params
+        .get("risk_tags")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let store = VariantStore::new(&ctx.workspace_root);
     let res = match store.create_variant(
         &ctx.config,
@@ -1850,11 +2223,28 @@ pub async fn handle_create_plan_variant(params: &Value, ctx: &EngineContext) -> 
         Ok(variant) => json!({"status": "ok", "variant": variant}),
         Err(e) => json!({"error": e.to_string()}),
     };
-    audit_action(ctx, "create_plan_variant", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), None);
+    audit_action(
+        ctx,
+        "create_plan_variant",
+        params.clone(),
+        res.clone(),
+        res.get("error").is_none(),
+        res.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        Some(participant_id),
+        None,
+    );
     if let Some(variant) = res.get("variant") {
         if let (Some(plan_set_id), Some(variant_id)) = (
-            variant.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()),
-            variant.get("id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()),
+            variant
+                .get("plan_set_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok()),
+            variant
+                .get("id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok()),
         ) {
             emit_system_event(
                 ctx,
@@ -1870,7 +2260,11 @@ pub async fn handle_create_plan_variant(params: &Value, ctx: &EngineContext) -> 
 }
 
 pub async fn handle_list_plan_variants(params: &Value, ctx: &EngineContext) -> Value {
-    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(plan_set_id) = params
+        .get("plan_set_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "list_plan_variants requires valid plan_set_id"});
     };
     let store = VariantStore::new(&ctx.workspace_root);
@@ -1886,26 +2280,52 @@ pub async fn handle_simulate_plan_variant(params: &Value, ctx: &EngineContext) -
     else {
         return json!({"error": "simulate_plan_variant requires a participant with plan simulation capability"});
     };
-    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(plan_set_id) = params
+        .get("plan_set_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "simulate_plan_variant requires valid plan_set_id"});
     };
-    let Some(variant_id) = params.get("variant_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(variant_id) = params
+        .get("variant_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "simulate_plan_variant requires valid variant_id"});
     };
     let store = VariantStore::new(&ctx.workspace_root);
     match store.load_variant(plan_set_id, variant_id) {
         Ok(mut variant) => match store.simulate_variant(&mut variant, &ctx.config).await {
             Ok(result) => {
-                emit_system_event(ctx, SystemEvent::PlanVariantSimulated { plan_set_id, variant_id });
+                emit_system_event(
+                    ctx,
+                    SystemEvent::PlanVariantSimulated {
+                        plan_set_id,
+                        variant_id,
+                    },
+                );
                 if let Ok(retention) = store.enforce_retention(&ctx.config)
-                    && let Some(pruned) = retention.get("pruned_variant_workspaces").and_then(|v| v.as_array())
+                    && let Some(pruned) = retention
+                        .get("pruned_variant_workspaces")
+                        .and_then(|v| v.as_array())
                 {
                     for item in pruned {
                         if let (Some(ps), Some(vid)) = (
-                            item.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()),
-                            item.get("variant_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()),
+                            item.get("plan_set_id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| Uuid::parse_str(s).ok()),
+                            item.get("variant_id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| Uuid::parse_str(s).ok()),
                         ) {
-                            emit_system_event(ctx, SystemEvent::VariantWorkspacePruned { plan_set_id: ps, variant_id: vid });
+                            emit_system_event(
+                                ctx,
+                                SystemEvent::VariantWorkspacePruned {
+                                    plan_set_id: ps,
+                                    variant_id: vid,
+                                },
+                            );
                         }
                     }
                 }
@@ -1923,15 +2343,23 @@ pub async fn handle_compare_plan_variants(params: &Value, ctx: &EngineContext) -
     else {
         return json!({"error": "compare_plan_variants requires a participant with plan compare capability"});
     };
-    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(plan_set_id) = params
+        .get("plan_set_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "compare_plan_variants requires valid plan_set_id"});
     };
-    let variant_ids = params.get("variant_ids").and_then(|v| v.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|v| v.as_str())
-            .filter_map(|s| Uuid::parse_str(s).ok())
-            .collect::<Vec<_>>()
-    }).unwrap_or_default();
+    let variant_ids = params
+        .get("variant_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     if variant_ids.is_empty() {
         return json!({"error": "compare_plan_variants requires non-empty variant_ids"});
     }
@@ -1941,7 +2369,13 @@ pub async fn handle_compare_plan_variants(params: &Value, ctx: &EngineContext) -
     let store = VariantStore::new(&ctx.workspace_root);
     match store.compare_variants(&ctx.config, plan_set_id, &variant_ids) {
         Ok(result) => {
-            emit_system_event(ctx, SystemEvent::PlanVariantCompared { plan_set_id, variant_ids });
+            emit_system_event(
+                ctx,
+                SystemEvent::PlanVariantCompared {
+                    plan_set_id,
+                    variant_ids,
+                },
+            );
             result
         }
         Err(e) => json!({"error": e.to_string()}),
@@ -1954,13 +2388,24 @@ pub async fn handle_review_plan_variant(params: &Value, ctx: &EngineContext) -> 
     else {
         return json!({"error": "review_plan_variant requires a participant with plan review capability"});
     };
-    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(plan_set_id) = params
+        .get("plan_set_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "review_plan_variant requires valid plan_set_id"});
     };
-    let Some(variant_id) = params.get("variant_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(variant_id) = params
+        .get("variant_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "review_plan_variant requires valid variant_id"});
     };
-    let decision = params.get("decision").and_then(|v| v.as_str()).unwrap_or("");
+    let decision = params
+        .get("decision")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if !matches!(decision, "review" | "approve" | "reject") {
         return json!({"error": "review_plan_variant decision must be one of: review, approve, reject"});
     }
@@ -1970,12 +2415,29 @@ pub async fn handle_review_plan_variant(params: &Value, ctx: &EngineContext) -> 
         variant_id,
         participant_id,
         decision,
-        params.get("summary").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        params
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     ) {
         Ok(variant) => json!({"status": "ok", "variant": variant}),
         Err(e) => json!({"error": e.to_string()}),
     };
-    audit_action(ctx, "review_plan_variant", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string), None);
+    audit_action(
+        ctx,
+        "review_plan_variant",
+        params.clone(),
+        res.clone(),
+        res.get("error").is_none(),
+        res.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("participant_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        None,
+    );
     if res.get("error").is_none() {
         emit_system_event(
             ctx,
@@ -1995,10 +2457,18 @@ pub async fn handle_promote_plan_variant(params: &Value, ctx: &EngineContext) ->
     else {
         return json!({"error": "promote_plan_variant requires a participant with promotion capability"});
     };
-    let Some(plan_set_id) = params.get("plan_set_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(plan_set_id) = params
+        .get("plan_set_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "promote_plan_variant requires valid plan_set_id"});
     };
-    let Some(variant_id) = params.get("variant_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+    let Some(variant_id) = params
+        .get("variant_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
         return json!({"error": "promote_plan_variant requires valid variant_id"});
     };
     if !ctx.config.collaboration.editor_can_promote && matches!(role, ParticipantRole::Editor) {
@@ -2008,14 +2478,21 @@ pub async fn handle_promote_plan_variant(params: &Value, ctx: &EngineContext) ->
     match store.load_variant(plan_set_id, variant_id) {
         Ok(mut variant) => {
             if ctx.config.variants.require_review_for_promotion
-                && !matches!(variant.status, crate::PlanVariantStatus::Reviewed | crate::PlanVariantStatus::Approved)
+                && !matches!(
+                    variant.status,
+                    crate::PlanVariantStatus::Reviewed | crate::PlanVariantStatus::Approved
+                )
             {
                 return json!({"error": "promotion requires reviewed or approved variant per settings.toml"});
             }
             let collab = CollaborationStore::new(&ctx.workspace_root);
             if let Ok(mut session) = collab.load_or_create(ctx.collaboration_id) {
                 collab.prune_expired_locks(&mut session);
-                if session.human_override_locks.iter().any(|lock| lock.owner_participant_id != participant_id) {
+                if session
+                    .human_override_locks
+                    .iter()
+                    .any(|lock| lock.owner_participant_id != participant_id)
+                {
                     return json!({"error": "promotion blocked by active human override lock"});
                 }
             }
@@ -2023,13 +2500,142 @@ pub async fn handle_promote_plan_variant(params: &Value, ctx: &EngineContext) ->
                 Ok(result) => result,
                 Err(e) => json!({"error": e.to_string()}),
             };
-            audit_action(ctx, "promote_plan_variant", params.clone(), res.clone(), res.get("error").is_none(), res.get("error").and_then(|v| v.as_str()).map(str::to_string), Some(participant_id), None);
+            audit_action(
+                ctx,
+                "promote_plan_variant",
+                params.clone(),
+                res.clone(),
+                res.get("error").is_none(),
+                res.get("error")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                Some(participant_id),
+                None,
+            );
             if res.get("error").is_none() {
-                emit_system_event(ctx, SystemEvent::PlanVariantPromoted { plan_set_id, variant_id });
+                emit_system_event(
+                    ctx,
+                    SystemEvent::PlanVariantPromoted {
+                        plan_set_id,
+                        variant_id,
+                    },
+                );
             }
             res
         }
         Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+pub async fn handle_verify_impact(params: &Value, ctx: &EngineContext) -> Value {
+    let connection_token = params
+        .get("connection_token")
+        .or_else(|| params.get("session_token"))
+        .and_then(|v| v.as_str());
+
+    if let Some(token) = connection_token {
+        let connections = ctx.connections.lock().await;
+        if !connections.contains_key(token) {
+            return json!({"status": "error", "error": "Invalid connection token"});
+        }
+    }
+
+    let active_shadow_root = ctx
+        .we
+        .shadow
+        .lock()
+        .ok()
+        .and_then(|shadow| shadow.get_shadow_root().cloned())
+        .or_else(|| {
+            let shadow = crate::transaction::ShadowStore::new(&ctx.workspace_root);
+            shadow.get_shadow_root().cloned()
+        });
+    let audit_root = active_shadow_root
+        .clone()
+        .unwrap_or_else(|| ctx.workspace_root.clone());
+
+    let audit_workspace = |root: &std::path::Path| -> std::result::Result<
+        (crate::graph::GraphIntegrityReport, usize),
+        String,
+    > {
+        let se = crate::SearchEngine::new(root);
+        let symbols = se
+            .get_all_symbols()
+            .map_err(|e| format!("Failed to index workspace for audit: {}", e))?;
+        let graph = crate::GraphEngine::new(root)
+            .build_dependency_graph_fresh()
+            .map_err(|e| format!("Failed to build graph for audit: {}", e))?;
+        let report = graph.calculate_integrity(&symbols);
+        Ok((report, symbols.len()))
+    };
+
+    let (report, symbol_count) = match audit_workspace(&audit_root) {
+        Ok(result) => result,
+        Err(error) => return json!({"status": "error", "error": error}),
+    };
+
+    let baseline = if active_shadow_root.is_some() {
+        match audit_workspace(&ctx.workspace_root) {
+            Ok((baseline_report, baseline_symbols)) => Some((baseline_report, baseline_symbols)),
+            Err(error) => return json!({"status": "error", "error": error}),
+        }
+    } else {
+        None
+    };
+
+    let strict = params
+        .get("strict")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let cohesion_regressed = baseline
+        .as_ref()
+        .is_some_and(|(before, _)| report.cohesion_ratio + f64::EPSILON < before.cohesion_ratio);
+    let strict_reject = if baseline.is_some() {
+        strict && cohesion_regressed
+    } else {
+        strict && report.cohesion_ratio < 0.90
+    };
+
+    if strict_reject {
+        let error = if let Some((before, _)) = &baseline {
+            format!(
+                "ARCHITECTURAL_REGRESSION: Graph cohesion regressed from {:.1}% to {:.1}%. Please resolve broken linkages before committing.",
+                before.cohesion_ratio * 100.0,
+                report.cohesion_ratio * 100.0
+            )
+        } else {
+            format!(
+                "ARCHITECTURAL_REGRESSION: Graph cohesion is {:.1}%. Please resolve broken linkages before committing.",
+                report.cohesion_ratio * 100.0
+            )
+        };
+        json!({
+            "status": "policy_rejected",
+            "error": error,
+            "report": report,
+            "symbol_count": symbol_count,
+            "baseline": baseline.as_ref().map(|(before, before_symbols)| json!({
+                "cohesion_ratio": before.cohesion_ratio,
+                "broken_links": before.total_stubs - before.resolved_stubs,
+                "symbol_count": before_symbols,
+            })),
+        })
+    } else {
+        json!({
+            "status": "ok",
+            "audit_root": audit_root,
+            "cohesion_ratio": report.cohesion_ratio,
+            "symbol_density": report.symbol_density,
+            "confidence_distribution": report.confidence_distribution,
+            "broken_links": report.total_stubs - report.resolved_stubs,
+            "symbol_count": symbol_count,
+            "baseline": baseline.as_ref().map(|(before, before_symbols)| json!({
+                "cohesion_ratio": before.cohesion_ratio,
+                "broken_links": before.total_stubs - before.resolved_stubs,
+                "symbol_count": before_symbols,
+            })),
+            "message": if report.cohesion_ratio > 0.95 { "Graph integrity is optimal." } else { "Graph contains significant unresolved symbols." }
+        })
     }
 }
 
@@ -2057,94 +2663,113 @@ pub async fn handle_search(params: &Value, ctx: &EngineContext) -> Value {
             match tokio::task::spawn_blocking(move || {
                 let mut res = se.search(&query_owned, kind.clone());
                 let stats = se.last_index_stats();
-                
+
                 let mut provenance = "local".to_string();
                 if let Ok(ref syms) = res
-                    && syms.is_empty() {
-                        let cfg = CurdConfig::load_from_workspace(&root);
-                        if cfg.reference.enable_delegation {
-                            for url in cfg.reference.instances.values() {
-                                let kind_str = match kind {
-                                    Some(SymbolKind::Function) => Some("function"),
-                                    Some(SymbolKind::Class) => Some("class"),
-                                    Some(SymbolKind::Method) => Some("method"),
-                                    _ => None,
-                                };
-                                let mut params = serde_json::Map::new();
-                                params.insert("query".to_string(), json!(query_owned));
-                                params.insert("mode".to_string(), json!("symbol"));
-                                if let Some(k) = kind_str {
-                                    params.insert("kind".to_string(), json!(k));
-                                }
-                                if !url.starts_with("http://") && !url.starts_with("https://") {
-                                    log::warn!("Blocking non-HTTP(S) delegation URL: {}", url);
-                                    continue;
-                                }
+                    && syms.is_empty()
+                {
+                    let cfg = CurdConfig::load_from_workspace(&root);
+                    if cfg.reference.enable_delegation {
+                        for url in cfg.reference.instances.values() {
+                            let kind_str = match kind {
+                                Some(SymbolKind::Function) => Some("function"),
+                                Some(SymbolKind::Class) => Some("class"),
+                                Some(SymbolKind::Method) => Some("method"),
+                                _ => None,
+                            };
+                            let mut params = serde_json::Map::new();
+                            params.insert("query".to_string(), json!(query_owned));
+                            params.insert("mode".to_string(), json!("symbol"));
+                            if let Some(k) = kind_str {
+                                params.insert("kind".to_string(), json!(k));
+                            }
+                            if !url.starts_with("http://") && !url.starts_with("https://") {
+                                log::warn!("Blocking non-HTTP(S) delegation URL: {}", url);
+                                continue;
+                            }
 
-                                // SSRF PROTECTION: Block localhost and private IP ranges
-                                // More robust host extraction: find everything between :// and the next / or @
-                                let host_part = url.split("://").nth(1).unwrap_or("");
-                                let host_and_port = if let Some(at_idx) = host_part.find('@') {
-                                    &host_part[at_idx + 1..]
-                                } else {
-                                    host_part
-                                };
-                                let host = host_and_port.split('/').next().unwrap_or("").split(':').next().unwrap_or("");
-                                
-                                let mut is_blocked = false;
-                                let host_lower = host.to_lowercase();
-                                if host_lower == "localhost" {
-                                    is_blocked = true;
-                                } else if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, 0)) {
-                                    for addr in addrs {
-                                        let ip = addr.ip();
-                                        if ip.is_loopback() || ip.is_unspecified() {
+                            // SSRF PROTECTION: Block localhost and private IP ranges
+                            // More robust host extraction: find everything between :// and the next / or @
+                            let host_part = url.split("://").nth(1).unwrap_or("");
+                            let host_and_port = if let Some(at_idx) = host_part.find('@') {
+                                &host_part[at_idx + 1..]
+                            } else {
+                                host_part
+                            };
+                            let host = host_and_port
+                                .split('/')
+                                .next()
+                                .unwrap_or("")
+                                .split(':')
+                                .next()
+                                .unwrap_or("");
+
+                            let mut is_blocked = false;
+                            let host_lower = host.to_lowercase();
+                            if host_lower == "localhost" {
+                                is_blocked = true;
+                            } else if let Ok(addrs) =
+                                std::net::ToSocketAddrs::to_socket_addrs(&(host, 0))
+                            {
+                                for addr in addrs {
+                                    let ip = addr.ip();
+                                    if ip.is_loopback() || ip.is_unspecified() {
+                                        is_blocked = true;
+                                        break;
+                                    }
+                                    if let std::net::IpAddr::V4(ipv4) = ip {
+                                        let octets = ipv4.octets();
+                                        if octets[0] == 10
+                                            || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                                            || (octets[0] == 192 && octets[1] == 168)
+                                            || (octets[0] == 169 && octets[1] == 254)
+                                        {
                                             is_blocked = true;
                                             break;
                                         }
-                                        if let std::net::IpAddr::V4(ipv4) = ip {
-                                            let octets = ipv4.octets();
-                                            if octets[0] == 10 || 
-                                               (octets[0] == 172 && (16..=31).contains(&octets[1])) || 
-                                               (octets[0] == 192 && octets[1] == 168) ||
-                                               (octets[0] == 169 && octets[1] == 254) {
-                                                is_blocked = true;
-                                                break;
-                                            }
-                                        } else if let std::net::IpAddr::V6(ipv6) = ip {
-                                            if (ipv6.segments()[0] & 0xfe00) == 0xfc00 {
-                                                is_blocked = true;
-                                                break;
-                                            }
+                                    } else if let std::net::IpAddr::V6(ipv6) = ip {
+                                        if (ipv6.segments()[0] & 0xfe00) == 0xfc00 {
+                                            is_blocked = true;
+                                            break;
                                         }
                                     }
                                 }
-                                
-                                if is_blocked {
-                                    log::warn!("Blocking restricted delegation URL: {}", url);
-                                    continue;
-                                }
+                            }
 
-                                let payload = json!({
-                                    "jsonrpc": "2.0",
-                                    "id": 1,
-                                    "method": "search",
-                                    "params": params
-                                });
-                                let body = serde_json::to_string(&payload).unwrap_or_default();
-                                if let Ok(resp) = ureq::post(url).set("Content-Type", "application/json").send_string(&body)
-                                    && let Ok(body_str) = resp.into_string()
-                                        && let Ok(json) = serde_json::from_str::<Value>(&body_str)
-                                            && let Some(arr) = json.get("result").and_then(|r| r.get("symbols")).and_then(|s| s.as_array())
-                                                && !arr.is_empty() {
-                                                    let ext_syms: Vec<crate::Symbol> = arr.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect();
-                                                    res = Ok(ext_syms);
-                                                    provenance = "external".to_string();
-                                                    break;
-                                                }
+                            if is_blocked {
+                                log::warn!("Blocking restricted delegation URL: {}", url);
+                                continue;
+                            }
+
+                            let payload = json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "search",
+                                "params": params
+                            });
+                            let body = serde_json::to_string(&payload).unwrap_or_default();
+                            if let Ok(resp) = ureq::post(url)
+                                .set("Content-Type", "application/json")
+                                .send_string(&body)
+                                && let Ok(body_str) = resp.into_string()
+                                && let Ok(json) = serde_json::from_str::<Value>(&body_str)
+                                && let Some(arr) = json
+                                    .get("result")
+                                    .and_then(|r| r.get("symbols"))
+                                    .and_then(|s| s.as_array())
+                                && !arr.is_empty()
+                            {
+                                let ext_syms: Vec<crate::Symbol> = arr
+                                    .iter()
+                                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                                    .collect();
+                                res = Ok(ext_syms);
+                                provenance = "external".to_string();
+                                break;
                             }
                         }
                     }
+                }
 
                 (res, stats, provenance)
             })
@@ -2355,7 +2980,11 @@ pub fn build_index_quality(stats: &IndexBuildStats) -> Value {
     })
 }
 
-pub async fn handle_read(params: &Value, engine: Arc<ReadEngine>, shadow_root: Option<PathBuf>) -> Value {
+pub async fn handle_read(
+    params: &Value,
+    engine: Arc<ReadEngine>,
+    shadow_root: Option<PathBuf>,
+) -> Value {
     let uris: Vec<String> = params
         .get("uris")
         .and_then(|u| u.as_array())
@@ -2369,14 +2998,20 @@ pub async fn handle_read(params: &Value, engine: Arc<ReadEngine>, shadow_root: O
         .get("verbosity")
         .and_then(|v| v.as_u64())
         .unwrap_or(1) as u8;
-    match tokio::task::spawn_blocking(move || engine.read(uris, verbosity, shadow_root.as_deref())).await {
+    match tokio::task::spawn_blocking(move || engine.read(uris, verbosity, shadow_root.as_deref()))
+        .await
+    {
         Ok(Ok(res)) => json!({"status": "ok", "results": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
         Err(e) => json!({"error": format!("Task join error in read: {}", e)}),
     }
 }
 
-pub async fn handle_edit(params: &Value, engine: Arc<EditEngine>, shadow_root: Option<PathBuf>) -> Value {
+pub async fn handle_edit(
+    params: &Value,
+    engine: Arc<EditEngine>,
+    shadow_root: Option<PathBuf>,
+) -> Value {
     let uri = params
         .get("uri")
         .and_then(|v| v.as_str())
@@ -2405,7 +3040,17 @@ pub async fn handle_edit(params: &Value, engine: Arc<EditEngine>, shadow_root: O
         return json!({"error": "Missing 'adaptation_justification'. You must provide a concise technical reason why this specific adaptation is necessary."});
     }
 
-    match tokio::task::spawn_blocking(move || engine.edit(&uri, &code, &action, base_state_hash.as_deref(), shadow_root.as_deref())).await {
+    match tokio::task::spawn_blocking(move || {
+        engine.edit(
+            &uri,
+            &code,
+            &action,
+            base_state_hash.as_deref(),
+            shadow_root.as_deref(),
+        )
+    })
+    .await
+    {
         Ok(Ok(res)) => json!({"status": "ok", "message": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
         Err(e) => json!({"error": format!("Task join error in edit: {}", e)}),
@@ -2687,13 +3332,23 @@ pub async fn handle_workspace(params: &Value, ctx: &EngineContext) -> Value {
     }
 }
 
-pub async fn handle_shell(params: &Value, engine: &ShellEngine, shadow_root: Option<&Path>) -> Value {
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("execute");
-    
+pub async fn handle_shell(
+    params: &Value,
+    engine: &ShellEngine,
+    shadow_root: Option<&Path>,
+) -> Value {
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("execute");
+
     match action {
         "execute" => {
             let command = params.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let is_background = params.get("is_background").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_background = params
+                .get("is_background")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             match engine.shell(command, shadow_root, is_background).await {
                 Ok(res) => json!({"status": "ok", "output": res}),
                 Err(e) => json!({"error": e.to_string()}),
@@ -2735,18 +3390,33 @@ pub async fn handle_diagram(params: &Value, engine: Arc<DiagramEngine>) -> Value
                 .collect()
         })
         .unwrap_or_default();
-    let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("mermaid").to_string();
+    let format = params
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("mermaid")
+        .to_string();
     let up_depth = params.get("up_depth").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
-    let down_depth = params.get("down_depth").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
+    let down_depth = params
+        .get("down_depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as u8;
 
-    match tokio::task::spawn_blocking(move || engine.diagram_with_format(uris, &format, up_depth, down_depth)).await {
+    match tokio::task::spawn_blocking(move || {
+        engine.diagram_with_format(uris, &format, up_depth, down_depth)
+    })
+    .await
+    {
         Ok(Ok(res)) => json!({"status": "ok", "diagram": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
         Err(e) => json!({"error": format!("Task join error in diagram: {}", e)}),
     }
 }
 
-pub async fn handle_manage_file(params: &Value, engine: Arc<FileEngine>, shadow_root: Option<PathBuf>) -> Value {
+pub async fn handle_manage_file(
+    params: &Value,
+    engine: Arc<FileEngine>,
+    shadow_root: Option<PathBuf>,
+) -> Value {
     let path = params
         .get("path")
         .and_then(|v| v.as_str())
@@ -2761,7 +3431,10 @@ pub async fn handle_manage_file(params: &Value, engine: Arc<FileEngine>, shadow_
         .get("destination")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    match tokio::task::spawn_blocking(move || engine.manage(&path, &action, dest.as_deref(), shadow_root.as_deref())).await
+    match tokio::task::spawn_blocking(move || {
+        engine.manage(&path, &action, dest.as_deref(), shadow_root.as_deref())
+    })
+    .await
     {
         Ok(Ok(res)) => json!({"status": "ok", "message": res}),
         Ok(Err(e)) => json!({"error": e.to_string()}),
@@ -2895,14 +3568,17 @@ pub async fn handle_doc(params: &Value, ctx: &EngineContext) -> Value {
 }
 
 pub async fn handle_tool_plugin(params: &Value, ctx: &EngineContext) -> Value {
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("list");
     let result = match action {
-        "list" => ctx
-            .tpe
-            .list()
-            .map(|plugins| json!({"plugins": plugins})),
+        "list" => ctx.tpe.list().map(|plugins| json!({"plugins": plugins})),
         "add" => {
-            let archive_path = params.get("archive_path").and_then(|v| v.as_str()).unwrap_or("");
+            let archive_path = params
+                .get("archive_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if archive_path.is_empty() {
                 Err(anyhow::anyhow!("Missing required field: archive_path"))
             } else {
@@ -2912,7 +3588,10 @@ pub async fn handle_tool_plugin(params: &Value, ctx: &EngineContext) -> Value {
             }
         }
         "remove" => {
-            let package_id = params.get("package_id").and_then(|v| v.as_str()).unwrap_or("");
+            let package_id = params
+                .get("package_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if package_id.is_empty() {
                 Err(anyhow::anyhow!("Missing required field: package_id"))
             } else {
@@ -2933,9 +3612,17 @@ pub async fn handle_tool_plugin(params: &Value, ctx: &EngineContext) -> Value {
         params.clone(),
         out.clone(),
         out.get("error").is_none(),
-        out.get("error").and_then(|v| v.as_str()).map(str::to_string),
-        params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string),
-        params.get("is_human").and_then(|v| v.as_bool()).map(|v| if v { "human" } else { "agent" }),
+        out.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("participant_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("is_human")
+            .and_then(|v| v.as_bool())
+            .map(|v| if v { "human" } else { "agent" }),
     );
     if out.get("error").is_none() {
         match action {
@@ -2944,19 +3631,30 @@ pub async fn handle_tool_plugin(params: &Value, ctx: &EngineContext) -> Value {
                     if let (Some(package_id), Some(version), Some(tool_name)) = (
                         installed.get("package_id").and_then(|v| v.as_str()),
                         installed.get("version").and_then(|v| v.as_str()),
-                        installed.get("tool").and_then(|v| v.get("tool_name")).and_then(|v| v.as_str()),
+                        installed
+                            .get("tool")
+                            .and_then(|v| v.get("tool_name"))
+                            .and_then(|v| v.as_str()),
                     ) {
-                        emit_system_event(ctx, SystemEvent::ToolPluginInstalled {
-                            package_id: package_id.to_string(),
-                            version: version.to_string(),
-                            tool_name: tool_name.to_string(),
-                        });
+                        emit_system_event(
+                            ctx,
+                            SystemEvent::ToolPluginInstalled {
+                                package_id: package_id.to_string(),
+                                version: version.to_string(),
+                                tool_name: tool_name.to_string(),
+                            },
+                        );
                     }
                 }
             }
             "remove" => {
                 if let Some(package_id) = params.get("package_id").and_then(|v| v.as_str()) {
-                    emit_system_event(ctx, SystemEvent::ToolPluginRemoved { package_id: package_id.to_string() });
+                    emit_system_event(
+                        ctx,
+                        SystemEvent::ToolPluginRemoved {
+                            package_id: package_id.to_string(),
+                        },
+                    );
                 }
             }
             _ => {}
@@ -2966,14 +3664,17 @@ pub async fn handle_tool_plugin(params: &Value, ctx: &EngineContext) -> Value {
 }
 
 pub async fn handle_language_plugin(params: &Value, ctx: &EngineContext) -> Value {
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("list");
     let result = match action {
-        "list" => ctx
-            .lpe
-            .list()
-            .map(|plugins| json!({"plugins": plugins})),
+        "list" => ctx.lpe.list().map(|plugins| json!({"plugins": plugins})),
         "add" => {
-            let archive_path = params.get("archive_path").and_then(|v| v.as_str()).unwrap_or("");
+            let archive_path = params
+                .get("archive_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if archive_path.is_empty() {
                 Err(anyhow::anyhow!("Missing required field: archive_path"))
             } else {
@@ -2983,7 +3684,10 @@ pub async fn handle_language_plugin(params: &Value, ctx: &EngineContext) -> Valu
             }
         }
         "remove" => {
-            let package_id = params.get("package_id").and_then(|v| v.as_str()).unwrap_or("");
+            let package_id = params
+                .get("package_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if package_id.is_empty() {
                 Err(anyhow::anyhow!("Missing required field: package_id"))
             } else {
@@ -2992,7 +3696,10 @@ pub async fn handle_language_plugin(params: &Value, ctx: &EngineContext) -> Valu
                     .map(|removed| json!({"removed": removed, "package_id": package_id}))
             }
         }
-        _ => Err(anyhow::anyhow!("Unknown plugin_language action: {}", action)),
+        _ => Err(anyhow::anyhow!(
+            "Unknown plugin_language action: {}",
+            action
+        )),
     };
     let out = match result {
         Ok(result) => json!({"status": "ok", "result": result}),
@@ -3004,9 +3711,17 @@ pub async fn handle_language_plugin(params: &Value, ctx: &EngineContext) -> Valu
         params.clone(),
         out.clone(),
         out.get("error").is_none(),
-        out.get("error").and_then(|v| v.as_str()).map(str::to_string),
-        params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string),
-        params.get("is_human").and_then(|v| v.as_bool()).map(|v| if v { "human" } else { "agent" }),
+        out.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("participant_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("is_human")
+            .and_then(|v| v.as_bool())
+            .map(|v| if v { "human" } else { "agent" }),
     );
     if out.get("error").is_none() {
         match action {
@@ -3015,19 +3730,30 @@ pub async fn handle_language_plugin(params: &Value, ctx: &EngineContext) -> Valu
                     if let (Some(package_id), Some(version), Some(language_id)) = (
                         installed.get("package_id").and_then(|v| v.as_str()),
                         installed.get("version").and_then(|v| v.as_str()),
-                        installed.get("language").and_then(|v| v.get("language_id")).and_then(|v| v.as_str()),
+                        installed
+                            .get("language")
+                            .and_then(|v| v.get("language_id"))
+                            .and_then(|v| v.as_str()),
                     ) {
-                        emit_system_event(ctx, SystemEvent::LanguagePluginInstalled {
-                            package_id: package_id.to_string(),
-                            version: version.to_string(),
-                            language_id: language_id.to_string(),
-                        });
+                        emit_system_event(
+                            ctx,
+                            SystemEvent::LanguagePluginInstalled {
+                                package_id: package_id.to_string(),
+                                version: version.to_string(),
+                                language_id: language_id.to_string(),
+                            },
+                        );
                     }
                 }
             }
             "remove" => {
                 if let Some(package_id) = params.get("package_id").and_then(|v| v.as_str()) {
-                    emit_system_event(ctx, SystemEvent::LanguagePluginRemoved { package_id: package_id.to_string() });
+                    emit_system_event(
+                        ctx,
+                        SystemEvent::LanguagePluginRemoved {
+                            package_id: package_id.to_string(),
+                        },
+                    );
                 }
             }
             _ => {}
@@ -3037,15 +3763,23 @@ pub async fn handle_language_plugin(params: &Value, ctx: &EngineContext) -> Valu
 }
 
 pub async fn handle_tool_group(params: &Value, ctx: &EngineContext) -> Value {
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("list");
     let result = match action {
         "list" => ctx.tge.list().map(|groups| json!({"groups": groups})),
         "status" => {
             let group_id = params.get("group_id").and_then(|v| v.as_str());
-            ctx.tge.session_status(group_id).map(|sessions| json!({"sessions": sessions}))
+            ctx.tge
+                .session_status(group_id)
+                .map(|sessions| json!({"sessions": sessions}))
         }
         "add_mcp" => {
-            let group_id = params.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+            let group_id = params
+                .get("group_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let command = params.get("command").and_then(|v| v.as_str()).unwrap_or("");
             let args: Vec<String> = params
                 .get("args")
@@ -3088,7 +3822,10 @@ pub async fn handle_tool_group(params: &Value, ctx: &EngineContext) -> Value {
             }
         }
         "remove" => {
-            let group_id = params.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+            let group_id = params
+                .get("group_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if group_id.is_empty() {
                 Err(anyhow::anyhow!("Missing required field: group_id"))
             } else {
@@ -3109,27 +3846,47 @@ pub async fn handle_tool_group(params: &Value, ctx: &EngineContext) -> Value {
         params.clone(),
         out.clone(),
         out.get("error").is_none(),
-        out.get("error").and_then(|v| v.as_str()).map(str::to_string),
-        params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string),
-        params.get("is_human").and_then(|v| v.as_bool()).map(|v| if v { "human" } else { "agent" }),
+        out.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("participant_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("is_human")
+            .and_then(|v| v.as_bool())
+            .map(|v| if v { "human" } else { "agent" }),
     );
     if out.get("error").is_none() {
         match action {
             "add_mcp" => {
                 if let Some(group) = out.get("result").and_then(|v| v.get("group")) {
                     if let Some(group_id) = group.get("group_id").and_then(|v| v.as_str()) {
-                        let tool_count = group.get("tools").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                        emit_system_event(ctx, SystemEvent::ToolGroupRegistered {
-                            group_id: group_id.to_string(),
-                            source: "external_mcp".to_string(),
-                            tool_count,
-                        });
+                        let tool_count = group
+                            .get("tools")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        emit_system_event(
+                            ctx,
+                            SystemEvent::ToolGroupRegistered {
+                                group_id: group_id.to_string(),
+                                source: "external_mcp".to_string(),
+                                tool_count,
+                            },
+                        );
                     }
                 }
             }
             "remove" => {
                 if let Some(group_id) = params.get("group_id").and_then(|v| v.as_str()) {
-                    emit_system_event(ctx, SystemEvent::ToolGroupRemoved { group_id: group_id.to_string() });
+                    emit_system_event(
+                        ctx,
+                        SystemEvent::ToolGroupRemoved {
+                            group_id: group_id.to_string(),
+                        },
+                    );
                 }
             }
             _ => {}
@@ -3139,10 +3896,15 @@ pub async fn handle_tool_group(params: &Value, ctx: &EngineContext) -> Value {
 }
 
 pub async fn handle_plugin_trust(params: &Value, ctx: &EngineContext) -> Value {
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("list");
     let result = match action {
-        "list" => crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins)
-            .map(|keys| json!({"keys": keys.keys})),
+        "list" => {
+            crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins)
+                .map(|keys| json!({"keys": keys.keys}))
+        }
         "get" => {
             let key_id = params.get("key_id").and_then(|v| v.as_str()).unwrap_or("");
             if key_id.is_empty() {
@@ -3160,11 +3922,17 @@ pub async fn handle_plugin_trust(params: &Value, ctx: &EngineContext) -> Value {
         }
         "add" => {
             let key_id = params.get("key_id").and_then(|v| v.as_str()).unwrap_or("");
-            let pubkey_hex = params.get("pubkey_hex").and_then(|v| v.as_str()).unwrap_or("");
+            let pubkey_hex = params
+                .get("pubkey_hex")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if key_id.is_empty() || pubkey_hex.is_empty() {
                 Err(anyhow::anyhow!("add requires key_id and pubkey_hex"))
             } else {
-                match crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins) {
+                match crate::plugin_packages::load_trusted_keys(
+                    &ctx.workspace_root,
+                    &ctx.config.plugins,
+                ) {
                     Ok(mut set) => {
                         let allowed_kinds: Vec<crate::PluginKind> = params
                             .get("allowed_kinds")
@@ -3181,14 +3949,21 @@ pub async fn handle_plugin_trust(params: &Value, ctx: &EngineContext) -> Value {
                         match crate::plugin_packages::create_trusted_plugin_key(
                             key_id,
                             pubkey_hex,
-                            params.get("label").and_then(|v| v.as_str()).map(str::to_string),
+                            params
+                                .get("label")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
                             allowed_kinds,
                             true,
                         ) {
                             Ok(trusted) => {
                                 set.keys.push(trusted);
-                                crate::plugin_packages::store_trusted_keys(&ctx.workspace_root, &ctx.config.plugins, &set)
-                                    .map(|_| json!({"key_id": key_id, "pubkey_hex": pubkey_hex}))
+                                crate::plugin_packages::store_trusted_keys(
+                                    &ctx.workspace_root,
+                                    &ctx.config.plugins,
+                                    &set,
+                                )
+                                .map(|_| json!({"key_id": key_id, "pubkey_hex": pubkey_hex}))
                             }
                             Err(err) => Err(err),
                         }
@@ -3202,12 +3977,19 @@ pub async fn handle_plugin_trust(params: &Value, ctx: &EngineContext) -> Value {
             if key_id.is_empty() {
                 Err(anyhow::anyhow!("remove requires key_id"))
             } else {
-                match crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins) {
+                match crate::plugin_packages::load_trusted_keys(
+                    &ctx.workspace_root,
+                    &ctx.config.plugins,
+                ) {
                     Ok(mut set) => {
                         let before = set.keys.len();
                         set.keys.retain(|key| key.key_id != key_id);
-                        crate::plugin_packages::store_trusted_keys(&ctx.workspace_root, &ctx.config.plugins, &set)
-                            .map(|_| json!({"removed": before != set.keys.len(), "key_id": key_id}))
+                        crate::plugin_packages::store_trusted_keys(
+                            &ctx.workspace_root,
+                            &ctx.config.plugins,
+                            &set,
+                        )
+                        .map(|_| json!({"removed": before != set.keys.len(), "key_id": key_id}))
                     }
                     Err(err) => Err(err),
                 }
@@ -3218,7 +4000,10 @@ pub async fn handle_plugin_trust(params: &Value, ctx: &EngineContext) -> Value {
             if key_id.is_empty() {
                 Err(anyhow::anyhow!("{} requires key_id", action))
             } else {
-                match crate::plugin_packages::load_trusted_keys(&ctx.workspace_root, &ctx.config.plugins) {
+                match crate::plugin_packages::load_trusted_keys(
+                    &ctx.workspace_root,
+                    &ctx.config.plugins,
+                ) {
                     Ok(mut set) => {
                         let enabled = action == "enable";
                         let mut found = false;
@@ -3231,8 +4016,12 @@ pub async fn handle_plugin_trust(params: &Value, ctx: &EngineContext) -> Value {
                         if !found {
                             Err(anyhow::anyhow!("trusted key not found: {}", key_id))
                         } else {
-                            crate::plugin_packages::store_trusted_keys(&ctx.workspace_root, &ctx.config.plugins, &set)
-                                .map(|_| json!({"key_id": key_id, "enabled": enabled}))
+                            crate::plugin_packages::store_trusted_keys(
+                                &ctx.workspace_root,
+                                &ctx.config.plugins,
+                                &set,
+                            )
+                            .map(|_| json!({"key_id": key_id, "enabled": enabled}))
                         }
                     }
                     Err(err) => Err(err),
@@ -3251,20 +4040,38 @@ pub async fn handle_plugin_trust(params: &Value, ctx: &EngineContext) -> Value {
         params.clone(),
         out.clone(),
         out.get("error").is_none(),
-        out.get("error").and_then(|v| v.as_str()).map(str::to_string),
-        params.get("participant_id").and_then(|v| v.as_str()).map(str::to_string),
-        params.get("is_human").and_then(|v| v.as_bool()).map(|v| if v { "human" } else { "agent" }),
+        out.get("error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("participant_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        params
+            .get("is_human")
+            .and_then(|v| v.as_bool())
+            .map(|v| if v { "human" } else { "agent" }),
     );
     if out.get("error").is_none() {
         match action {
             "add" => {
                 if let Some(key_id) = params.get("key_id").and_then(|v| v.as_str()) {
-                    emit_system_event(ctx, SystemEvent::PluginTrustedKeyAdded { key_id: key_id.to_string() });
+                    emit_system_event(
+                        ctx,
+                        SystemEvent::PluginTrustedKeyAdded {
+                            key_id: key_id.to_string(),
+                        },
+                    );
                 }
             }
             "remove" => {
                 if let Some(key_id) = params.get("key_id").and_then(|v| v.as_str()) {
-                    emit_system_event(ctx, SystemEvent::PluginTrustedKeyRemoved { key_id: key_id.to_string() });
+                    emit_system_event(
+                        ctx,
+                        SystemEvent::PluginTrustedKeyRemoved {
+                            key_id: key_id.to_string(),
+                        },
+                    );
                 }
             }
             _ => {}
@@ -3792,7 +4599,7 @@ pub async fn handle_stamina(params: &Value, ctx: &EngineContext) -> Value {
     if let Some(entry) = connections.get(connection_token) {
         let now = now_secs();
         let elapsed = now.saturating_sub(entry.budget.started_at_secs);
-        
+
         json!({
             "status": "ok",
             "budget": {
@@ -4505,6 +5312,11 @@ pub async fn handle_simulate(params: &Value) -> Value {
                             "code": "risky_tool",
                             "message": format!("Plan node {} uses mutating/external tool: {}", node.id, tool)
                         }));
+                        warnings.push(json!({
+                            "severity": "warning",
+                            "code": "session_required",
+                            "message": format!("Plan node {} requires an active workspace session before execution: {}", node.id, tool)
+                        }));
                     }
                     validate_tool_args_for_simulate(
                         tool,
@@ -4521,6 +5333,14 @@ pub async fn handle_simulate(params: &Value) -> Value {
                         &mut warnings,
                         &format!("plan node {}", node.id),
                     );
+                } else if let crate::plan::ToolOperation::Internal { command, .. } = &node.op {
+                    if command == "clear_shadow" {
+                        warnings.push(json!({
+                            "severity": "warning",
+                            "code": "session_required",
+                            "message": format!("Plan node {} uses internal command '{}' and requires an active workspace session.", node.id, command)
+                        }));
+                    }
                 }
             }
         }
@@ -4556,6 +5376,11 @@ pub async fn handle_simulate(params: &Value) -> Value {
                                     "severity": "warning",
                                     "code": "risky_tool",
                                     "message": format!("DSL call uses mutating/external tool: {}", tool)
+                                }));
+                                warnings.push(json!({
+                                    "severity": "warning",
+                                    "code": "session_required",
+                                    "message": format!("DSL call '{}' requires an active workspace session before execution.", tool)
                                 }));
                             }
                             validate_tool_args_for_simulate(
@@ -4603,8 +5428,14 @@ pub async fn handle_simulate(params: &Value) -> Value {
 }
 
 pub async fn handle_doctor(params: &Value, engine: &DoctorEngine) -> Value {
-    let strict = params.get("strict").and_then(|v| v.as_bool()).unwrap_or(false);
-    let profile = params.get("profile").and_then(|v| v.as_str()).and_then(|s| DoctorProfile::from_str(s).ok());
+    let strict = params
+        .get("strict")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let profile = params
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .and_then(|s| DoctorProfile::from_str(s).ok());
     let thresholds = if let Some(t) = params.get("thresholds") {
         serde_json::from_value(t.clone()).unwrap_or_default()
     } else {
@@ -4642,7 +5473,11 @@ pub async fn handle_research(params: &Value) -> Value {
     })
 }
 
-pub async fn handle_mutate(params: &Value, mu: Arc<MutationEngine>, shadow_root: Option<PathBuf>) -> Value {
+pub async fn handle_mutate(
+    params: &Value,
+    mu: Arc<MutationEngine>,
+    shadow_root: Option<PathBuf>,
+) -> Value {
     let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
     if uri.is_empty() {
         return json!({"error": "mutate requires: uri"});
@@ -4687,7 +5522,8 @@ mod tests {
         assert_eq!(keys[0]["allowed_kinds"][0], "tool");
         assert!(keys[0]["fingerprint_sha256"].as_str().is_some());
 
-        let remove = handle_plugin_trust(&json!({"action": "remove", "key_id": "demo"}), &ctx).await;
+        let remove =
+            handle_plugin_trust(&json!({"action": "remove", "key_id": "demo"}), &ctx).await;
         assert_eq!(remove["status"], "ok");
         assert_eq!(remove["result"]["removed"], true);
     }
@@ -4710,27 +5546,17 @@ mod tests {
         .await;
         assert_eq!(add["status"], "ok");
 
-        let disable = handle_plugin_trust(
-            &json!({"action": "disable", "key_id": "demo2"}),
-            &ctx,
-        )
-        .await;
+        let disable =
+            handle_plugin_trust(&json!({"action": "disable", "key_id": "demo2"}), &ctx).await;
         assert_eq!(disable["status"], "ok");
         assert_eq!(disable["result"]["enabled"], false);
 
-        let get = handle_plugin_trust(
-            &json!({"action": "get", "key_id": "demo2"}),
-            &ctx,
-        )
-        .await;
+        let get = handle_plugin_trust(&json!({"action": "get", "key_id": "demo2"}), &ctx).await;
         assert_eq!(get["status"], "ok");
         assert_eq!(get["result"]["key"]["enabled"], false);
 
-        let enable = handle_plugin_trust(
-            &json!({"action": "enable", "key_id": "demo2"}),
-            &ctx,
-        )
-        .await;
+        let enable =
+            handle_plugin_trust(&json!({"action": "enable", "key_id": "demo2"}), &ctx).await;
         assert_eq!(enable["status"], "ok");
         assert_eq!(enable["result"]["enabled"], true);
     }

@@ -94,7 +94,10 @@ fn main() -> Result<()> {
     }
     fs::write(&out_path, serde_json::to_vec_pretty(&archive)?)?;
 
-    let ext = out_path.extension().and_then(|s| s.to_str()).unwrap_or_default();
+    let ext = out_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
     println!(
         "{{\"status\":\"ok\",\"archive\":\"{}\",\"kind_extension\":\"{}\"}}",
         out_path.display(),

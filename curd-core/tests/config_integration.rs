@@ -1,6 +1,6 @@
 use curd_core::check_workspace_config;
-use tempfile::tempdir;
 use std::fs;
+use tempfile::tempdir;
 
 #[test]
 fn test_config_rejection_smoke() {
@@ -18,7 +18,10 @@ enabled = true
 "#,
     )
     .expect("write settings");
-    assert!(check_workspace_config(root).is_ok(), "Valid config should be accepted");
+    assert!(
+        check_workspace_config(root).is_ok(),
+        "Valid config should be accepted"
+    );
 
     // 2. High severity rejection (path escape)
     fs::write(
@@ -32,7 +35,11 @@ sqlite_path = "../escaped.db"
     let res = check_workspace_config(root);
     assert!(res.is_err(), "Unsafe storage path should be rejected");
     let findings = res.err().unwrap();
-    assert!(findings.iter().any(|f| f.code == "config_storage_sqlite_path_invalid"));
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.code == "config_storage_sqlite_path_invalid")
+    );
     assert_eq!(findings[0].severity, "high");
 
     // 3. Multiple high severity rejections
@@ -50,8 +57,16 @@ steps = []
     let res = check_workspace_config(root);
     assert!(res.is_err());
     let findings = res.err().unwrap();
-    assert!(findings.iter().any(|f| f.code == "config_index_mode_invalid"));
-    assert!(findings.iter().any(|f| f.code == "config_build_adapter_cwd_invalid"));
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.code == "config_index_mode_invalid")
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.code == "config_build_adapter_cwd_invalid")
+    );
 }
 
 #[test]
@@ -80,5 +95,8 @@ mode = "fast"
     .expect("write curd.toml");
 
     let res = check_workspace_config(root);
-    assert!(res.is_err(), "settings.toml should take precedence even if invalid");
+    assert!(
+        res.is_err(),
+        "settings.toml should take precedence even if invalid"
+    );
 }

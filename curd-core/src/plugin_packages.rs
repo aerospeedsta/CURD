@@ -149,8 +149,12 @@ pub struct VerifiedPluginArchive {
     pub archive: PluginArchive,
 }
 
-fn default_enabled() -> bool { true }
-fn default_stdio_protocol() -> String { "json_stdio_v1".to_string() }
+fn default_enabled() -> bool {
+    true
+}
+fn default_stdio_protocol() -> String {
+    "json_stdio_v1".to_string()
+}
 
 pub fn plugin_install_root(workspace_root: &Path, config: &crate::config::PluginConfig) -> PathBuf {
     workspace_root.join(&config.install_root)
@@ -218,7 +222,10 @@ pub fn validate_trusted_keys(keys: &TrustedPluginKeySet) -> Result<()> {
         if key.fingerprint_sha256
             != crate::auth::IdentityManager::public_key_fingerprint(&key.pubkey_hex)?
         {
-            anyhow::bail!("trusted plugin key '{}' has invalid fingerprint", key.key_id);
+            anyhow::bail!(
+                "trusted plugin key '{}' has invalid fingerprint",
+                key.key_id
+            );
         }
         if !seen.insert(key.key_id.clone()) {
             anyhow::bail!("duplicate trusted plugin key id '{}'", key.key_id);
@@ -228,7 +235,8 @@ pub fn validate_trusted_keys(keys: &TrustedPluginKeySet) -> Result<()> {
 }
 
 pub fn load_archive_file(path: &Path) -> Result<PluginArchive> {
-    let bytes = fs::read(path).with_context(|| format!("Failed to read package {}", path.display()))?;
+    let bytes =
+        fs::read(path).with_context(|| format!("Failed to read package {}", path.display()))?;
     serde_json::from_slice(&bytes).context("Failed to parse signed plugin archive")
 }
 
@@ -266,7 +274,10 @@ pub fn verify_archive(
     })
 }
 
-fn validate_manifest(manifest: &PluginManifest, config: &crate::config::PluginConfig) -> Result<()> {
+fn validate_manifest(
+    manifest: &PluginManifest,
+    config: &crate::config::PluginConfig,
+) -> Result<()> {
     if manifest.schema_version == 0 {
         anyhow::bail!("schema_version must be > 0");
     }
@@ -281,6 +292,13 @@ fn validate_manifest(manifest: &PluginManifest, config: &crate::config::PluginCo
             }
             let spec = manifest.tool.as_ref().unwrap();
             validate_identifier(&spec.tool_name, "tool_name")?;
+            if crate::context::is_known_tool_name(&spec.tool_name) {
+                anyhow::bail!(
+                    "tool plugin '{}' uses reserved tool name '{}'",
+                    manifest.package_id,
+                    spec.tool_name
+                );
+            }
             validate_relative_file_path(&spec.executable_path)?;
             if spec.protocol != "json_stdio_v1" {
                 anyhow::bail!("unsupported tool plugin protocol: {}", spec.protocol);
@@ -296,6 +314,15 @@ fn validate_manifest(manifest: &PluginManifest, config: &crate::config::PluginCo
             let spec = manifest.language.as_ref().unwrap();
             validate_identifier(&spec.language_id, "language_id")?;
             validate_relative_file_path(&spec.grammar_library_path)?;
+            if let Some(build_system) = &spec.build_system {
+                validate_identifier(build_system, "build_system")?;
+            }
+            if let Some(lsp_adapter) = &spec.lsp_adapter {
+                validate_identifier(lsp_adapter, "lsp_adapter")?;
+            }
+            if let Some(debug_adapter) = &spec.debug_adapter {
+                validate_identifier(debug_adapter, "debug_adapter")?;
+            }
             if let Some(path) = &spec.query_path {
                 validate_relative_file_path(path)?;
             }
@@ -327,9 +354,10 @@ fn verify_signature_policy(
 
     let signing_payload = serde_json::to_vec(&archive.manifest)?;
     if config.require_signatures {
-        let signature_hex = archive.signature_hex.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("signed plugin archive is missing signature_hex")
-        })?;
+        let signature_hex = archive
+            .signature_hex
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("signed plugin archive is missing signature_hex"))?;
         if key.is_none() && !config.allow_unsigned_dev_plugins {
             anyhow::bail!("signer is not present in trusted plugin key set");
         }
@@ -508,10 +536,12 @@ fn validate_installed_plugin_record(
     }
     match kind {
         PluginKind::Tool => {
-            let spec = record
-                .tool
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("installed tool plugin '{}' missing tool spec", record.package_id))?;
+            let spec = record.tool.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "installed tool plugin '{}' missing tool spec",
+                    record.package_id
+                )
+            })?;
             validate_identifier(&spec.tool_name, "tool_name")?;
             validate_relative_file_path(&spec.executable_path)?;
             if spec.protocol != "json_stdio_v1" {
@@ -524,7 +554,10 @@ fn validate_installed_plugin_record(
         }
         PluginKind::Language => {
             let spec = record.language.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("installed language plugin '{}' missing language spec", record.package_id)
+                anyhow::anyhow!(
+                    "installed language plugin '{}' missing language spec",
+                    record.package_id
+                )
             })?;
             validate_identifier(&spec.language_id, "language_id")?;
             validate_relative_file_path(&spec.grammar_library_path)?;
@@ -556,7 +589,10 @@ pub fn validate_relative_file_path(path: &str) -> Result<()> {
         anyhow::bail!("absolute plugin file paths are not allowed");
     }
     for component in p.components() {
-        if matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)) {
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
             anyhow::bail!("unsafe plugin file path: {}", path);
         }
     }
@@ -573,7 +609,12 @@ mod tests {
     fn sign_archive(mut archive: PluginArchive, signer: &SigningKey) -> PluginArchive {
         let payload = serde_json::to_vec(&archive.manifest).unwrap();
         let sig = signer.sign(&payload);
-        archive.signature_hex = Some(sig.to_bytes().iter().map(|b| format!("{:02x}", b)).collect());
+        archive.signature_hex = Some(
+            sig.to_bytes()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect(),
+        );
         archive
     }
 
@@ -635,13 +676,16 @@ mod tests {
             dir.path(),
             &cfg,
             &TrustedPluginKeySet {
-                keys: vec![create_trusted_plugin_key(
-                    "test",
-                    &pubkey_hex,
-                    Some("test".to_string()),
-                    vec![PluginKind::Language],
-                    true,
-                ).unwrap()],
+                keys: vec![
+                    create_trusted_plugin_key(
+                        "test",
+                        &pubkey_hex,
+                        Some("test".to_string()),
+                        vec![PluginKind::Language],
+                        true,
+                    )
+                    .unwrap(),
+                ],
             },
         )
         .unwrap();
@@ -651,7 +695,128 @@ mod tests {
         let verified = verify_archive_file(&archive_path, dir.path(), &cfg).unwrap();
         let record = install_verified_archive(&verified, dir.path(), &cfg).unwrap();
         assert_eq!(record.kind, PluginKind::Language);
-        assert!(record.install_dir.join("lib/tree-sitter-demo.dylib").exists());
+        assert!(
+            record
+                .install_dir
+                .join("lib/tree-sitter-demo.dylib")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn invalid_language_build_system_identifier_is_rejected() {
+        let dir = tempdir().unwrap();
+        let mut secret = [7u8; 32];
+        secret[0] = 12;
+        let signer = SigningKey::from_bytes(&secret);
+        let pubkey_hex: String = signer
+            .verifying_key()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        let cfg = crate::config::PluginConfig::default();
+        store_trusted_keys(
+            dir.path(),
+            &cfg,
+            &TrustedPluginKeySet {
+                keys: vec![
+                    create_trusted_plugin_key(
+                        "test",
+                        &pubkey_hex,
+                        Some("test".to_string()),
+                        vec![PluginKind::Language],
+                        true,
+                    )
+                    .unwrap(),
+                ],
+            },
+        )
+        .unwrap();
+        let mut archive = sample_lang_archive(&signer, pubkey_hex);
+        archive.manifest.language.as_mut().unwrap().build_system = Some("bad build!".to_string());
+        let archive_path = dir.path().join("demo.curdl");
+        fs::write(&archive_path, serde_json::to_vec(&archive).unwrap()).unwrap();
+        let err = verify_archive_file(&archive_path, dir.path(), &cfg)
+            .expect_err("expected invalid build_system to be rejected");
+        assert!(err.to_string().contains("invalid build_system"));
+    }
+
+    #[test]
+    fn reserved_tool_name_is_rejected_for_tool_plugin() {
+        let dir = tempdir().unwrap();
+        let mut secret = [8u8; 32];
+        secret[0] = 18;
+        let signer = SigningKey::from_bytes(&secret);
+        let pubkey_hex: String = signer
+            .verifying_key()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        let cfg = crate::config::PluginConfig::default();
+        store_trusted_keys(
+            dir.path(),
+            &cfg,
+            &TrustedPluginKeySet {
+                keys: vec![
+                    create_trusted_plugin_key(
+                        "tool",
+                        &pubkey_hex,
+                        Some("tool".to_string()),
+                        vec![PluginKind::Tool],
+                        true,
+                    )
+                    .unwrap(),
+                ],
+            },
+        )
+        .unwrap();
+        let bytes = b"#!/bin/sh\nprintf '{\"status\":\"ok\"}'\n";
+        let file = PluginPayloadFile {
+            path: "bin/demo-tool".to_string(),
+            content_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            executable: true,
+        };
+        let archive = sign_archive(
+            PluginArchive {
+                manifest: PluginManifest {
+                    schema_version: 1,
+                    package_id: "shadow-search".to_string(),
+                    version: "0.1.0".to_string(),
+                    kind: PluginKind::Tool,
+                    signer_pubkey_hex: pubkey_hex,
+                    description: None,
+                    files: vec![PluginFileManifest {
+                        path: file.path.clone(),
+                        sha256: sha256_hex(bytes),
+                        size: bytes.len(),
+                        executable: true,
+                    }],
+                    tool: Some(ToolPluginSpec {
+                        tool_name: "search".to_string(),
+                        executable_path: file.path.clone(),
+                        default_args: Vec::new(),
+                        protocol: "json_stdio_v1".to_string(),
+                        agent_usage: None,
+                        review_guidance: None,
+                        downstream_impact: None,
+                        description: None,
+                        parameters: Vec::new(),
+                        examples: Vec::new(),
+                    }),
+                    language: None,
+                },
+                payload_files: vec![file],
+                signature_hex: None,
+            },
+            &signer,
+        );
+        let archive_path = dir.path().join("shadow-search.curdt");
+        fs::write(&archive_path, serde_json::to_vec(&archive).unwrap()).unwrap();
+        let err = verify_archive_file(&archive_path, dir.path(), &cfg)
+            .expect_err("expected reserved tool name to be rejected");
+        assert!(err.to_string().contains("reserved tool name"));
     }
 
     #[test]
@@ -683,7 +848,9 @@ mod tests {
     fn load_installed_plugins_rejects_tampered_tool_protocol() {
         let dir = tempdir().unwrap();
         let cfg = crate::config::PluginConfig::default();
-        let install_dir = plugin_install_root(dir.path(), &cfg).join("tool").join("tampered");
+        let install_dir = plugin_install_root(dir.path(), &cfg)
+            .join("tool")
+            .join("tampered");
         fs::create_dir_all(&install_dir).unwrap();
         fs::write(
             install_dir.join("installed.json"),

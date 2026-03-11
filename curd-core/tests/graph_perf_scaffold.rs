@@ -47,11 +47,7 @@ fn local_graph_perf_scaffold_reports_index_query_and_incremental_timings() {
 
     let touched = root.join("src/file_005.rs");
     let original = fs::read_to_string(&touched).expect("read touched file");
-    fs::write(
-        &touched,
-        original.replace("fn_5()", "fn_6()"),
-    )
-    .expect("write touched file");
+    fs::write(&touched, original.replace("fn_5()", "fn_6()")).expect("write touched file");
 
     let start_incremental = Instant::now();
     let _ = se.search("fn_6", None).expect("incremental reindex search");
@@ -79,11 +75,7 @@ fn seed_workspace(root: &Path, files: usize, functions_per_file: usize) {
     for file_idx in 0..files {
         let mut content = String::new();
         for fn_idx in 0..functions_per_file {
-            let callee = if fn_idx == 0 {
-                None
-            } else {
-                Some(fn_idx - 1)
-            };
+            let callee = if fn_idx == 0 { None } else { Some(fn_idx - 1) };
             content.push_str(&format!("pub fn fn_{fn_idx}() {{\n"));
             if let Some(callee) = callee {
                 content.push_str(&format!("    fn_{callee}();\n"));
@@ -124,7 +116,10 @@ fn bool_env(name: &str) -> bool {
 }
 
 fn assert_perf_budget(name: &str, observed_ms: u128) {
-    let Some(limit) = std::env::var(name).ok().and_then(|value| value.parse::<u128>().ok()) else {
+    let Some(limit) = std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u128>().ok())
+    else {
         return;
     };
     assert!(

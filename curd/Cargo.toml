@@ -1,6 +1,6 @@
 [package]
 name = "curd"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 edition = "2024"
 
 [features]
@@ -23,7 +23,10 @@ clap = { version = "4.5.60", features = ["derive"] }
 dialoguer = "0.11.0"
 colored = "2.1"
 rustyline = "14.0"
+log = "0.4"
+petgraph = "0.6"
 
 [dev-dependencies]
 tempfile = "3.10"
-
+ed25519-dalek = "2.2.0"
+getrandom = "0.4.1"

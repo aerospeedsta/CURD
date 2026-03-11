@@ -10,47 +10,27 @@ If any instruction here conflicts with explicit user instructions in a session, 
 
 ## 1. Product Intent (Non-Negotiable)
 
-CURD is a code-intelligence and tool-call runtime with two operating surfaces:
-
-1. Lite mode: minimal functional coding layer.
-2. Full mode: extended analysis/debug/profile/session-review platform.
+CURD is a code-intelligence control plane, script runtime, and tool-call backend for humans and agents.
 
 Core design goals:
 
-1. Function-centric operations over file-centric heuristics.
-2. Stable JSON-RPC/tool contracts.
-3. Safe edit workflows via transaction/shadow model.
-4. Explicit capability introspection and deterministic behavior.
+1. Deterministic code surgery via the Shadow Workspace transaction model.
+2. Semantic structural understanding over dumb text heuristics (Tree-sitter driven).
+3. Explicit governance via `settings.toml` policies, profiles, and plan-gating.
+4. Repeatable workflows defined as `.curd` source scripts compiled into plan artifacts.
 
 ---
 
-## 2. Runtime Modes
+## 2. Runtime Modes and Profiles
 
-Mode is selected by env var `CURD_MODE`:
+As of v0.7, capability is governed by Profiles (`settings.toml`), not just a binary mode switch.
 
-- `full` (default)
-- `lite`
+- `CURD_MODE` acts as a runtime ceiling (e.g., `lite` strictly caps capabilities).
+- Actual access to tools, execution, and filesystem boundaries is gated by the active profile (e.g., `[profiles.default]`, `[profiles.ci_strict]`).
 
-### 2.1 Lite mode contract
+### 2.1 Tool Execution and Validation
 
-Allowed methods/tools only:
-
-- `workspace`
-- `search`
-- `read`
-- `edit`
-- `graph`
-- protocol basics (`initialize`, `tools/list`, `tools/call`)
-
-Additionally for `workspace` in Lite:
-
-- allowed actions: `status`, `list`, `dependencies`
-
-Everything else MUST be blocked with a structured error.
-
-### 2.2 Full mode contract
-
-All implemented methods/tools are available.
+All tool calls (whether originating from MCP, CLI, REPL, or nested within a Plan/DSL execution) route through a shared validation and capability-check layer. Never bypass this layer for direct core execution.
 
 ---
 
@@ -58,91 +38,60 @@ All implemented methods/tools are available.
 
 ## 3.1 `curd-core`
 
-Authoritative business logic lives here.
+Authoritative business logic, engines, and domain models live here. Transport concerns (like MCP) do not belong here.
 
 Key engines:
 
-- `SearchEngine`: symbol indexing and parsing.
-- `ReadEngine`: URI-based reads.
-- `EditEngine`: symbol/module-top edits.
-- `GraphEngine`: dependency/call graph (edges/tree).
-- `DiagramEngine`: mermaid/ascii rendering.
-- `ProfileEngine`: folded/ascii/speedscope + compare.
-- `DebugEngine`: one-shot debug + session APIs.
-- `LspEngine`: syntax/semantic diagnostics.
+- `SearchEngine`: symbol indexing, BM25/FTS ranked search, and Tree-sitter parsing.
+- `ReadEngine`: URI-based reads and contextual mapping.
+- `EditEngine`: symbol/module-top edits and refactoring logic.
+- `GraphEngine`: dependency/call graph (edges/tree) and topological sorts.
 - `WorkspaceEngine`: workspace actions and transaction flow.
-- `SessionReviewEngine`: non-git session baseline/change/review.
+- `PlanRuntime` / `PlanAgent`: execution of compiled `.curd` script artifacts.
 
 Support modules:
 
-- `transaction.rs`: physical shadow store and commit/rollback/diff.
-- `graph_audit.rs`: architectural alerts post-commit.
-- `deps.rs`: dependency detection.
-- `shell.rs`, `file.rs`, `find.rs`, `parser.rs`, `symbols.rs`.
+- `transaction.rs`: physical shadow store (`.curd/shadow`) and commit/rollback/diff.
+- `graph_audit.rs`: architectural alerts and semantic integrity post-commit.
+- `sandbox.rs`: containerized and restricted shell execution (`bwrap`, macOS sandbox, Docker).
+- `policy.rs`: enforcement of blocklists/allowlists.
+- `plugin_packages.rs` / `plugin_client.rs`: management and bridging of `.curdl` and `.curdt` extensions.
 
 ## 3.2 `curd`
 
-Control plane only:
+Control plane, routing, and transport layer:
 
-1. parse JSON-RPC input
-2. route to handlers
-3. call core engines
-4. normalize response envelope
+1. CLI argument parsing (`run`, `plan`, `test`, `plugin-*`, etc.).
+2. Shared tool routing and validation (`router.rs`, `validation.rs`).
+3. Model Context Protocol (MCP) server implementation (`mcp.rs`).
+4. Interactive REPL (`repl.rs`).
 
 Heavy handlers run on `spawn_blocking`.
 
-## 3.3 `curd-node` and `curd-python`
+## 3.3 Extensibility (`curd-node`, `curd-python`, Plugins)
 
-Thin bindings only.
-
-Rule: no independent business logic drift from `curd-core`.
+- Bindings (`curd-node`, `curd-python`) are thin wrappers around the core library.
+- External logic should move towards the Plugin System (`.curdl` for languages, `.curdt` for native tools) rather than bloating the core binary.
 
 ---
 
 ## 4. API/Envelope Contract
 
-Every response MUST include:
+For JSON-RPC / MCP responses:
 
-- `jsonrpc: "2.0"`
-- `id`
-- `api_version`
-
-Error object MUST include:
-
-- `code`
-- `message`
-- `details` (nullable)
-
-Do not silently break schema fields. Additive fields are preferred.
+- Do not silently break schema fields. Additive fields are preferred.
+- Errors must be structured. In core runtime paths, return structured errors instead of panicking on lock, path, or pipe assumptions.
 
 ---
 
-## 5. Session Review Contract
+## 5. Plan and Script Contract
 
-`SessionReviewEngine` is workspace-instance scoped, not global singleton.
+Workflows are authored in `.curd` scripts:
 
-Required behavior:
-
-- `session_begin`: snapshot current source files.
-- `session_status`: active state + changed-file count.
-- `session_changes`: per-file delta stats.
-- `session_review`: findings only for session deltas.
-- `session_end`: terminate active session.
-
-Review findings are structured with:
-
-- `severity`
-- `code`
-- `message`
-- `file` (optional)
-- `line` (optional)
-
-Commit review gate (`workspace commit`) may block by thresholds:
-
-- `max_high` (default 0)
-- `max_medium` (optional)
-- `max_low` (optional)
-- `allow_high` override
+- Supported syntax: `arg`, `let`, multiline strings, `sequence`, `atomic`.
+- Scripts are compiled into artifacts (`.curd/plans/<id>.json`) carrying source hashes, bound arguments, and safeguards.
+- Mutating plan execution consistently requires an active workspace session.
+- Nesting tool calls inside plan execution flows through standard profile/ceiling checks.
 
 ---
 
@@ -151,41 +100,30 @@ Commit review gate (`workspace commit`) may block by thresholds:
 `ShadowStore` invariants:
 
 1. Never write outside workspace root.
-2. `begin` creates physical shadow workspace.
+2. `begin` creates physical shadow workspace (`.curd/shadow/root`).
 3. `diff` reflects staged + implicit shadow changes.
 4. `commit` performs conflict-aware writeback.
 5. `rollback` cleans shadow state without mutating workspace files.
-6. MANDATORY SESSIONS: As of v0.5.0, agents MUST open a session via `workspace(action: 'begin')` before calling any state-mutating tools (`edit`, `mutate`, `manage_file`, or destructive `shell` commands). Failure to do so will result in a barrier error.
+6. MANDATORY SESSIONS: Agents MUST open a session via `workspace(action: 'begin')` before calling any state-mutating tools (`edit`, `mutate`, `manage_file`, or destructive `shell` commands). Failure to do so will result in a barrier error.
 
 Conflict behavior:
 
 - If base hash mismatch detected, attempt three-way merge via `git merge-file`.
-- If `git show HEAD:<path>` unavailable (untracked/new file), fallback to empty base.
 
 ---
 
-## 7. Debug/Profile Semantics
-
-## 7.1 Debug
-
-- One-shot `debug` executes a fresh process.
-- Session endpoints are currently `stateless_history` unless explicitly upgraded.
-- Do not claim persistent interpreter state unless implemented with persistent child process pipes.
-
-## 7.2 Profile
-
-- Approx path may use graph-derived folded stacks.
-- Sampling capability flags must be explicit.
-- Folded generation must avoid DAG path truncation (cycle detection must be stack-local).
-
----
-
-## 8. Performance/Safety Guardrails
+## 7. Performance/Safety Guardrails
 
 1. Do not run blocking filesystem/process workloads on Tokio worker threads.
-2. Prefer metadata prefilter before hashing large trees when possible.
-3. Keep caches invalidated consistently after source mutations.
-4. Do not remove safety checks for workspace-bound path validation.
+2. Respect `[policy.exec]` (e.g., `allow_background`, timeout enforcement, workspace-bound `cwd` validation).
+3. Do not bypass policy gating for raw custom build commands.
+4. Keep caches invalidated consistently after source mutations.
+
+---
+
+## 8. Semantic Testing
+
+The `curd test` tool performs semantic integrity and graph cohesion audits. When implementing new features, ensure that the shadow workspace auditing points to the concrete active shadow workspace, not the generic `.curd/shadow` parent.
 
 ---
 
@@ -193,69 +131,20 @@ Conflict behavior:
 
 When modifying behavior:
 
-1. Update `tools/list` schema if tool params changed.
-2. Keep method and tool dispatch behavior consistent.
+1. Update schemas and parameter docs if tool params change.
+2. Keep method and tool dispatch behavior consistent across native and MCP surfaces.
 3. Add/update tests in relevant crate.
 4. Run at minimum:
    - `cargo fmt`
    - `cargo check -q`
    - `cargo test -q -p curd-core`
    - `cargo test -q -p curd`
-5. If adding core feature, mirror in Node/Python bindings unless intentionally Full-only CLI control-plane feature.
+   - `cargo run -p curd -- test --root .`
 
 Do not:
 
 - introduce hidden behavior changes without schema/update notes.
-- move business logic from core into bindings.
-- weaken transaction safety boundaries.
+- weaken transaction safety or sandbox boundaries.
 - PERFORM WRITES WITHOUT A SESSION: Always wrap plan executions and individual edits in a `workspace` begin/commit cycle.
-
----
-
-## 10. Composable Feature Blocks (Canonical)
-
-Implement features as one or more of these blocks:
-
-1. `Contract Block`
-- schema, response fields, error semantics.
-
-2. `Core Logic Block`
-- implementation in `curd-core` engine.
-
-3. `Routing Block`
-- CLI method/tool routing and mode gating.
-
-4. `Binding Block`
-- Node/Python wrappers.
-
-5. `Safety Block`
-- path checks, concurrency model, conflict handling.
-
-6. `Verification Block`
-- tests + smoke command examples.
-
-A feature is considered complete only when all relevant blocks are addressed.
-
----
-
-## 11. Known Deliberate Simplifications
-
-These are intentional unless changed explicitly:
-
-1. Debug sessions are logical history wrappers, not persistent REPL state.
-2. Some analysis/profiling outputs are approximate by design.
-3. Lite mode is intentionally restrictive for simpler/safer deployment.
-
----
-
-## 12. Preferred Evolution Path
-
-When in doubt, prioritize:
-
-1. contract stability
-2. safety/reversibility
-3. deterministic outputs
-4. performance
-5. feature breadth
 
 End of file.

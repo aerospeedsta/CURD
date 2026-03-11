@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -60,7 +60,11 @@ impl LspClient {
     }
 
     fn wait_for_response(&mut self, expected_id: u64) -> Result<Value> {
-        let stdout = self.child.stdout.as_mut().unwrap();
+        let stdout = self
+            .child
+            .stdout
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("LSP stdout pipe is unavailable"))?;
         let mut reader = BufReader::new(stdout);
 
         loop {
@@ -72,13 +76,13 @@ impl LspClient {
             if line.starts_with("Content-Length: ") {
                 let len_str = line["Content-Length: ".len()..].trim();
                 let len: usize = len_str.parse()?;
-                
+
                 // Read empty line
                 reader.read_line(&mut line)?;
-                
+
                 let mut buf = vec![0; len];
                 reader.read_exact(&mut buf)?;
-                
+
                 let resp: Value = serde_json::from_slice(&buf)?;
                 if let Some(id) = resp.get("id").and_then(|i| i.as_u64())
                     && id == expected_id
@@ -94,27 +98,39 @@ impl LspClient {
 
     pub fn initialize(&mut self, workspace_root: &Path) -> Result<()> {
         let uri = format!("file://{}", workspace_root.display());
-        self.send_request("initialize", json!({
-            "processId": std::process::id(),
-            "rootUri": uri,
-            "capabilities": {
-                "workspace": {
-                    "workspaceEdit": {
-                        "documentChanges": true
+        self.send_request(
+            "initialize",
+            json!({
+                "processId": std::process::id(),
+                "rootUri": uri,
+                "capabilities": {
+                    "workspace": {
+                        "workspaceEdit": {
+                            "documentChanges": true
+                        }
                     }
                 }
-            }
-        }))?;
+            }),
+        )?;
         self.send_notification("initialized", json!({}))?;
         Ok(())
     }
 
-    pub fn rename(&mut self, file_path: &Path, line: usize, col: usize, new_name: &str) -> Result<Value> {
+    pub fn rename(
+        &mut self,
+        file_path: &Path,
+        line: usize,
+        col: usize,
+        new_name: &str,
+    ) -> Result<Value> {
         let uri = format!("file://{}", file_path.display());
-        self.send_request("textDocument/rename", json!({
-            "textDocument": { "uri": uri },
-            "position": { "line": line, "character": col },
-            "newName": new_name
-        }))
+        self.send_request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": col },
+                "newName": new_name
+            }),
+        )
     }
 }

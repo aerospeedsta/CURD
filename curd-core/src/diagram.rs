@@ -57,9 +57,10 @@ impl DiagramEngine {
             for node in nodes {
                 let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 if let Some(fs) = node.get("fault_state")
-                    && let Ok(state) = serde_json::from_value::<FaultState>(fs.clone()) {
-                        fault_states.insert(id.to_string(), state);
-                    }
+                    && let Ok(state) = serde_json::from_value::<FaultState>(fs.clone())
+                {
+                    fault_states.insert(id.to_string(), state);
+                }
             }
         }
 

@@ -1,4 +1,4 @@
-use crate::{EngineContext, GraphEngine, dispatch_tool};
+use crate::{EngineContext, GraphEngine, dispatch_tool, validate_tool_call_core};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -9,6 +9,25 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use uuid::Uuid;
+
+const MAX_DSL_DEPTH: usize = 8;
+const MAX_DSL_NODES: usize = 256;
+
+fn tool_requires_shadow_session(tool: &str) -> bool {
+    matches!(
+        tool,
+        "edit"
+            | "manage_file"
+            | "mutate"
+            | "proposal"
+            | "refactor"
+            | "shell"
+            | "build"
+            | "execute_plan"
+            | "execute_active_plan"
+            | "execute_dsl"
+    )
+}
 
 /// --- AST Stability ---
 /// Used to identify a symbol across code mutations while the global index is stale.
@@ -59,10 +78,12 @@ pub enum DslNode {
     },
 }
 
+#[derive(Debug, Clone)]
 pub struct ReplState {
     pub variables: HashMap<String, Value>,
     pub active_plan: Option<Plan>,
     pub is_executing_plan: bool,
+    pub is_human_actor: bool,
 }
 
 impl Default for ReplState {
@@ -77,6 +98,7 @@ impl ReplState {
             variables: HashMap::new(),
             active_plan: None,
             is_executing_plan: false,
+            is_human_actor: false,
         }
     }
 
@@ -85,6 +107,7 @@ impl ReplState {
             variables,
             active_plan: None,
             is_executing_plan: false,
+            is_human_actor: false,
         }
     }
 
@@ -114,7 +137,8 @@ impl ReplState {
                                         if let Some(v) = current.get(idx) {
                                             current = v;
                                         }
-                                    } else if let Some(v) = current.get(field).and_then(|f| f.get(idx))
+                                    } else if let Some(v) =
+                                        current.get(field).and_then(|f| f.get(idx))
                                     {
                                         current = v;
                                     }
@@ -478,9 +502,10 @@ impl PlanEngine {
                 if s.contains("::") {
                     uris.push(s.clone());
                     if let Some(sym) = s.rsplit("::").next()
-                        && !sym.is_empty() {
-                            symbols.push(sym.to_string());
-                        }
+                        && !sym.is_empty()
+                    {
+                        symbols.push(sym.to_string());
+                    }
                 } else if s
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
@@ -566,7 +591,11 @@ impl PlanEngine {
     }
 
     pub fn delete_plan(&self, plan_id: Uuid) -> Result<()> {
-        let plan_path = self.workspace_root.join(".curd").join("plans").join(format!("{}.json", plan_id));
+        let plan_path = self
+            .workspace_root
+            .join(".curd")
+            .join("plans")
+            .join(format!("{}.json", plan_id));
         if plan_path.exists() {
             fs::remove_file(plan_path)?;
         }
@@ -582,7 +611,11 @@ impl PlanEngine {
     }
 
     pub fn get_plan(&self, plan_id: Uuid) -> Result<Plan> {
-        let plan_path = self.workspace_root.join(".curd").join("plans").join(format!("{}.json", plan_id));
+        let plan_path = self
+            .workspace_root
+            .join(".curd")
+            .join("plans")
+            .join(format!("{}.json", plan_id));
         if !plan_path.exists() {
             anyhow::bail!("Plan {} not found", plan_id);
         }
@@ -608,7 +641,10 @@ impl PlanEngine {
         is_human: bool,
     ) -> Result<Value> {
         // --- POLICY CHECK ---
-        match ctx.policy_engine.validate_plan(&plan, is_human, &self.workspace_root) {
+        match ctx
+            .policy_engine
+            .validate_plan(&plan, is_human, &self.workspace_root)
+        {
             crate::policy::PolicyDecision::Deny(reason) => {
                 anyhow::bail!("{}", reason);
             }
@@ -616,10 +652,10 @@ impl PlanEngine {
                 ctx.ce.log(
                     Some(ctx.event_seq.load(std::sync::atomic::Ordering::SeqCst)),
                     ctx.collaboration_id,
-                    None, // actor_id
-                    "system", // actor_kind
+                    None,            // actor_id
+                    "system",        // actor_kind
                     "policy_engine", // actor_surface
-                    None, // transaction_id
+                    None,            // transaction_id
                     "plan_policy_audit",
                     vec![plan.id.to_string()], // resources
                     true,
@@ -647,8 +683,12 @@ impl PlanEngine {
         let plans_dir = self.workspace_root.join(".curd").join("plans");
         let _ = fs::create_dir_all(&plans_dir);
         let plan_path = plans_dir.join(format!("{}.json", plan_id));
-        let _ = fs::write(&plan_path, serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".to_string()));
+        let _ = fs::write(
+            &plan_path,
+            serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".to_string()),
+        );
 
+        let node_count = plan.nodes.len();
         state.active_plan = Some(plan);
 
         let _ = ctx.tx_events.send(SystemEvent::PlanRegistered {
@@ -656,14 +696,12 @@ impl PlanEngine {
             nodes: node_views,
         });
 
-        Ok(
-            json!({ 
-                "status": "ok", 
-                "plan_id": plan_id, 
-                "node_count": state.active_plan.as_ref().unwrap().nodes.len(),
-                "saved_to": plan_path.display().to_string()
-            }),
-        )
+        Ok(json!({
+            "status": "ok",
+            "plan_id": plan_id,
+            "node_count": node_count,
+            "saved_to": plan_path.display().to_string()
+        }))
     }
 
     pub async fn execute_active_plan(
@@ -675,6 +713,14 @@ impl PlanEngine {
             .active_plan
             .take()
             .ok_or_else(|| anyhow::anyhow!("No active plan registered"))?;
+
+        if Self::plan_requires_shadow_session(&plan)
+            && !ctx.we.shadow.lock().map(|s| s.is_active()).unwrap_or(false)
+        {
+            anyhow::bail!(
+                "SESSION_REQUIRED: active plan contains mutating/runtime steps and requires an open workspace session."
+            );
+        }
 
         state.is_executing_plan = true;
         let res = self.execute_plan(&plan, ctx, state).await;
@@ -688,6 +734,7 @@ impl PlanEngine {
         ctx: &EngineContext,
         state: &mut ReplState,
     ) -> Result<Value> {
+        Self::validate_dsl_shape(nodes, 1, &mut 0)?;
         state.is_executing_plan = true;
         let mut results = Vec::new();
 
@@ -703,6 +750,8 @@ impl PlanEngine {
                         });
 
                         let resolved_args = state.resolve(args);
+                        validate_tool_call_core(ctx, tool, &resolved_args, state.is_human_actor)
+                            .map_err(|e| anyhow::anyhow!(e.message.clone()))?;
                         let res = dispatch_tool(tool, &resolved_args, ctx).await;
                         self.update_focus_from_tool(tool, &resolved_args, Some(&res));
                         // Fixed compaction threshold for DSL call outputs.
@@ -730,8 +779,15 @@ impl PlanEngine {
                             && obj.contains_key("tool")
                             && obj.contains_key("args")
                         {
-                            let t = obj.get("tool").unwrap().as_str().unwrap_or("");
-                            let a = obj.get("args").unwrap();
+                            let t = obj.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                            let Some(a) = obj.get("args") else {
+                                return Err(anyhow::anyhow!(
+                                    "Malformed DSL assignment tool call for variable '{}': missing args",
+                                    var
+                                ));
+                            };
+                            validate_tool_call_core(ctx, t, a, state.is_human_actor)
+                                .map_err(|e| anyhow::anyhow!(e.message.clone()))?;
                             let out = dispatch_tool(t, a, ctx).await;
                             self.update_focus_from_tool(t, a, Some(&out));
                             out
@@ -820,6 +876,22 @@ impl PlanEngine {
         ctx: &EngineContext,
         state: &mut ReplState,
     ) -> Result<Value> {
+        match ctx
+            .policy_engine
+            .validate_plan(plan, false, &self.workspace_root)
+        {
+            crate::policy::PolicyDecision::Allow => {}
+            crate::policy::PolicyDecision::Audit(msg) => {
+                return Err(anyhow::anyhow!(
+                    "Plan requires audit before execution: {}",
+                    msg
+                ));
+            }
+            crate::policy::PolicyDecision::Deny(reason) => {
+                return Err(anyhow::anyhow!(reason));
+            }
+        }
+
         let mut checkpoint_seq: usize = 0;
         let mut artifact_refs: Vec<String> = Vec::new();
         let mut run_state = PlanRunState {
@@ -855,9 +927,10 @@ impl PlanEngine {
         for (i, node) in plan.nodes.iter().enumerate() {
             for dep in &node.dependencies {
                 if let IdOrTag::Id(dep_id) = dep
-                    && let Some(&dep_idx) = id_map.get(dep_id) {
-                        graph.add_edge(dep_idx, node_indices[i], ());
-                    }
+                    && let Some(&dep_idx) = id_map.get(dep_id)
+                {
+                    graph.add_edge(dep_idx, node_indices[i], ());
+                }
             }
         }
 
@@ -896,6 +969,13 @@ impl PlanEngine {
                     let attempt_res: Result<Value> = match &node.op {
                         ToolOperation::McpCall { tool, args } => {
                             let resolved_args = state.resolve(args);
+                            validate_tool_call_core(
+                                ctx,
+                                tool,
+                                &resolved_args,
+                                state.is_human_actor,
+                            )
+                            .map_err(|e| anyhow::anyhow!(e.message.clone()))?;
                             let out = Box::pin(dispatch_tool(tool, &resolved_args, ctx)).await;
                             self.update_focus_from_tool(tool, &resolved_args, Some(&out));
                             if out.get("error").is_some() {
@@ -1059,6 +1139,37 @@ impl PlanEngine {
         }
         final_res
     }
+
+    fn validate_dsl_shape(nodes: &[DslNode], depth: usize, seen: &mut usize) -> Result<()> {
+        if depth > MAX_DSL_DEPTH {
+            anyhow::bail!(
+                "DSL rejected: nesting depth {} exceeds limit {}.",
+                depth,
+                MAX_DSL_DEPTH
+            );
+        }
+        for node in nodes {
+            *seen += 1;
+            if *seen > MAX_DSL_NODES {
+                anyhow::bail!(
+                    "DSL rejected: node count {} exceeds limit {}.",
+                    *seen,
+                    MAX_DSL_NODES
+                );
+            }
+            if let DslNode::Atomic { nodes } = node {
+                Self::validate_dsl_shape(nodes, depth + 1, seen)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn plan_requires_shadow_session(plan: &Plan) -> bool {
+        plan.nodes.iter().any(|node| match &node.op {
+            ToolOperation::McpCall { tool, .. } => tool_requires_shadow_session(tool),
+            ToolOperation::Internal { command, .. } => command == "clear_shadow",
+        })
+    }
 }
 
 /// --- Observability (Ratatui TUI) ---
@@ -1160,9 +1271,15 @@ pub enum SystemEvent {
         nodes: Vec<(NodeId, String)>, // (ID, Label/Tool)
     },
     /// Dispatched when a new Plan starts execution.
-    PlanStarted { plan_id: Uuid, total_nodes: usize },
+    PlanStarted {
+        plan_id: Uuid,
+        total_nodes: usize,
+    },
     /// Dispatched when a specific Node starts.
-    NodeExecuting { node_id: NodeId, tool: String },
+    NodeExecuting {
+        node_id: NodeId,
+        tool: String,
+    },
     /// Dispatched on successful Node completion.
     NodeCompleted {
         node_id: NodeId,
@@ -1172,7 +1289,10 @@ pub enum SystemEvent {
         artifact_path: Option<PathBuf>,
     },
     /// Dispatched on Node failure.
-    NodeFailed { node_id: NodeId, error: String },
+    NodeFailed {
+        node_id: NodeId,
+        error: String,
+    },
     /// Human-in-the-loop: A review tag was hit in the shadow workspace.
     ReviewRequired {
         file: PathBuf,
@@ -1180,9 +1300,14 @@ pub enum SystemEvent {
         message: String,
     },
     /// Explicit abort triggered by the REPL or a Node guard.
-    PlanAborted { plan_id: Uuid, reason: String },
+    PlanAborted {
+        plan_id: Uuid,
+        reason: String,
+    },
     /// Final commit of a collaboration-scoped transaction to the main workspace.
-    PlanCommitted { collaboration_id: Uuid },
+    PlanCommitted {
+        collaboration_id: Uuid,
+    },
 }
 
 pub fn now_secs() -> u64 {

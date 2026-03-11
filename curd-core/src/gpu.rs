@@ -52,7 +52,7 @@ impl ComputeBackend {
         let exe_path = std::env::current_exe().ok()?;
         let exe_dir = exe_path.parent()?;
         let worker_path = exe_dir.join("curd-gpu-worker");
-        
+
         let path_to_try = if worker_path.exists() {
             worker_path.to_string_lossy().to_string()
         } else {
@@ -86,9 +86,10 @@ impl ComputeBackend {
     #[cfg(feature = "gpu-embedded")]
     pub fn new() -> Result<Option<Self>> {
         if std::env::var("CURD_FORCE_EXTERNAL_GPU").is_ok()
-            && let Some(ext) = Self::try_spawn_external() {
-                return Ok(Some(ext));
-            }
+            && let Some(ext) = Self::try_spawn_external()
+        {
+            return Ok(Some(ext));
+        }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL,
             ..Default::default()
@@ -146,36 +147,42 @@ impl ComputeBackend {
     #[cfg(feature = "gpu-embedded")]
     pub async fn hash_batch(&self, items: &[&str]) -> Result<Vec<String>> {
         match self {
-            Self::Embedded { device, queue, compute_pipeline, .. } => {
-                self.hash_batch_embedded(device, queue, compute_pipeline, items).await
+            Self::Embedded {
+                device,
+                queue,
+                compute_pipeline,
+                ..
+            } => {
+                self.hash_batch_embedded(device, queue, compute_pipeline, items)
+                    .await
             }
-            Self::External { worker, .. } => {
-                self.hash_batch_external(worker, items)
-            }
+            Self::External { worker, .. } => self.hash_batch_external(worker, items),
         }
     }
 
     #[cfg(not(feature = "gpu-embedded"))]
     pub async fn hash_batch(&self, items: &[&str]) -> Result<Vec<String>> {
         match self {
-            Self::External { worker, .. } => {
-                self.hash_batch_external(worker, items)
-            }
+            Self::External { worker, .. } => self.hash_batch_external(worker, items),
         }
     }
 
-    fn hash_batch_external(&self, worker: &std::sync::Mutex<std::process::Child>, items: &[&str]) -> Result<Vec<String>> {
+    fn hash_batch_external(
+        &self,
+        worker: &std::sync::Mutex<std::process::Child>,
+        items: &[&str],
+    ) -> Result<Vec<String>> {
         if items.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut child = worker.lock().unwrap_or_else(|e| e.into_inner());
-        
+
         #[derive(serde::Serialize)]
         struct Request<'a> {
             strings: &'a [&'a str],
         }
-        
+
         #[derive(serde::Deserialize)]
         struct Response {
             hashes: Vec<String>,
@@ -183,7 +190,7 @@ impl ComputeBackend {
 
         let req = Request { strings: items };
         let req_json = serde_json::to_string(&req)?;
-        
+
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
             writeln!(stdin, "{}", req_json)?;
@@ -198,7 +205,7 @@ impl ComputeBackend {
             let mut line = String::new();
             reader.read_line(&mut line)?;
             child.stdout = Some(reader.into_inner());
-            
+
             if line.is_empty() {
                 return Err(anyhow::anyhow!("Worker closed stdout unexpectedly"));
             }
@@ -233,7 +240,7 @@ impl ComputeBackend {
         }
 
         let mut input_data: Vec<u32> = Vec::with_capacity((num_items * 2 + total_blocks) as usize);
-        
+
         let mut offsets = Vec::with_capacity(num_items as usize);
         let mut block_counts = Vec::with_capacity(num_items as usize);
         let mut current_offset = 0u32;
@@ -314,7 +321,8 @@ impl ComputeBackend {
         });
 
         // 3. Encode
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,

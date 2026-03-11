@@ -26,7 +26,9 @@ pub struct WorkspaceExitOutcome {
     pub message: String,
 }
 
-pub fn inspect_active_transaction(workspace_root: &Path) -> Result<Option<ActiveTransactionSummary>> {
+pub fn inspect_active_transaction(
+    workspace_root: &Path,
+) -> Result<Option<ActiveTransactionSummary>> {
     let mut shadow = ShadowStore::new(workspace_root);
     if !shadow.is_active() {
         return Ok(None);
@@ -62,7 +64,12 @@ pub fn resolve_workspace_exit(
             let _ = shadow.diff();
             shadow.len()
         },
-        diff_preview: shadow.diff().lines().take(40).collect::<Vec<_>>().join("\n"),
+        diff_preview: shadow
+            .diff()
+            .lines()
+            .take(40)
+            .collect::<Vec<_>>()
+            .join("\n"),
     };
 
     let disposition = match requested {
@@ -106,7 +113,10 @@ pub fn resolve_workspace_exit(
         ShadowDisposition::Abort => Ok(WorkspaceExitOutcome {
             proceeded: false,
             summary: Some(summary),
-            message: format!("Aborted {} because an active transaction is still present.", destructive_action),
+            message: format!(
+                "Aborted {} because an active transaction is still present.",
+                destructive_action
+            ),
         }),
     }
 }
@@ -125,7 +135,10 @@ fn prompt_shadow_disposition(
         summary.staged_count
     );
     if !summary.diff_preview.trim().is_empty() {
-        println!("  diff preview:\n{}\n", indent_preview(&summary.diff_preview));
+        println!(
+            "  diff preview:\n{}\n",
+            indent_preview(&summary.diff_preview)
+        );
     }
 
     let items = [
@@ -185,10 +198,14 @@ mod tests {
         shadow.begin().expect("begin");
         shadow.stage(&root.join("a.txt"), "new\n").expect("stage");
 
-        let outcome = resolve_workspace_exit(&root, "detach", Some(ShadowDisposition::Apply), false)
-            .expect("resolve");
+        let outcome =
+            resolve_workspace_exit(&root, "detach", Some(ShadowDisposition::Apply), false)
+                .expect("resolve");
         assert!(outcome.proceeded);
-        assert_eq!(fs::read_to_string(root.join("a.txt")).expect("read"), "new\n");
+        assert_eq!(
+            fs::read_to_string(root.join("a.txt")).expect("read"),
+            "new\n"
+        );
     }
 
     #[test]
@@ -205,6 +222,9 @@ mod tests {
             resolve_workspace_exit(&root, "delete", Some(ShadowDisposition::Discard), false)
                 .expect("resolve");
         assert!(outcome.proceeded);
-        assert_eq!(fs::read_to_string(root.join("a.txt")).expect("read"), "old\n");
+        assert_eq!(
+            fs::read_to_string(root.join("a.txt")).expect("read"),
+            "old\n"
+        );
     }
 }

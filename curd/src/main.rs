@@ -1,23 +1,21 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
-use serde_json::json;
-use curd_core::{BuildRequest, DoctorIndexConfig, DoctorProfile, DoctorThresholds};
+use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "mcp")]
-use curd_core::McpServer;
+use curd::McpServer;
+use curd_core::{DoctorIndexConfig, DoctorThresholds};
+use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-#[cfg(feature = "core")]
-pub mod doctor;
 #[cfg(feature = "mcp")]
 pub mod init;
+#[cfg(feature = "core")]
+pub mod repl;
 #[cfg(feature = "core")]
 pub mod workspace_init;
 #[cfg(feature = "core")]
 pub mod workspace_lifecycle;
-#[cfg(feature = "core")]
-pub mod repl;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -67,7 +65,7 @@ enum Commands {
         target_or_dir: Option<String>,
         /// Path to workspace root (if target is provided)
         dir: Option<PathBuf>,
-        /// Build adapter override (cargo|cmake|ninja|make)
+        /// Build adapter override (e.g. cargo, cmake, ninja, make, uv, poetry, pip, conda, mamba, npm, yarn, pnpm, bun)
         #[arg(long)]
         adapter: Option<String>,
         /// Build profile (debug|release)
@@ -124,7 +122,7 @@ enum Commands {
         /// Path to the workspace root
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        
+
         #[command(subcommand)]
         command: RefactorCommands,
     },
@@ -153,6 +151,36 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
+        /// Path to the workspace root
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Install, remove, or list signed language plugins (.curdl)
+    #[cfg(feature = "core")]
+    #[command(visible_alias = "plang")]
+    PluginLanguage {
+        #[command(subcommand)]
+        command: PluginPackageCommands,
+        /// Path to the workspace root
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Install, remove, or list signed tool plugins (.curdt)
+    #[cfg(feature = "core")]
+    #[command(visible_alias = "ptool")]
+    PluginTool {
+        #[command(subcommand)]
+        command: PluginPackageCommands,
+        /// Path to the workspace root
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Manage trusted signing keys for CURD plugin packages
+    #[cfg(feature = "core")]
+    #[command(visible_alias = "ptrust")]
+    PluginTrust {
+        #[command(subcommand)]
+        command: PluginTrustCommands,
         /// Path to the workspace root
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -207,6 +235,40 @@ enum Commands {
         /// Path to the workspace root
         #[arg(default_value = ".")]
         root: PathBuf,
+    },
+    /// Run a .curd script by compiling it to the current DSL IR
+    #[cfg(feature = "core")]
+    Run {
+        /// Either a script path, or an action like 'check' / 'compile'
+        first: String,
+        /// Script path when using an explicit action
+        second: Option<String>,
+        /// Path to the workspace root
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Script argument override in key=value form
+        #[arg(long = "arg")]
+        args: Vec<String>,
+        /// Optional profile override
+        #[arg(long)]
+        profile: Option<String>,
+        /// Output path for `curd run compile ...`
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Run semantic integrity tests on the symbol graph
+    #[cfg(feature = "core")]
+    #[command(visible_alias = "tst", name = "test")]
+    Test {
+        /// Scope of the test (nodes, edges, policy, architecture, all)
+        #[arg(default_value = "all", value_parser = ["nodes", "edges", "policy", "architecture", "all"])]
+        scope: String,
+        /// Path to the workspace root
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Show detailed list of broken links and dead zones
+        #[arg(short, long)]
+        verbose: bool,
     },
     /// Semantic search across the indexed graph
     #[cfg(feature = "core")]
@@ -337,6 +399,64 @@ enum ConfigCommands {
 }
 
 #[derive(Subcommand)]
+enum PluginPackageCommands {
+    /// List installed plugin packages
+    List,
+    /// Install a signed plugin archive
+    Add {
+        /// Path to the signed archive (.curdl or .curdt)
+        archive_path: PathBuf,
+    },
+    /// Remove an installed plugin package
+    Remove {
+        /// Installed package id
+        package_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginTrustCommands {
+    /// List trusted signing keys
+    List,
+    /// Get one trusted signing key
+    Get {
+        /// Trusted key id
+        key_id: String,
+    },
+    /// Add or replace a trusted signing key
+    Add(PluginTrustAddArgs),
+    /// Remove a trusted signing key
+    Remove {
+        /// Trusted key id
+        key_id: String,
+    },
+    /// Enable a trusted signing key
+    Enable {
+        /// Trusted key id
+        key_id: String,
+    },
+    /// Disable a trusted signing key
+    Disable {
+        /// Trusted key id
+        key_id: String,
+    },
+}
+
+#[derive(Args)]
+struct PluginTrustAddArgs {
+    /// Trusted key id
+    key_id: String,
+    /// Ed25519 public key hex
+    pubkey_hex: String,
+    /// Optional label
+    #[arg(long)]
+    label: Option<String>,
+    /// Allowed plugin kinds for this key
+    #[arg(long = "kind", value_parser = ["tool", "language"])]
+    kinds: Vec<String>,
+}
+
+#[derive(Subcommand)]
 enum RefactorCommands {
     /// Rename a function/class/variable
     Rename {
@@ -359,7 +479,7 @@ enum RefactorCommands {
 }
 
 #[derive(Subcommand)]
-pub enum ContextCommands {
+enum ContextCommands {
     /// Add an external repository context
     Add {
         /// The path to the external repository
@@ -387,7 +507,7 @@ pub enum ContextCommands {
 }
 
 #[derive(Subcommand)]
-pub enum SessionCommands {
+enum SessionCommands {
     /// Open a new shadow transaction
     Begin,
     /// View changes and architectural impact of the current session
@@ -402,11 +522,16 @@ pub enum SessionCommands {
 
 #[cfg(feature = "mcp")]
 #[derive(Subcommand)]
-pub enum PlanCommands {
+enum PlanCommands {
     /// List all saved plans in the workspace
     List,
     /// Read a specific plan and format it as a readable execution tree
     Read {
+        /// The UUID of the plan
+        id: String,
+    },
+    /// Edit a saved plan or compiled script artifact interactively
+    Edit {
         /// The UUID of the plan
         id: String,
     },
@@ -473,7 +598,7 @@ pub struct DoctorArgs {
     /// The profile of thresholds to apply ('ci_fast' or 'ci_strict'). Overrides config.
     #[arg(long)]
     pub profile: Option<String>,
-    
+
     /// Optional index mode for this doctor run (e.g. 'lazy', 'full')
     #[arg(long, value_parser = ["lazy", "full"])]
     pub index_mode: Option<String>,
@@ -490,7 +615,7 @@ pub struct DoctorArgs {
     #[arg(long, value_parser = ["multithreaded", "multiprocess", "singlethreaded"])]
     pub index_execution: Option<String>,
     /// Optional chunk size for multiprocess mode
-#[arg(long)]
+    #[arg(long)]
     pub index_chunk_size: Option<usize>,
 }
 
@@ -509,11 +634,13 @@ async fn main() -> Result<()> {
 
     #[cfg(target_os = "windows")]
     {
-        eprintln!("\n{}", "!" .repeat(80));
+        eprintln!("\n{}", "!".repeat(80));
         eprintln!("WARNING: Native sandboxing is not yet supported on Windows.");
-        eprintln!("Interactive agent tools that execute shell commands will run WITHOUT isolation.");
+        eprintln!(
+            "Interactive agent tools that execute shell commands will run WITHOUT isolation."
+        );
         eprintln!("Please exercise caution when using agentic features on this platform.");
-        eprintln!("{}\n", "!" .repeat(80));
+        eprintln!("{}\n", "!".repeat(80));
     }
 
     let cli = Cli::parse();
@@ -539,34 +666,56 @@ async fn main() -> Result<()> {
         #[cfg(feature = "core")]
         Some(Commands::Doctor(args)) | Some(Commands::Index(args)) => {
             let resolved = resolve_workspace_root(args.root.clone());
-            doctor::run_doctor(
-                &resolved,
-                args.strict || args.profile.is_some(),
-                DoctorThresholds {
-                    max_total_ms: args.max_total_ms,
-                    max_parse_fail: args.max_parse_fail,
-                    max_no_symbols_ratio: args.max_no_symbols_ratio,
-                    max_skipped_large_ratio: args.max_skipped_large_ratio,
-                    min_coverage_ratio: args.min_coverage_ratio,
-                    require_coverage_state: args.require_coverage_state.clone(),
-                    min_symbol_count: args.min_symbol_count,
-                    min_symbols_per_k_files: args.min_symbols_per_k_files,
-                    min_overlap_with_full: args.min_overlap_with_full,
-                    parity_rerun: args.parity_rerun,
-                },
-                args.profile.as_deref().and_then(|s: &str| s.parse::<DoctorProfile>().ok()),
-                DoctorIndexConfig {
-                    index_mode: args.index_mode.clone(),
-                    index_scope: args.index_scope.clone(),
-                    index_max_file_size: args.index_max_file_size,
-                    index_large_file_policy: args.index_large_file_policy.clone(),
-                    index_execution: args.index_execution.clone(),
-                    index_chunk_size: args.index_chunk_size,
-                    compare_with_full: args.compare_with_full,
-                    profile_index: args.profile_index,
-                    report_out: args.report_out.clone(),
-                },
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let result = curd::router::route_doctor_command(
+                &json!({
+                    "strict": args.strict || args.profile.is_some(),
+                    "profile": args.profile,
+                    "thresholds": DoctorThresholds {
+                        max_total_ms: args.max_total_ms,
+                        max_parse_fail: args.max_parse_fail,
+                        max_no_symbols_ratio: args.max_no_symbols_ratio,
+                        max_skipped_large_ratio: args.max_skipped_large_ratio,
+                        min_coverage_ratio: args.min_coverage_ratio,
+                        require_coverage_state: args.require_coverage_state.clone(),
+                        min_symbol_count: args.min_symbol_count,
+                        min_symbols_per_k_files: args.min_symbols_per_k_files,
+                        min_overlap_with_full: args.min_overlap_with_full,
+                        parity_rerun: args.parity_rerun,
+                    },
+                    "index_config": DoctorIndexConfig {
+                        index_mode: args.index_mode.clone(),
+                        index_scope: args.index_scope.clone(),
+                        index_max_file_size: args.index_max_file_size,
+                        index_large_file_policy: args.index_large_file_policy.clone(),
+                        index_execution: args.index_execution.clone(),
+                        index_chunk_size: args.index_chunk_size,
+                        compare_with_full: args.compare_with_full,
+                        profile_index: args.profile_index,
+                        report_out: args.report_out.clone(),
+                    }
+                }),
+                &ctx,
             )
+            .await;
+            if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+                anyhow::bail!("{}", err);
+            }
+            let report = result
+                .get("report")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(summary) = report.get("human_summary").and_then(|v| v.as_str()) {
+                println!("{}", summary);
+            }
+            if let Some(path) = report
+                .get("index_config")
+                .and_then(|cfg| cfg.get("report_out"))
+                .and_then(|v| v.as_str())
+            {
+                println!("REPORT written to {}", path);
+            }
+            Ok(())
         }
         #[cfg(feature = "core")]
         Some(Commands::Build {
@@ -602,25 +751,41 @@ async fn main() -> Result<()> {
             let actual_execute = if plan { false } else { execute };
             let resolved = resolve_workspace_root(resolved_root);
             enforce_workspace_config(&resolved)?;
-            let mut out = curd_core::run_build(
-                &resolved,
-                BuildRequest {
-                    adapter: adapter.clone(),
-                    profile: profile.clone(),
-                    target: resolved_target.clone(),
-                    execute: actual_execute,
-                    zig,
-                    command: command.clone(),
-                    allow_untrusted,
-                    trailing_args: trailing_args.clone(),
-                },
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let adapter_arg = adapter.clone();
+            let profile_arg = profile.clone();
+            let target_arg = resolved_target.clone();
+            let command_arg = command.clone();
+            let trailing_args_arg = trailing_args.clone();
+            let build_params = json!({
+                "adapter": adapter_arg,
+                "profile": profile_arg,
+                "target": target_arg,
+                "execute": actual_execute,
+                "zig": zig,
+                "command": command_arg,
+                "allow_untrusted": allow_untrusted,
+                "trailing_args": trailing_args_arg
+            });
+            let mut result = curd::router::route_build_command(&build_params, &ctx).await;
+            if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+                anyhow::bail!("{}", err);
+            }
+            let mut out: curd_core::BuildResponse = serde_json::from_value(
+                result
+                    .get("response")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
             )?;
 
             if out.untrusted_confirmation_required && !json {
                 println!("\n\x1b[1;33m⚠️  UNTRUSTED BUILD ADAPTER DETECTED\x1b[0m");
-                println!("The adapter \x1b[1m'{}'\x1b[0m is defined in the local \x1b[34m.curd/settings.toml\x1b[0m.", out.adapter);
+                println!(
+                    "The adapter \x1b[1m'{}'\x1b[0m is defined in the local \x1b[34m.curd/settings.toml\x1b[0m.",
+                    out.adapter
+                );
                 println!("Executing this adapter may run arbitrary commands on your system.");
-                
+
                 let confirmation = dialoguer::Confirm::new()
                     .with_prompt("Do you want to continue with execution?")
                     .default(false)
@@ -628,25 +793,35 @@ async fn main() -> Result<()> {
                     .unwrap_or(false);
 
                 if confirmation {
-                    out = curd_core::run_build(
-                        &resolved,
-                        BuildRequest {
-                            adapter: adapter.clone(),
-                            profile: profile.clone(),
-                            target: resolved_target.clone(),
-                            execute: actual_execute,
-                            zig,
-                            command,
-                            allow_untrusted: true,
-                            trailing_args,
-                        },
+                    result = curd::router::route_build_command(
+                        &json!({
+                            "adapter": adapter,
+                            "profile": profile,
+                            "target": resolved_target,
+                            "execute": actual_execute,
+                            "zig": zig,
+                            "command": command,
+                            "allow_untrusted": true,
+                            "trailing_args": trailing_args
+                        }),
+                        &ctx,
+                    )
+                    .await;
+                    if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+                        anyhow::bail!("{}", err);
+                    }
+                    out = serde_json::from_value(
+                        result
+                            .get("response")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({})),
                     )?;
                 } else {
                     println!("Aborted.");
                     return Ok(());
                 }
             }
-            
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
@@ -656,20 +831,24 @@ async fn main() -> Result<()> {
                 println!("{}", header.bold().cyan());
                 println!("  {}   {}", "Adapter:".dimmed(), out.adapter.bold());
                 println!("  {}   {}", "Profile:".dimmed(), out.profile.bold());
-                if let Some(ref t) = out.target { 
-                    println!("  {}   {}", "Target: ".dimmed(), t.bold()); 
+                if let Some(ref t) = out.target {
+                    println!("  {}   {}", "Target: ".dimmed(), t.bold());
                 }
                 println!("  {}   {}", "Steps:  ".dimmed(), out.steps.len());
-                
+
                 for (i, step) in out.steps.iter().enumerate() {
                     let cmd_str = step.command.join(" ");
                     println!("    [{}] {}", i + 1, cmd_str.white());
                     if let Some(suc) = step.success {
-                        let status_str = if suc { "SUCCESS".green() } else { "FAILED".red() };
+                        let status_str = if suc {
+                            "SUCCESS".green()
+                        } else {
+                            "FAILED".red()
+                        };
                         println!("         {} {}", "Result:".dimmed(), status_str.bold());
                     }
                 }
-                
+
                 let footer = if out.status == "ok" {
                     "✔ Build process completed successfully.".green()
                 } else {
@@ -836,35 +1015,68 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            let out = curd_core::run_diff(&resolved, semantic, symbol)?;
-            println!("{}", out);
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let res = curd::router::route_diff_command(
+                &json!({
+                    "semantic": semantic,
+                    "symbol": symbol
+                }),
+                &ctx,
+            )
+            .await;
+            if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
+                anyhow::bail!("{}", err);
+            }
+            println!(
+                "{}",
+                res.get("output").and_then(|v| v.as_str()).unwrap_or("")
+            );
             Ok(())
         }
         #[cfg(feature = "core")]
         Some(Commands::Refactor { root, command }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
             let action = match command {
-                RefactorCommands::Rename { symbol, new_name, lsp } => curd_core::RefactorAction::Rename { symbol, new_name, lsp_binary: lsp },
-                RefactorCommands::Move { symbol, target_file } => curd_core::RefactorAction::Move { symbol, target_file },
-                RefactorCommands::Extract { file_range, new_function_name } => curd_core::RefactorAction::Extract { file_range, new_function_name },
+                RefactorCommands::Rename {
+                    symbol,
+                    new_name,
+                    lsp,
+                } => curd_core::RefactorAction::Rename {
+                    symbol,
+                    new_name,
+                    lsp_binary: lsp,
+                },
+                RefactorCommands::Move {
+                    symbol,
+                    target_file,
+                } => curd_core::RefactorAction::Move {
+                    symbol,
+                    target_file,
+                },
+                RefactorCommands::Extract {
+                    file_range,
+                    new_function_name,
+                } => curd_core::RefactorAction::Extract {
+                    file_range,
+                    new_function_name,
+                },
             };
-            
-            match curd_core::run_refactor(&resolved, action.clone()) {
-                Ok(out) => {
-                    println!("{}", out);
-                }
-                Err(e) => {
-                        let err_msg = e.to_string();
-                        use std::io::IsTerminal;
-                        if err_msg.contains("is overloaded") && std::io::stdout().is_terminal() {
-                            // Extract options from the error message
-                            if let Some(options_idx) = err_msg.find("Available options:\n") {
-                                let options_str = &err_msg[options_idx + 19..];
-                                let lines: Vec<&str> = options_str.lines().collect();
-                                
-                                println!("\n{}", &err_msg[..options_idx].trim());
-                                if let Ok(selections) = dialoguer::MultiSelect::new()
+
+            let result = curd::router::route_refactor_command(action.clone(), &ctx).await;
+            if let Some(out) = result.get("output").and_then(|v| v.as_str()) {
+                println!("{}", out);
+            } else if let Some(err_msg) = result.get("error").and_then(|v| v.as_str()) {
+                use std::io::IsTerminal;
+                if err_msg.contains("is overloaded") && std::io::stdout().is_terminal() {
+                    // Extract options from the error message
+                    if let Some(options_idx) = err_msg.find("Available options:\n") {
+                        let options_str = &err_msg[options_idx + 19..];
+                        let lines: Vec<&str> = options_str.lines().collect();
+
+                        println!("\n{}", &err_msg[..options_idx].trim());
+                        if let Ok(selections) = dialoguer::MultiSelect::new()
                                     .with_prompt("Select which overloads to rename (Space to select, Enter to confirm):")
                                     .items(&lines)
                                     .interact()
@@ -872,7 +1084,7 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                                     if selections.is_empty() {
                                         anyhow::bail!("No overloads selected. Aborting.");
                                     }
-                                    
+
                                     for &selection in &selections {
                                         let selected = lines[selection];
                                         if let Some(colon_idx) = selected.find(": ") {
@@ -884,83 +1096,113 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                                                 anyhow::bail!("Unexpected action state");
                                             }
                                             println!("Resubmitting with targeted overload: {}...", full_id_with_line);
-                                            match curd_core::run_refactor(&resolved, sub_action) {
-                                                Ok(out) => println!("{}", out),
-                                                Err(e) => anyhow::bail!("curd refactor failed on {}: {}", full_id_with_line, e),
+                                            let retried = curd::router::route_refactor_command(sub_action, &ctx).await;
+                                            if let Some(out) = retried.get("output").and_then(|v| v.as_str()) {
+                                                println!("{}", out);
+                                            } else if let Some(err) = retried.get("error").and_then(|v| v.as_str()) {
+                                                anyhow::bail!("curd refactor failed on {}: {}", full_id_with_line, err);
                                             }
                                         }
                                     }
                                     return Ok(());
                                 }
-                            }
-                        }
-                        anyhow::bail!("curd refactor failed: {}", e);
                     }
                 }
+                anyhow::bail!("curd refactor failed: {}", err_msg);
+            }
             Ok(())
         }
         #[cfg(feature = "core")]
         Some(Commands::Context { root, command }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            let mut registry = curd_core::ContextRegistry::load(&resolved);
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
             match command {
-                ContextCommands::Add { path, alias, index, read } => {
-                    let mut ext_path = path;
-                    if !ext_path.is_absolute() {
-                        ext_path = std::env::current_dir()?.join(ext_path);
+                ContextCommands::Add {
+                    path,
+                    alias,
+                    index,
+                    read,
+                } => {
+                    let res = curd::router::route_context_command(
+                        &json!({
+                            "action": "add",
+                            "path": path,
+                            "alias": alias,
+                            "index": index,
+                            "read": read
+                        }),
+                        &ctx,
+                    )
+                    .await;
+                    if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
+                        anyhow::bail!("{}", err);
                     }
-                    ext_path = std::fs::canonicalize(ext_path)?;
-                    if !ext_path.exists() {
-                        anyhow::bail!("Path does not exist: {}", ext_path.display());
-                    }
-                    let mode = if index {
-                        curd_core::ContextMode::Index
-                    } else if read {
-                        curd_core::ContextMode::Read
-                    } else {
-                        curd_core::ContextMode::Write
-                    };
-                    let alias_name = alias.unwrap_or_else(|| {
-                        format!("@{}", ext_path.file_name().and_then(|n| n.to_str()).unwrap_or("ext"))
-                    });
-                    registry.add(alias_name.clone(), ext_path.clone(), mode.clone());
-                    registry.save(&resolved)?;
-                    println!("Linked context `{}` -> {} (Mode: {:?})", alias_name, ext_path.display(), mode);
+                    println!(
+                        "Linked context `{}` -> {} (Mode: {:?})",
+                        res.get("alias").and_then(|v| v.as_str()).unwrap_or(""),
+                        res.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+                        res.get("mode").cloned().unwrap_or(serde_json::Value::Null)
+                    );
                 }
                 ContextCommands::Remove { name, force } => {
-                    if !force {
-                        // For now we just emit a warning if not forced, but we will wire the graph up
-                        println!("Checking dependency graph for dangling edges to {}...", name);
-                        let graph = curd_core::GraphEngine::new(&resolved);
-                        let dep_graph = graph.build_dependency_graph()?;
-                        let mut has_dangling = false;
-                        for (caller, callees) in dep_graph.outgoing {
-                            for callee in callees {
-                                if callee.starts_with(&name) {
-                                    println!("WARNING: `{}` calls `{}`", caller, callee);
-                                    has_dangling = true;
-                                }
+                    let res = curd::router::route_context_command(
+                        &json!({
+                            "action": "remove",
+                            "name": name,
+                            "force": force
+                        }),
+                        &ctx,
+                    )
+                    .await;
+                    if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
+                        if let Some(edges) = res.get("dangling_edges").and_then(|v| v.as_array()) {
+                            println!(
+                                "Checking dependency graph for dangling edges to {}...",
+                                name
+                            );
+                            for edge in edges {
+                                println!(
+                                    "WARNING: `{}` calls `{}`",
+                                    edge.get("caller").and_then(|v| v.as_str()).unwrap_or(""),
+                                    edge.get("callee").and_then(|v| v.as_str()).unwrap_or("")
+                                );
                             }
                         }
-                        if has_dangling {
-                            anyhow::bail!("Cannot remove context. Your primary workspace is actively calling functions in this repository. Dependency resolution is a strictly human action—you must manually import or vendor the source code before removing the contextual link. Use --force to override.");
-                        }
+                        anyhow::bail!("{}", err);
                     }
-                    if registry.remove(&name) {
-                        registry.save(&resolved)?;
+                    if res.get("removed").is_some_and(|v| !v.is_null()) {
                         println!("Removed context `{}`", name);
                     } else {
-                        println!("Context `{}` not found.", name);
+                        println!(
+                            "{}",
+                            res.get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Context not found.")
+                        );
                     }
                 }
                 ContextCommands::List => {
-                    if registry.contexts.is_empty() {
-                        println!("No contexts linked. Use `curd context add <dir>` to link an external repository.");
+                    let res =
+                        curd::router::route_context_command(&json!({"action": "list"}), &ctx).await;
+                    let contexts = res
+                        .get("contexts")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    if contexts.is_empty() {
+                        println!(
+                            "No contexts linked. Use `curd context add <dir>` to link an external repository."
+                        );
                     } else {
                         println!("Linked Contexts:");
-                        for (alias, link) in &registry.contexts {
-                            println!("  {} -> {} (Mode: {:?})", alias, link.path.display(), link.mode);
+                        for link in contexts {
+                            println!(
+                                "  {} -> {} (Mode: {:?})",
+                                link.get("alias").and_then(|v| v.as_str()).unwrap_or(""),
+                                link.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+                                link.get("mode").cloned().unwrap_or(serde_json::Value::Null)
+                            );
                         }
                     }
                 }
@@ -982,71 +1224,128 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         #[cfg(feature = "core")]
         Some(Commands::Config { command, root }) => {
             let resolved = resolve_workspace_root(root);
-            let mut cfg = curd_core::CurdConfig::load_from_workspace(&resolved);
-            
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+
             match command {
                 ConfigCommands::Show => {
-                    println!("{}", toml::to_string_pretty(&cfg)?);
+                    let res =
+                        curd::router::route_config_command(&json!({"action":"show"}), &ctx).await;
+                    if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
+                        anyhow::bail!("{}", err);
+                    }
+                    println!(
+                        "{}",
+                        res.get("config_toml")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                    );
                 }
                 ConfigCommands::Set { key, value } => {
-                    // Simple surgical update via Value conversion to avoid complex reflection
-                    let mut json_val = serde_json::to_value(&cfg)?;
-                    let parts: Vec<&str> = key.split('.').collect();
-                    let mut current = &mut json_val;
-                    
-                    for (i, part) in parts.iter().enumerate() {
-                        if i == parts.len() - 1 {
-                            // Try to parse as JSON first (to handle numbers/bools), fallback to string
-                            let parsed_val = serde_json::from_str::<serde_json::Value>(&value).unwrap_or(serde_json::Value::String(value.clone()));
-                            current[part] = parsed_val;
-                        } else {
-                            if current.get(part).is_none() {
-                                current[part] = serde_json::json!({});
-                            }
-                            current = current.get_mut(part).unwrap();
-                        }
+                    let res = curd::router::route_config_command(
+                        &json!({"action":"set","key":key,"value":value}),
+                        &ctx,
+                    )
+                    .await;
+                    if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
+                        anyhow::bail!("{}", err);
                     }
-                    
-                    cfg = serde_json::from_value(json_val)?;
-                    cfg.save_to_workspace()?;
-                    println!("Updated configuration key: {}", key);
+                    println!(
+                        "{}",
+                        res.get("message").and_then(|v| v.as_str()).unwrap_or("")
+                    );
                 }
                 ConfigCommands::Unset { key } => {
-                    let mut json_val = serde_json::to_value(&cfg)?;
-                    let parts: Vec<&str> = key.split('.').collect();
-                    let mut current = &mut json_val;
-                    
-                    for (i, part) in parts.iter().enumerate() {
-                        if i == parts.len() - 1 {
-                            if let Some(obj) = current.as_object_mut() {
-                                obj.remove(*part);
-                            }
-                        } else {
-                            if let Some(next) = current.get_mut(part) {
-                                current = next;
-                            } else {
-                                break;
-                            }
-                        }
+                    let res = curd::router::route_config_command(
+                        &json!({"action":"unset","key":key}),
+                        &ctx,
+                    )
+                    .await;
+                    if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
+                        anyhow::bail!("{}", err);
                     }
-                    
-                    cfg = serde_json::from_value(json_val)?;
-                    cfg.save_to_workspace()?;
-                    println!("Removed configuration key: {}", key);
+                    println!(
+                        "{}",
+                        res.get("message").and_then(|v| v.as_str()).unwrap_or("")
+                    );
                 }
             }
+            Ok(())
+        }
+        #[cfg(feature = "core")]
+        Some(Commands::PluginLanguage { command, root }) => {
+            let resolved = resolve_workspace_root(root);
+            enforce_workspace_config(&resolved)?;
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let params = match command {
+                PluginPackageCommands::List => json!({"action": "list"}),
+                PluginPackageCommands::Add { archive_path } => {
+                    json!({"action": "add", "archive_path": archive_path})
+                }
+                PluginPackageCommands::Remove { package_id } => {
+                    json!({"action": "remove", "package_id": package_id})
+                }
+            };
+            let result =
+                curd::router::route_validated_tool_call("plugin_language", &params, &ctx, true)
+                    .await;
+            print_plugin_result(&result)?;
+            Ok(())
+        }
+        #[cfg(feature = "core")]
+        Some(Commands::PluginTool { command, root }) => {
+            let resolved = resolve_workspace_root(root);
+            enforce_workspace_config(&resolved)?;
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let params = match command {
+                PluginPackageCommands::List => json!({"action": "list"}),
+                PluginPackageCommands::Add { archive_path } => {
+                    json!({"action": "add", "archive_path": archive_path})
+                }
+                PluginPackageCommands::Remove { package_id } => {
+                    json!({"action": "remove", "package_id": package_id})
+                }
+            };
+            let result =
+                curd::router::route_validated_tool_call("plugin_tool", &params, &ctx, true).await;
+            print_plugin_result(&result)?;
+            Ok(())
+        }
+        #[cfg(feature = "core")]
+        Some(Commands::PluginTrust { command, root }) => {
+            let resolved = resolve_workspace_root(root);
+            enforce_workspace_config(&resolved)?;
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let params = match command {
+                PluginTrustCommands::List => json!({"action": "list"}),
+                PluginTrustCommands::Get { key_id } => json!({"action": "get", "key_id": key_id}),
+                PluginTrustCommands::Add(args) => json!({
+                    "action": "add",
+                    "key_id": args.key_id,
+                    "pubkey_hex": args.pubkey_hex,
+                    "label": args.label,
+                    "allowed_kinds": args.kinds,
+                }),
+                PluginTrustCommands::Remove { key_id } => {
+                    json!({"action": "remove", "key_id": key_id})
+                }
+                PluginTrustCommands::Enable { key_id } => {
+                    json!({"action": "enable", "key_id": key_id})
+                }
+                PluginTrustCommands::Disable { key_id } => {
+                    json!({"action": "disable", "key_id": key_id})
+                }
+            };
+            let result =
+                curd::router::route_validated_tool_call("plugin_trust", &params, &ctx, true).await;
+            print_plugin_result(&result)?;
             Ok(())
         }
         #[cfg(feature = "core")]
         Some(Commands::Detach { root, shadow }) => {
             let resolved = resolve_workspace_root(root);
             println!("Performing soft detach...");
-            let outcome = workspace_lifecycle::resolve_workspace_exit(
-                &resolved,
-                "detach",
-                shadow,
-                false,
-            )?;
+            let outcome =
+                workspace_lifecycle::resolve_workspace_exit(&resolved, "detach", shadow, false)?;
             println!("{}", outcome.message);
             if !outcome.proceeded {
                 return Ok(());
@@ -1060,7 +1359,7 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         Some(Commands::Delete { root, yes, shadow }) => {
             let resolved = resolve_workspace_root(root);
             let curd_dir = resolved.join(".curd");
-            
+
             if !yes {
                 let confirmation = dialoguer::Confirm::new()
                     .with_prompt("WARNING: This will permanently delete your local `.curd/` directory, history, and shadow index. Are you sure?")
@@ -1072,13 +1371,9 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                     return Ok(());
                 }
             }
-            
-            let outcome = workspace_lifecycle::resolve_workspace_exit(
-                &resolved,
-                "delete",
-                shadow,
-                yes,
-            )?;
+
+            let outcome =
+                workspace_lifecycle::resolve_workspace_exit(&resolved, "delete", shadow, yes)?;
             println!("{}", outcome.message);
             if !outcome.proceeded {
                 return Ok(());
@@ -1098,17 +1393,32 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             Ok(())
         }
         #[cfg(feature = "core")]
-        Some(Commands::Diagram { uris, root, format, depth }) => {
+        Some(Commands::Diagram {
+            uris,
+            root,
+            format,
+            depth,
+        }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
-            let res = curd_core::context::dispatch_tool("diagram", &json!({
-                "uris": uris,
-                "format": format,
-                "depth": depth
-            }), &curd_core::EngineContext::new(&resolved.to_string_lossy())).await;
-            
-            if let Some(diag) = res.get("diagram").and_then(|d| d.get("diagram")).and_then(|v| v.as_str()) {
+
+            let res = curd::router::route_validated_tool_call(
+                "diagram",
+                &json!({
+                    "uris": uris,
+                    "format": format,
+                    "depth": depth
+                }),
+                &curd_core::EngineContext::new(&resolved.to_string_lossy()),
+                true,
+            )
+            .await;
+
+            if let Some(diag) = res
+                .get("diagram")
+                .and_then(|d| d.get("diagram"))
+                .and_then(|v| v.as_str())
+            {
                 println!("{}", diag);
             } else {
                 println!("{}", serde_json::to_string_pretty(&res)?);
@@ -1116,41 +1426,290 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             Ok(())
         }
         #[cfg(feature = "core")]
+        Some(Commands::Test {
+            scope,
+            root,
+            verbose,
+        }) => {
+            let resolved = resolve_workspace_root(root);
+            enforce_workspace_config(&resolved)?;
+
+            println!("\x1b[1;36m=== CURD Semantic Integrity Audit ===\x1b[0m\n");
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let audit = curd::router::route_semantic_audit(
+                &json!({
+                    "scope": scope,
+                    "verbose": verbose
+                }),
+                &ctx,
+            )
+            .await;
+            if let Some(err) = audit.get("error").and_then(|v| v.as_str()) {
+                anyhow::bail!("{}", err);
+            }
+
+            if let Some(node_coverage) = audit.get("node_coverage").filter(|v| !v.is_null()) {
+                println!("\x1b[1m[Node Coverage]\x1b[0m");
+                println!(
+                    "  Symbols indexed: {}",
+                    node_coverage
+                        .get("symbols_indexed")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "  Symbol Density:  {:.2} symbols/KLoC",
+                    node_coverage
+                        .get("symbol_density")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0)
+                );
+
+                if verbose {
+                    let dead_zones = node_coverage
+                        .get("dead_zones")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    if !dead_zones.is_empty() {
+                        println!("  \x1b[31mDead Zones (0 symbols indexed):\x1b[0m");
+                        for dz in dead_zones.iter().take(10) {
+                            println!("    • {}", dz.as_str().unwrap_or(""));
+                        }
+                        if dead_zones.len() > 10 {
+                            println!("    ... and {} more", dead_zones.len() - 10);
+                        }
+                    }
+                }
+
+                if node_coverage
+                    .get("symbol_density")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0)
+                    < 5.0
+                    && !verbose
+                {
+                    println!(
+                        "  \x1b[33m⚠️  Low density detected. Run with --verbose to see dead zones.\x1b[0m"
+                    );
+                }
+                println!();
+            }
+
+            if let Some(edge_connectivity) = audit.get("edge_connectivity").filter(|v| !v.is_null())
+            {
+                println!("\x1b[1m[Edge Connectivity]\x1b[0m");
+                let percentage = (edge_connectivity
+                    .get("cohesion_ratio")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0)
+                    * 100.0) as u32;
+                let color = if percentage > 90 {
+                    "\x1b[32m"
+                } else if percentage > 70 {
+                    "\x1b[33m"
+                } else {
+                    "\x1b[31m"
+                };
+
+                println!(
+                    "  Cohesion Ratio: {}{}%{}\x1b[0m",
+                    color,
+                    percentage,
+                    if percentage > 90 { " (Optimal)" } else { "" }
+                );
+                println!(
+                    "  Broken Links:   {}",
+                    edge_connectivity
+                        .get("broken_links")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                );
+
+                let broken = edge_connectivity
+                    .get("top_unresolved_linkages")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if verbose && !broken.is_empty() {
+                    println!("  \x1b[31mTop Unresolved Linkages:\x1b[0m");
+                    for b in broken.iter().take(10) {
+                        println!("    • {}", b.as_str().unwrap_or(""));
+                    }
+                    if broken.len() > 10 {
+                        println!("    ... and {} more", broken.len() - 10);
+                    }
+                }
+
+                println!(
+                    "  Resolution:     {}/{} @stubs resolved",
+                    edge_connectivity
+                        .get("resolved_stubs")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0),
+                    edge_connectivity
+                        .get("total_stubs")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                );
+                println!();
+
+                println!("\x1b[1m[Confidence Intervals]\x1b[0m");
+                let confidence = edge_connectivity
+                    .get("confidence_distribution")
+                    .and_then(|v| v.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                println!(
+                    "  \x1b[32mHigh (>=90%):\x1b[0m   {}",
+                    confidence.get("high").and_then(|v| v.as_u64()).unwrap_or(0)
+                );
+                println!(
+                    "  \x1b[33mMedium (>=70%):\x1b[0m {}",
+                    confidence
+                        .get("medium")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "  \x1b[31mLow (<70%):\x1b[0m    {}",
+                    confidence.get("low").and_then(|v| v.as_u64()).unwrap_or(0)
+                );
+                println!();
+            }
+
+            if let Some(architecture) = audit.get("architecture_audit").filter(|v| !v.is_null()) {
+                println!("\x1b[1m[Architecture Audit]\x1b[0m");
+                let cycles = architecture
+                    .get("cycles")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if cycles.is_empty() {
+                    println!("  \x1b[32mNo cyclical dependencies detected.\x1b[0m");
+                } else {
+                    println!(
+                        "  \x1b[31mDetected {} Tangled Clusters (Cycles):\x1b[0m",
+                        cycles.len()
+                    );
+                    for (i, cycle) in cycles.iter().enumerate().take(5) {
+                        let cycle_nodes = cycle.as_array().cloned().unwrap_or_default();
+                        println!("    Cluster {}: {} nodes", i + 1, cycle_nodes.len());
+                        if verbose {
+                            for node in cycle_nodes.iter().take(5) {
+                                println!("      - {}", node.as_str().unwrap_or(""));
+                            }
+                            if cycle_nodes.len() > 5 {
+                                println!("      ... and {} more", cycle_nodes.len() - 5);
+                            }
+                        }
+                    }
+                }
+                println!();
+            }
+
+            if let Some(policy_validation) = audit.get("policy_validation").filter(|v| !v.is_null())
+            {
+                println!("\x1b[1m[Policy Validation]\x1b[0m");
+                if policy_validation
+                    .get("pass")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    println!(
+                        "  \x1b[32mPASS:\x1b[0m PolicyEngine correctly blocked illegal access."
+                    );
+                    if verbose {
+                        println!("    Blocked: edit .curd/settings.toml");
+                        println!(
+                            "    Reason:  {}",
+                            policy_validation
+                                .get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                        );
+                    }
+                } else {
+                    println!(
+                        "  \x1b[31mFAIL:\x1b[0m PolicyEngine FAILED to block illegal access to configuration."
+                    );
+                }
+                println!();
+            }
+
+            Ok(())
+        }
+        #[cfg(feature = "core")]
         Some(Commands::Status { root }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
+
             println!("=== CURD Workspace Status ===\n");
-            
-            // 1. Index Status
-            let config = curd_core::config::CurdConfig::load_from_workspace(&resolved);
-            if let Ok(recent_runs) = curd_core::storage::read_recent_index_runs(&resolved, &config, 1) && !recent_runs.is_empty() {
-                let stats = &recent_runs[0];
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let status = curd::router::route_workspace_status(&ctx).await;
+            if let Some(stats) = status.get("index").filter(|v| !v.is_null()) {
                 println!("[Index]");
-                println!("  Files Scanned: {}", stats.total_files);
-                println!("  Cache Hits:    {}", stats.cache_hits);
-                println!("  Parse Fail:    {}", stats.parse_fail);
-                println!("  No Symbols:    {}", stats.no_symbols);
-                println!("  Build Time:    {}ms", stats.total_ms);
+                println!(
+                    "  Files Scanned: {}",
+                    stats
+                        .get("total_files")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "  Cache Hits:    {}",
+                    stats
+                        .get("cache_hits")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "  Parse Fail:    {}",
+                    stats
+                        .get("parse_fail")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "  No Symbols:    {}",
+                    stats
+                        .get("no_symbols")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)
+                );
+                println!(
+                    "  Build Time:    {}ms",
+                    stats.get("total_ms").and_then(|v| v.as_i64()).unwrap_or(0)
+                );
             } else {
                 println!("[Index]");
                 println!("  No index stats available. Run `curd doctor` to seed the index.");
             }
             println!();
 
-            // 2. Shadow Store
-            let shadow = curd_core::ShadowStore::new(&resolved);
-            if shadow.is_active() {
-                let staged = shadow.staged_paths();
+            let shadow = status.get("shadow").cloned().unwrap_or_else(|| json!({}));
+            if shadow
+                .get("active")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                let staged = shadow
+                    .get("staged_paths")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 println!("[Shadow Store: ACTIVE]");
                 if staged.is_empty() {
                     println!("  No staged changes.");
                 } else {
                     println!("  Staged Files:");
                     for path in staged {
-                        println!("    - {}", path.display());
+                        println!("    - {}", path.as_str().unwrap_or(""));
                     }
-                    println!("\n  Run `curd diff` to view changes or `curd workspace commit` via agent to apply.");
+                    println!(
+                        "\n  Run `curd diff` to view changes or `curd workspace commit` via agent to apply."
+                    );
                 }
             } else {
                 println!("[Shadow Store: INACTIVE]");
@@ -1163,21 +1722,55 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         Some(Commands::Log { root, limit }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
-            let history = curd_core::HistoryEngine::new(&resolved);
-            let entries = history.get_history(limit);
-            
+
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let res = curd::router::route_history(
+                &json!({
+                    "mode": "operations",
+                    "limit": limit
+                }),
+                &ctx,
+            )
+            .await;
+            let entries = res
+                .get("history")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
             if entries.is_empty() {
                 println!("No agent history found in `.curd/traces/`.");
             } else {
                 for entry in entries {
-                    println!("Timestamp: {}", entry.timestamp_unix);
-                    println!("Collab:    {}", entry.collaboration_id);
-                    println!("Operation: {}", entry.operation);
-                    if let Ok(pretty) = serde_json::to_string_pretty(&entry.input) {
+                    println!(
+                        "Timestamp: {}",
+                        entry
+                            .get("timestamp_unix")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0)
+                    );
+                    println!(
+                        "Collab:    {}",
+                        entry
+                            .get("collaboration_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                    );
+                    println!(
+                        "Operation: {}",
+                        entry
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                    );
+                    if let Ok(pretty) = serde_json::to_string_pretty(
+                        entry.get("input").unwrap_or(&serde_json::Value::Null),
+                    ) {
                         println!("Input:\n{}\n", pretty);
                     }
-                    if let Ok(pretty) = serde_json::to_string_pretty(&entry.output) {
+                    if let Ok(pretty) = serde_json::to_string_pretty(
+                        entry.get("output").unwrap_or(&serde_json::Value::Null),
+                    ) {
                         println!("Output:\n{}\n", pretty);
                     }
                     println!("--------------------------------------------------");
@@ -1192,69 +1785,169 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             repl::run_repl(&resolved).await
         }
         #[cfg(feature = "core")]
+        Some(Commands::Run {
+            first,
+            second,
+            root,
+            args,
+            profile,
+            out,
+        }) => {
+            let resolved = resolve_workspace_root(root);
+            enforce_workspace_config(&resolved)?;
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let arg_overrides = parse_script_arg_overrides(&args)?;
+            let (mode, script) = match first.as_str() {
+                "check" | "compile" => (
+                    first.as_str(),
+                    PathBuf::from(second.ok_or_else(|| anyhow::anyhow!("missing script path"))?),
+                ),
+                _ => ("run", PathBuf::from(first)),
+            };
+            let res = match mode {
+                "check" => curd::router::route_check_script(&script, &arg_overrides, &ctx).await,
+                "compile" => {
+                    curd::router::route_compile_script(
+                        &script,
+                        &arg_overrides,
+                        &json!({
+                            "profile": profile,
+                            "out": out
+                        }),
+                        &ctx,
+                    )
+                    .await
+                }
+                _ => {
+                    curd::router::route_run_script(
+                        &script,
+                        &arg_overrides,
+                        &json!({
+                            "profile": profile
+                        }),
+                        &ctx,
+                        Some({
+                            let mut state = curd_core::ReplState::new();
+                            state.is_human_actor = true;
+                            state
+                        }),
+                    )
+                    .await
+                    .0
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&res)?);
+            Ok(())
+        }
+        #[cfg(feature = "core")]
         Some(Commands::Search { query, kind, root }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
-            let se = curd_core::SearchEngine::new(&resolved);
-            // Quick mapping from string to SymbolKind
-            let kind_filter = kind.and_then(|k| serde_json::from_value(serde_json::json!(k)).ok());
-            let results = se.search(&query, kind_filter)?;
-            println!("{}", serde_json::to_string_pretty(&results)?);
+
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let res = curd::router::route_validated_tool_call(
+                "search",
+                &json!({
+                    "query": query,
+                    "mode": "symbol",
+                    "kind": kind,
+                    "limit": 20
+                }),
+                &ctx,
+                true,
+            )
+            .await;
+            println!("{}", serde_json::to_string_pretty(&res)?);
             Ok(())
         }
         #[cfg(feature = "core")]
         Some(Commands::Graph { uri, depth, root }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
-            let ge = curd_core::GraphEngine::new(&resolved);
-            let results = ge.graph_with_depths(vec![uri.clone()], depth as u8, depth as u8)?;
-            println!("{}", serde_json::to_string_pretty(&results)?);
+
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let res = curd::router::route_validated_tool_call(
+                "graph",
+                &json!({
+                    "uris": [uri],
+                    "depth": depth,
+                    "direction": "both"
+                }),
+                &ctx,
+                true,
+            )
+            .await;
+            println!("{}", serde_json::to_string_pretty(&res)?);
             Ok(())
         }
         #[cfg(feature = "core")]
         Some(Commands::Read { uri, root }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
-            let re = curd_core::ReadEngine::new(&resolved);
+
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
             let mut current_uri = uri.clone();
-            let session_root = detect_active_session_root(&resolved);
-            
+
             loop {
-                let results = re.read(vec![current_uri.clone()], 1, session_root.as_deref())?;
-                
+                let routed = curd::router::route_validated_tool_call(
+                    "read",
+                    &json!({
+                        "uris": [current_uri.clone()],
+                        "verbosity": 1
+                    }),
+                    &ctx,
+                    true,
+                )
+                .await;
+
+                if let Some(err) = routed.get("error").and_then(|v| v.as_str()) {
+                    anyhow::bail!("Read failed: {}", err);
+                }
+
+                let results = routed
+                    .get("results")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
                 if let Some(res) = results.first() {
                     if let Some(err) = res.get("error").and_then(|v| v.as_str()) {
                         use std::io::IsTerminal;
-                        if err.contains("is overloaded") && std::io::stdout().is_terminal()
+                        if err.contains("is overloaded")
+                            && std::io::stdout().is_terminal()
                             && let Some(options_idx) = err.find("Available options:\n")
                         {
-                                let options_str = &err[options_idx + 19..];
-                                let lines: Vec<&str> = options_str.lines().collect();
-                                
-                                println!("\n{}", &err[..options_idx].trim());
-                                if let Ok(selection) = dialoguer::Select::new()
-                                    .with_prompt("Select which overload to read:")
-                                    .items(&lines)
-                                    .default(0)
-                                    .interact()
-                                {
-                                    let selected = lines[selection];
-                                    if let Some(colon_idx) = selected.find(": ") {
-                                        current_uri = selected[..colon_idx].to_string();
-                                        println!("Resubmitting with targeted overload: {}...", current_uri);
-                                        continue;
-                                    }
+                            let options_str = &err[options_idx + 19..];
+                            let lines: Vec<&str> = options_str.lines().collect();
+
+                            println!("\n{}", &err[..options_idx].trim());
+                            if let Ok(selection) = dialoguer::Select::new()
+                                .with_prompt("Select which overload to read:")
+                                .items(&lines)
+                                .default(0)
+                                .interact()
+                            {
+                                let selected = lines[selection];
+                                if let Some(colon_idx) = selected.find(": ") {
+                                    current_uri = selected[..colon_idx].to_string();
+                                    println!(
+                                        "Resubmitting with targeted overload: {}...",
+                                        current_uri
+                                    );
+                                    continue;
                                 }
                             }
+                        }
                         anyhow::bail!("Read failed: {}", err);
                     }
-                    
-                    if let Some(source) = res.get("source").and_then(|v: &serde_json::Value| v.as_str()) {
+
+                    if let Some(source) = res
+                        .get("source")
+                        .and_then(|v: &serde_json::Value| v.as_str())
+                    {
                         // Try to pipe to PAGER
-                        let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
+                        let pager =
+                            std::env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
                         let mut cmd_iter = pager.split_whitespace();
                         if let Some(program) = cmd_iter.next() {
                             use std::io::Write;
@@ -1267,9 +1960,12 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                                     Command::new("cat")
                                         .stdin(std::process::Stdio::piped())
                                         .spawn()
-                                        .expect("Failed to spawn fallback pager")
+                                        .unwrap_or_else(|e| {
+                                            eprintln!("Failed to spawn fallback pager: {}", e);
+                                            std::process::exit(1);
+                                        })
                                 });
-                                
+
                             if let Some(mut stdin) = child.stdin.take() {
                                 let _ = stdin.write_all(source.as_bytes());
                             }
@@ -1296,48 +1992,59 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
 
-            let ee = curd_core::EditEngine::new(&resolved);
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
             let mut current_uri = uri.clone();
-            let session_root = detect_active_session_root(&resolved);
 
             loop {
-                match ee.edit(
-                    &current_uri,
-                    &code,
-                    &action,
-                    base_state_hash.as_deref(),
-                    session_root.as_deref(),
-                ) {
-                    Ok(result) => {
-                        println!("Edit applied: {}", serde_json::to_string_pretty(&result)?);
-                        break;
-                    }
-                    Err(e) => {
-                        let err_msg = e.to_string();
-                        use std::io::IsTerminal;
-                        if err_msg.contains("is overloaded") && std::io::stdout().is_terminal()
-                            && let Some(options_idx) = err_msg.find("Available options:\n")
+                let routed = curd::router::route_validated_tool_call(
+                    "edit",
+                    &json!({
+                        "uri": current_uri.clone(),
+                        "action": action.clone(),
+                        "code": code.clone(),
+                        "base_state_hash": base_state_hash.clone(),
+                        "adaptation_justification": "CLI edit"
+                    }),
+                    &ctx,
+                    true,
+                )
+                .await;
+
+                if let Some(message) = routed.get("message") {
+                    println!("Edit applied: {}", serde_json::to_string_pretty(message)?);
+                    break;
+                }
+
+                let err_msg = routed
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Edit failed")
+                    .to_string();
+                {
+                    use std::io::IsTerminal;
+                    if err_msg.contains("is overloaded")
+                        && std::io::stdout().is_terminal()
+                        && let Some(options_idx) = err_msg.find("Available options:\n")
+                    {
+                        let options_str = &err_msg[options_idx + 19..];
+                        let lines: Vec<&str> = options_str.lines().collect();
+
+                        println!("\n{}", &err_msg[..options_idx].trim());
+                        if let Ok(selection) = dialoguer::Select::new()
+                            .with_prompt("Select which overload to edit:")
+                            .items(&lines)
+                            .default(0)
+                            .interact()
                         {
-                                let options_str = &err_msg[options_idx + 19..];
-                                let lines: Vec<&str> = options_str.lines().collect();
-                                
-                                println!("\n{}", &err_msg[..options_idx].trim());
-                                if let Ok(selection) = dialoguer::Select::new()
-                                    .with_prompt("Select which overload to edit:")
-                                    .items(&lines)
-                                    .default(0)
-                                    .interact()
-                                {
-                                    let selected = lines[selection];
-                                    if let Some(colon_idx) = selected.find(": ") {
-                                        current_uri = selected[..colon_idx].to_string();
-                                        println!("Resubmitting with targeted overload: {}...", current_uri);
-                                        continue;
-                                    }
-                                }
+                            let selected = lines[selection];
+                            if let Some(colon_idx) = selected.find(": ") {
+                                current_uri = selected[..colon_idx].to_string();
+                                println!("Resubmitting with targeted overload: {}...", current_uri);
+                                continue;
                             }
-                        anyhow::bail!("Edit failed: {}", e);
+                        }
                     }
+                    anyhow::bail!("Edit failed: {}", err_msg);
                 }
             }
             Ok(())
@@ -1346,26 +2053,49 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         Some(Commands::Session { command, root }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
-            let mut shadow = curd_core::ShadowStore::new(&resolved);
+
+            let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
+            let shadow = curd_core::ShadowStore::new(&resolved);
             match command {
                 SessionCommands::Begin => {
-                    shadow.begin()?;
-                    let engine = curd_core::ReviewCycleEngine::new(&resolved);
-                    engine.begin(None)?;
+                    let res = curd::router::route_session_lifecycle("begin", &ctx).await;
+                    if let Some(err) = res.get("error") {
+                        anyhow::bail!("{}", serde_json::to_string(err)?);
+                    }
                     println!("Started new shadow transaction.");
                 }
                 SessionCommands::Review => {
-                    let engine = curd_core::ReviewCycleEngine::new(&resolved);
-                    let res = engine.review().await?;
+                    let res = curd::router::route_validated_tool_call(
+                        "session",
+                        &json!({"action":"review"}),
+                        &ctx,
+                        true,
+                    )
+                    .await;
                     println!("{}", serde_json::to_string_pretty(&res)?);
                 }
                 SessionCommands::Log => {
-                    let history = curd_core::HistoryEngine::new(&resolved);
                     let shadow_id = shadow.get_transaction_id();
-                    let items = history.get_history(100);
-                    let filtered: Vec<_> = items.into_iter()
-                        .filter(|e| e.transaction_id == shadow_id)
+                    let items = curd::router::route_history(
+                        &json!({
+                            "mode": "operations",
+                            "limit": 100
+                        }),
+                        &ctx,
+                    )
+                    .await
+                    .get("history")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                    let filtered: Vec<_> = items
+                        .into_iter()
+                        .filter(|e| {
+                            e.get("transaction_id")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                                == shadow_id
+                        })
                         .collect();
                     println!("{}", serde_json::to_string_pretty(&filtered)?);
                 }
@@ -1373,18 +2103,20 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                     if !shadow.is_active() {
                         anyhow::bail!("No active shadow transaction to commit.");
                     }
-                    shadow.commit()?;
-                    let engine = curd_core::ReviewCycleEngine::new(&resolved);
-                    engine.end()?;
+                    let res = curd::router::route_session_lifecycle("commit", &ctx).await;
+                    if let Some(err) = res.get("error") {
+                        anyhow::bail!("{}", serde_json::to_string(err)?);
+                    }
                     println!("Committed shadow changes to disk and ended review cycle.");
                 }
                 SessionCommands::Rollback => {
                     if !shadow.is_active() {
                         anyhow::bail!("No active shadow transaction to rollback.");
                     }
-                    shadow.rollback();
-                    let engine = curd_core::ReviewCycleEngine::new(&resolved);
-                    engine.end()?;
+                    let res = curd::router::route_session_lifecycle("rollback", &ctx).await;
+                    if let Some(err) = res.get("error") {
+                        anyhow::bail!("{}", serde_json::to_string(err)?);
+                    }
                     println!("Discarded active shadow transaction and ended review cycle.");
                 }
             }
@@ -1394,9 +2126,9 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         Some(Commands::Plan { command, root }) => {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
-            
+
             let plans_dir = resolved.join(".curd").join("plans");
-            
+
             match command {
                 PlanCommands::List => {
                     if !plans_dir.exists() {
@@ -1417,17 +2149,42 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                     if !plan_file.exists() {
                         anyhow::bail!("Plan not found: {}", id);
                     }
-                    let content = fs::read_to_string(&plan_file)?;
-                    let plan: curd_core::Plan = serde_json::from_str(&content)?;
+                    let (plan, artifact_meta) =
+                        curd::plan_artifact::load_plan_artifact(&plan_file)?;
                     println!("Plan ID: {}", plan.id);
                     println!("Total Nodes: {}", plan.nodes.len());
+                    if let Some(meta) = artifact_meta {
+                        println!(
+                            "Source Kind: {}",
+                            meta["source_kind"].as_str().unwrap_or("")
+                        );
+                        if let Some(profile) = meta["metadata"]["profile"].as_str() {
+                            println!("Profile: {}", profile);
+                        }
+                        if !meta["explainability"].is_null() {
+                            println!(
+                                "Explainability: {}",
+                                serde_json::to_string_pretty(&meta["explainability"])?
+                            );
+                        }
+                    }
                     println!("---");
-                    
+
                     // Display topological sort or basic list
                     for node in &plan.nodes {
                         let op_str = match &node.op {
-                            curd_core::plan::ToolOperation::McpCall { tool, args } => format!("Tool: {} \nArgs: {}", tool, serde_json::to_string_pretty(args).unwrap_or_default()),
-                            curd_core::plan::ToolOperation::Internal { command, params } => format!("Internal: {} \nParams: {}", command, serde_json::to_string_pretty(params).unwrap_or_default()),
+                            curd_core::plan::ToolOperation::McpCall { tool, args } => format!(
+                                "Tool: {} \nArgs: {}",
+                                tool,
+                                serde_json::to_string_pretty(args).unwrap_or_default()
+                            ),
+                            curd_core::plan::ToolOperation::Internal { command, params } => {
+                                format!(
+                                    "Internal: {} \nParams: {}",
+                                    command,
+                                    serde_json::to_string_pretty(params).unwrap_or_default()
+                                )
+                            }
                         };
                         println!("[Node ID: {}]", node.id);
                         if !node.dependencies.is_empty() {
@@ -1437,39 +2194,154 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                         println!("---");
                     }
                 }
-                PlanCommands::Impl { id, session, dry_run } => {
+                PlanCommands::Edit { id } => {
                     let plan_file = plans_dir.join(format!("{}.json", id));
                     if !plan_file.exists() {
                         anyhow::bail!("Plan not found: {}", id);
                     }
-                    let content = fs::read_to_string(&plan_file)?;
-                    let plan_json: serde_json::Value = serde_json::from_str(&content)?;
-                    
+                    let (mut plan, mut artifact_meta) =
+                        curd::plan_artifact::load_plan_artifact(&plan_file)?;
+
+                    let current_profile = artifact_meta
+                        .as_ref()
+                        .and_then(|m| m.get("metadata"))
+                        .and_then(|m| m.get("profile"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let profile_input: String = dialoguer::Input::new()
+                        .with_prompt("Profile override for this plan artifact")
+                        .default(current_profile.to_string())
+                        .allow_empty(true)
+                        .interact_text()?;
+                    if let Some(meta) = artifact_meta.as_mut()
+                        && let Some(metadata) =
+                            meta.get_mut("metadata").and_then(|v| v.as_object_mut())
+                    {
+                        metadata.insert(
+                            "profile".to_string(),
+                            if profile_input.trim().is_empty() {
+                                serde_json::Value::Null
+                            } else {
+                                json!(profile_input.trim())
+                            },
+                        );
+                    }
+
+                    let default_output_limit = plan
+                        .nodes
+                        .first()
+                        .map(|n| n.output_limit)
+                        .unwrap_or(64 * 1024);
+                    let output_limit: usize = dialoguer::Input::new()
+                        .with_prompt("Default output_limit for all plan nodes")
+                        .default(default_output_limit)
+                        .interact_text()?;
+                    for node in &mut plan.nodes {
+                        node.output_limit = output_limit;
+                    }
+
+                    let default_retry_limit =
+                        plan.nodes.first().map(|n| n.retry_limit).unwrap_or(0);
+                    let retry_limit: u8 = dialoguer::Input::new()
+                        .with_prompt("Default retry_limit for all plan nodes")
+                        .default(default_retry_limit)
+                        .interact_text()?;
+                    for node in &mut plan.nodes {
+                        node.retry_limit = retry_limit;
+                    }
+
+                    let per_node = dialoguer::Confirm::new()
+                        .with_prompt("Edit node-specific settings?")
+                        .default(false)
+                        .interact()?;
+                    if per_node {
+                        for node in &mut plan.nodes {
+                            let label = match &node.op {
+                                curd_core::plan::ToolOperation::McpCall { tool, .. } => {
+                                    tool.clone()
+                                }
+                                curd_core::plan::ToolOperation::Internal { command, .. } => {
+                                    format!("internal:{}", command)
+                                }
+                            };
+                            let prompt = format!("Adjust node {} ({})?", node.id, label);
+                            if !dialoguer::Confirm::new()
+                                .with_prompt(prompt)
+                                .default(false)
+                                .interact()?
+                            {
+                                continue;
+                            }
+                            node.output_limit = dialoguer::Input::new()
+                                .with_prompt("  output_limit")
+                                .default(node.output_limit)
+                                .interact_text()?;
+                            node.retry_limit = dialoguer::Input::new()
+                                .with_prompt("  retry_limit")
+                                .default(node.retry_limit)
+                                .interact_text()?;
+                        }
+                    }
+
+                    curd::plan_artifact::save_plan_artifact(&plan_file, &plan, artifact_meta)?;
+                    println!("Updated plan artifact {}", id);
+                }
+                PlanCommands::Impl {
+                    id,
+                    session,
+                    dry_run,
+                } => {
+                    let plan_file = plans_dir.join(format!("{}.json", id));
+                    if !plan_file.exists() {
+                        anyhow::bail!("Plan not found: {}", id);
+                    }
+                    let (plan, _) = curd::plan_artifact::load_plan_artifact(&plan_file)?;
+                    let plan_json: serde_json::Value = serde_json::to_value(&plan)?;
+
                     if dry_run {
                         println!("Simulating Plan {}...", id);
+                        let ctx = curd_core::EngineContext::new(&resolved.to_string_lossy());
                         let simulate_params = serde_json::json!({
                             "mode": "execute_plan",
                             "plan": plan_json
                         });
-                        let result = curd_core::context::handle_simulate(&simulate_params).await;
+                        let result = curd::router::route_validated_tool_call(
+                            "simulate",
+                            &simulate_params,
+                            &ctx,
+                            true,
+                        )
+                        .await;
                         println!("{}", serde_json::to_string_pretty(&result)?);
                     } else {
-                        // Real Execution requires full Context
                         println!("Executing Plan {} under Session {}...", id, session);
                         let plan: curd_core::Plan = serde_json::from_value(plan_json)?;
-                        let _session_uuid = uuid::Uuid::parse_str(&session).map_err(|_| anyhow::anyhow!("Invalid session UUID format"))?;
-                        
-                        let ctx_arc = curd_core::context::EngineContext::new(resolved.to_str().unwrap());
-                        let ctx = ctx_arc.clone_for_repl();
-                        
-                        let mut state = curd_core::ReplState::new();
-                        state.active_plan = Some(plan);
-                        let result = ctx.ple.execute_active_plan(&ctx, &mut state).await;
-                        
-                        match result {
-                            Ok(res) => println!("Plan execution completed successfully:\n{}", serde_json::to_string_pretty(&res)?),
-                            Err(e) => anyhow::bail!("Plan execution failed: {}", e),
+                        let _session_uuid = uuid::Uuid::parse_str(&session)
+                            .map_err(|_| anyhow::anyhow!("Invalid session UUID format"))?;
+
+                        let ctx = curd_core::context::EngineContext::new(
+                            resolved.to_string_lossy().as_ref(),
+                        );
+                        {
+                            let mut state = ctx.global_state.lock().await;
+                            state.active_plan = Some(plan);
                         }
+
+                        let result = curd::router::route_validated_tool_call(
+                            "execute_active_plan",
+                            &serde_json::json!({}),
+                            &ctx,
+                            true,
+                        )
+                        .await;
+
+                        if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+                            anyhow::bail!("Plan execution failed: {}", err);
+                        }
+                        println!(
+                            "Plan execution completed successfully:\n{}",
+                            serde_json::to_string_pretty(&result)?
+                        );
                     }
                 }
             }
@@ -1477,7 +2349,10 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
         }
         Some(Commands::External(args)) => {
             let _cmd = args.join(" ");
-            eprintln!("\x1b[31merror\x1b[0m: unrecognized subroutine '\x1b[33m{}\x1b[0m'", _cmd);
+            eprintln!(
+                "\x1b[31merror\x1b[0m: unrecognized subroutine '\x1b[33m{}\x1b[0m'",
+                _cmd
+            );
             eprintln!("\x1b[2mRun `curd help` for a list of available commands.\x1b[0m");
             std::process::exit(1);
         }
@@ -1491,7 +2366,10 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
             #[cfg(feature = "mcp")]
             if let Some(root) = cli.legacy_root {
                 if !root.exists() && root.to_string_lossy() != "." {
-                    eprintln!("\x1b[31merror\x1b[0m: unrecognized subroutine '\x1b[33m{}\x1b[0m'", root.to_string_lossy());
+                    eprintln!(
+                        "\x1b[31merror\x1b[0m: unrecognized subroutine '\x1b[33m{}\x1b[0m'",
+                        root.to_string_lossy()
+                    );
                     eprintln!("\x1b[2mRun `curd help` for a list of available commands.\x1b[0m");
                     std::process::exit(1);
                 }
@@ -1500,7 +2378,7 @@ function cmake { Invoke-CurdBuildHook "cmake" $args }
                 let server = McpServer::new(&resolved.to_string_lossy());
                 return server.run().await;
             }
-            
+
             use clap::CommandFactory;
             Cli::command().print_help()?;
             #[cfg(not(feature = "mcp"))]
@@ -1528,30 +2406,39 @@ fn resolve_workspace_root(root: PathBuf) -> PathBuf {
     if let Ok(out) = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
-        && out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !s.is_empty() {
-                let p = PathBuf::from(s);
-                return std::fs::canonicalize(&p).unwrap_or(p);
-            }
+        && out.status.success()
+    {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !s.is_empty() {
+            let p = PathBuf::from(s);
+            return std::fs::canonicalize(&p).unwrap_or(p);
         }
+    }
 
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Helper to detect if we are currently in an active CURD session
-/// and return the shadow root if it exists.
-fn detect_active_session_root(workspace_root: &std::path::Path) -> Option<std::path::PathBuf> {
-    let curd_dir = curd_core::workspace::get_curd_dir(workspace_root);
-    let shadow_base = curd_dir.join("shadow");
-    
-    // If the shadow directory exists and looks like it's populated, we treat it as an active session root.
-    // In the future, we can read SESSION_LOCK to be more precise, but for local CLI usage,
-    // if a shadow root exists, we typically want to operate on it.
-    if shadow_base.exists() && fs::read_dir(&shadow_base).map(|mut d| d.next().is_some()).unwrap_or(false) {
-        return Some(shadow_base);
+fn parse_script_arg_overrides(
+    args: &[String],
+) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+    let mut map = serde_json::Map::new();
+    for item in args {
+        let Some((key, raw)) = item.split_once('=') else {
+            anyhow::bail!("invalid script arg '{}'; expected key=value", item);
+        };
+        let parsed = serde_json::from_str::<serde_json::Value>(raw)
+            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
+        map.insert(key.to_string(), parsed);
     }
-    None
+    Ok(map)
+}
+
+fn print_plugin_result(result: &serde_json::Value) -> Result<()> {
+    if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
+        anyhow::bail!("{}", err);
+    }
+    println!("{}", serde_json::to_string_pretty(result)?);
+    Ok(())
 }
 
 fn setup_tracing() {
@@ -1560,36 +2447,4 @@ fn setup_tracing() {
 
 fn enforce_workspace_config(root: &std::path::Path) -> Result<()> {
     curd_core::validate_workspace_config(root)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::enforce_workspace_config;
-    use tempfile::tempdir;
-
-    #[test]
-    fn enforce_workspace_config_accepts_default_workspace() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path().to_path_buf();
-        enforce_workspace_config(&root).expect("default config should pass");
-    }
-
-    #[test]
-    fn enforce_workspace_config_rejects_high_severity_findings() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path().to_path_buf();
-        std::fs::write(
-            root.join("settings.toml"),
-            r#"
-[storage]
-sqlite_path = "../outside.sqlite3"
-"#,
-        )
-        .expect("write settings");
-        let err = enforce_workspace_config(&root).expect_err("expected config failure");
-        assert!(
-            err.to_string()
-                .contains("config_storage_sqlite_path_invalid")
-        );
-    }
 }

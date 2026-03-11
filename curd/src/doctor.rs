@@ -1,5 +1,5 @@
 use anyhow::Result;
-use curd_core::{DoctorEngine, DoctorIndexConfig, DoctorThresholds, DoctorProfile};
+use curd_core::{DoctorEngine, DoctorIndexConfig, DoctorProfile, DoctorThresholds};
 use std::path::Path;
 
 pub fn run_doctor(

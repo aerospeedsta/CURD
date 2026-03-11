@@ -17,7 +17,12 @@ impl ReadEngine {
     }
 
     /// Read an array of URIs with a specific verbosity level
-    pub fn read(&self, uris: Vec<String>, verbosity: u8, shadow_root: Option<&Path>) -> Result<Vec<Value>> {
+    pub fn read(
+        &self,
+        uris: Vec<String>,
+        verbosity: u8,
+        shadow_root: Option<&Path>,
+    ) -> Result<Vec<Value>> {
         let search = SearchEngine::new(&self.workspace_root);
         let mut results = Vec::new();
 
@@ -26,22 +31,23 @@ impl ReadEngine {
             let mut target_root = shadow_root.unwrap_or(&self.workspace_root).to_path_buf();
 
             if uri.starts_with('@')
-                && let Some(idx) = uri.find("::") {
-                    let alias = &uri[..idx];
-                    actual_uri = &uri[idx + 2..];
+                && let Some(idx) = uri.find("::")
+            {
+                let alias = &uri[..idx];
+                actual_uri = &uri[idx + 2..];
 
-                    let registry = crate::context_link::ContextRegistry::load(&self.workspace_root);
-                    if let Some(link) = registry.contexts.get(alias) {
-                        if link.mode == crate::context_link::ContextMode::Index {
-                            results.push(json!({"uri": uri, "error": format!("Context '{}' is linked in Index mode. File reads are prohibited.", alias)}));
-                            continue;
-                        }
-                        target_root = link.path.clone();
-                    } else {
-                        results.push(json!({"uri": uri, "error": format!("Context alias '{}' not found in registry.", alias)}));
+                let registry = crate::context_link::ContextRegistry::load(&self.workspace_root);
+                if let Some(link) = registry.contexts.get(alias) {
+                    if link.mode == crate::context_link::ContextMode::Index {
+                        results.push(json!({"uri": uri, "error": format!("Context '{}' is linked in Index mode. File reads are prohibited.", alias)}));
                         continue;
                     }
+                    target_root = link.path.clone();
+                } else {
+                    results.push(json!({"uri": uri, "error": format!("Context alias '{}' not found in registry.", alias)}));
+                    continue;
                 }
+            }
 
             let parts: Vec<&str> = actual_uri.split("::").collect();
             let file_part = parts.first().copied().unwrap_or("");
@@ -50,13 +56,29 @@ impl ReadEngine {
 
             if let Some(symbol_name) = symbol_part {
                 // Function or class read
-                match self.read_symbol(&search, &uri, file_part, symbol_name, line_part, verbosity, &target_root, shadow_root) {
+                match self.read_symbol(
+                    &search,
+                    &uri,
+                    file_part,
+                    symbol_name,
+                    line_part,
+                    verbosity,
+                    &target_root,
+                    shadow_root,
+                ) {
                     Ok(val) => results.push(val),
                     Err(e) => results.push(json!({"uri": uri, "error": e.to_string()})),
                 }
             } else {
                 // File-level read
-                match self.read_file(&search, &uri, file_part, verbosity, &target_root, shadow_root) {
+                match self.read_file(
+                    &search,
+                    &uri,
+                    file_part,
+                    verbosity,
+                    &target_root,
+                    shadow_root,
+                ) {
                     Ok(val) => results.push(val),
                     Err(e) => results.push(json!({"uri": uri, "error": e.to_string()})),
                 }
@@ -98,25 +120,46 @@ impl ReadEngine {
                 if let Some(t) = matches.into_iter().find(|s| s.start_line == target_line) {
                     t
                 } else {
-                    return Err(anyhow::anyhow!("Overloaded symbol '{}' not found at line {}.", symbol_name, target_line));
+                    return Err(anyhow::anyhow!(
+                        "Overloaded symbol '{}' not found at line {}.",
+                        symbol_name,
+                        target_line
+                    ));
                 }
             } else {
                 // Ambiguous! Return the list of signatures and ask the agent to disambiguate.
                 let mut options = Vec::new();
                 for m in matches {
-                    let path = if m.filepath.is_absolute() { m.filepath.clone() } else { target_root.join(&m.filepath) };
+                    let path = if m.filepath.is_absolute() {
+                        m.filepath.clone()
+                    } else {
+                        target_root.join(&m.filepath)
+                    };
                     let sig = if let Ok(src) = std::fs::read_to_string(&path) {
                         let text = &src[m.start_byte..m.end_byte.min(src.len())];
-                        text.lines().next().unwrap_or("").trim_end_matches(" {").trim_end_matches('{').trim().to_string()
+                        text.lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim_end_matches(" {")
+                            .trim_end_matches('{')
+                            .trim()
+                            .to_string()
                     } else {
                         m.name.clone()
                     };
                     options.push(format!("{}::{}: {}", m.id, m.start_line, sig));
                 }
-                return Err(anyhow::anyhow!("Symbol '{}' is overloaded. Please disambiguate by appending the line number to the URI (e.g., '{}::LINE_NUMBER').\nAvailable options:\n{}", uri, uri, options.join("\n")));
+                return Err(anyhow::anyhow!(
+                    "Symbol '{}' is overloaded. Please disambiguate by appending the line number to the URI (e.g., '{}::LINE_NUMBER').\nAvailable options:\n{}",
+                    uri,
+                    uri,
+                    options.join("\n")
+                ));
             }
         } else {
-            matches.pop().unwrap()
+            matches
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("No matching symbol found for '{}'.", uri))?
         };
 
         let file_path = if target.filepath.is_absolute() {

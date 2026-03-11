@@ -171,7 +171,9 @@ impl ToolGroupEngine {
         let mut sessions = self.sessions.lock().unwrap();
         let mut out = Vec::new();
         for group in groups {
-            if let Some(requested) = group_id && group.group_id != requested {
+            if let Some(requested) = group_id
+                && group.group_id != requested
+            {
                 continue;
             }
             let managed = sessions.get_mut(&group.group_id);
@@ -255,7 +257,12 @@ impl ToolGroupEngine {
         let first_attempt = {
             let mut sessions = self.sessions.lock().unwrap();
             let session = self.ensure_session_locked(&mut sessions, group)?;
-            send_persistent_request(&mut session.session, &self.config, "tools/call", request.clone())
+            send_persistent_request(
+                &mut session.session,
+                &self.config,
+                "tools/call",
+                request.clone(),
+            )
         };
         match first_attempt {
             Ok(response) => {
@@ -282,18 +289,26 @@ impl ToolGroupEngine {
                     return Err(err);
                 }
                 let mut sessions = self.sessions.lock().unwrap();
-                
+
                 // Track restart count before removing
-                let old_restart_count = sessions.get(&group.group_id).map(|s| s.restart_count).unwrap_or(0);
-                
+                let old_restart_count = sessions
+                    .get(&group.group_id)
+                    .map(|s| s.restart_count)
+                    .unwrap_or(0);
+
                 sessions.remove(&group.group_id);
                 let session = self.ensure_session_locked(&mut sessions, group)?;
-                
+
                 // Increment and carry over restart count
                 session.restart_count = old_restart_count + 1;
                 session.last_restart_at_secs = Some(now_secs());
 
-                let retry = send_persistent_request(&mut session.session, &self.config, "tools/call", request);
+                let retry = send_persistent_request(
+                    &mut session.session,
+                    &self.config,
+                    "tools/call",
+                    request,
+                );
                 match retry {
                     Ok(response) => {
                         session.last_error = None;
@@ -318,9 +333,9 @@ impl ToolGroupEngine {
             .map(|managed| matches!(managed.session.child.try_wait(), Ok(Some(_))))
             .unwrap_or(false);
         if needs_restart {
-            let mut managed = sessions
-                .remove(&group.group_id)
-                .ok_or_else(|| anyhow::anyhow!("missing MCP session for group '{}'", group.group_id))?;
+            let mut managed = sessions.remove(&group.group_id).ok_or_else(|| {
+                anyhow::anyhow!("missing MCP session for group '{}'", group.group_id)
+            })?;
             if managed.restart_count >= self.config.external_mcp_max_restarts {
                 anyhow::bail!(
                     "external MCP group '{}' exceeded restart budget ({})",
@@ -360,9 +375,12 @@ impl ToolGroupEngine {
                 },
             );
         }
-        sessions
-            .get_mut(&group.group_id)
-            .ok_or_else(|| anyhow::anyhow!("failed to create MCP session for group '{}'", group.group_id))
+        sessions.get_mut(&group.group_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "failed to create MCP session for group '{}'",
+                group.group_id
+            )
+        })
     }
 }
 
@@ -413,7 +431,10 @@ fn query_mcp_tools(
         config,
         command,
         args,
-        &[json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":1}), json!({"jsonrpc":"2.0","method":"tools/list","params":{},"id":2})],
+        &[
+            json!({"jsonrpc":"2.0","method":"initialize","params":{},"id":1}),
+            json!({"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}),
+        ],
     )?;
     let tools = response
         .last()
@@ -430,7 +451,10 @@ fn query_mcp_tools(
                     .get("description")
                     .and_then(|value| value.as_str())
                     .map(|value| value.to_string()),
-                input_schema: tool.get("inputSchema").cloned().unwrap_or_else(|| json!({})),
+                input_schema: tool
+                    .get("inputSchema")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
             })
         })
         .collect())
@@ -452,7 +476,10 @@ fn exchange_mcp(
         .spawn()
         .with_context(|| format!("Failed to spawn MCP tool group command '{}'", command))?;
     {
-        let mut stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("failed to open MCP stdin"))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("failed to open MCP stdin"))?;
         for message in messages {
             use std::io::Write;
             writeln!(stdin, "{}", serde_json::to_string(message)?)?;
@@ -484,7 +511,8 @@ fn exchange_mcp(
             config.external_mcp_max_output_bytes
         );
     }
-    let stdout = String::from_utf8(output.stdout).context("external MCP server emitted non-UTF8 stdout")?;
+    let stdout =
+        String::from_utf8(output.stdout).context("external MCP server emitted non-UTF8 stdout")?;
     let mut out = Vec::new();
     for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
         let value: Value = serde_json::from_str(line)
@@ -556,18 +584,28 @@ fn send_persistent_request(
     let mut line = String::new();
     loop {
         if start.elapsed().as_secs() >= config.external_mcp_timeout_secs {
-            anyhow::bail!("external MCP session timed out waiting for response to '{}'", method);
+            anyhow::bail!(
+                "external MCP session timed out waiting for response to '{}'",
+                method
+            );
         }
         line.clear();
         let read = session.stdout.read_line(&mut line)?;
         if read == 0 {
-            anyhow::bail!("external MCP session terminated before replying to '{}'", method);
+            anyhow::bail!(
+                "external MCP session terminated before replying to '{}'",
+                method
+            );
         }
         if line.len() > config.external_mcp_max_output_bytes {
             anyhow::bail!("external MCP response line exceeded output budget");
         }
-        let value: Value = serde_json::from_str(line.trim())
-            .with_context(|| format!("external MCP server emitted invalid JSON line: {}", line.trim()))?;
+        let value: Value = serde_json::from_str(line.trim()).with_context(|| {
+            format!(
+                "external MCP server emitted invalid JSON line: {}",
+                line.trim()
+            )
+        })?;
         if value.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
             anyhow::bail!("external MCP response missing jsonrpc=2.0");
         }
@@ -649,8 +687,14 @@ done
             .unwrap();
         assert_eq!(record.tools.len(), 1);
         let doc = engine.get_doc("foreign_tool").unwrap().unwrap();
-        assert_eq!(doc.get("tool").and_then(|v| v.as_str()), Some("foreign_tool"));
-        let response = engine.invoke("foreign_tool", &json!({"query":"hello"})).await.unwrap();
+        assert_eq!(
+            doc.get("tool").and_then(|v| v.as_str()),
+            Some("foreign_tool")
+        );
+        let response = engine
+            .invoke("foreign_tool", &json!({"query":"hello"}))
+            .await
+            .unwrap();
         assert!(response.is_some());
         assert_eq!(engine.sessions.lock().unwrap().len(), 1);
     }
@@ -706,7 +750,7 @@ done
         let dir = tempdir().unwrap();
         let script_path = dir.path().join("restart-mcp.sh");
         let state_file = dir.path().join("restart-mcp.state");
-        
+
         // Initial state
         fs::write(&state_file, "0").unwrap();
 
@@ -756,13 +800,24 @@ done
                 &[],
             )
             .unwrap();
-        
+
         // First call - should succeed and then the process exits
-        let res1 = engine.invoke("foreign_tool", &json!({})).await.unwrap().unwrap();
+        let res1 = engine
+            .invoke("foreign_tool", &json!({}))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(res1["result"]["content"][0]["text"], "dying");
-        
+
+        // Let the scripted MCP process finish exiting before the restart path is exercised.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
         // Second call - should detect termination, restart, and succeed
-        let res2 = engine.invoke("foreign_tool", &json!({})).await.unwrap().unwrap();
+        let res2 = engine
+            .invoke("foreign_tool", &json!({}))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(res2["result"]["content"][0]["text"], "revived");
 
         assert_eq!(engine.sessions.lock().unwrap().len(), 1);

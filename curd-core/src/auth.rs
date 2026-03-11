@@ -65,7 +65,7 @@ impl IdentityManager {
         let key_path = self.global_dir.join(format!("{}.key", name));
 
         fs::write(&key_path, &priv_hex)?;
-        
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -86,12 +86,16 @@ impl IdentityManager {
             return Ok(false);
         }
 
-        let pub_array: [u8; 32] = pub_bytes.as_slice().try_into()
+        let pub_array: [u8; 32] = pub_bytes
+            .as_slice()
+            .try_into()
             .map_err(|_| anyhow::anyhow!("Invalid public key length"))?;
         let verifying_key = VerifyingKey::from_bytes(&pub_array)
             .map_err(|e| anyhow::anyhow!("Invalid public key bytes: {}", e))?;
 
-        let sig_array: [u8; 64] = sig_bytes.as_slice().try_into()
+        let sig_array: [u8; 64] = sig_bytes
+            .as_slice()
+            .try_into()
             .map_err(|_| anyhow::anyhow!("Invalid signature length"))?;
         let signature = Signature::from_bytes(&sig_array);
 
@@ -139,30 +143,34 @@ impl IdentityManager {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         let claims = ConnectionTokenClaims {
             agent_id: agent_id.to_string(),
             pubkey_hex: pubkey_hex.to_string(),
             exp: now + 3600, // 1 hour
         };
-        
+
         let json = serde_json::to_string(&claims)?;
-        Ok(base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, json.as_bytes()))
+        Ok(base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            json.as_bytes(),
+        ))
     }
 
     pub fn verify_connection_token(&self, token: &str) -> Result<ConnectionTokenClaims> {
-        let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, token)?;
+        let bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, token)?;
         let claims: ConnectionTokenClaims = serde_json::from_slice(&bytes)?;
-        
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-            
+
         if claims.exp < now {
             anyhow::bail!("Session token expired");
         }
-        
+
         Ok(claims)
     }
 
@@ -209,11 +217,11 @@ impl IdentityManager {
 
         if state_path.exists()
             && let Ok(content) = fs::read_to_string(state_path)
-                && let Ok(variables) =
-                    serde_json::from_str::<HashMap<String, serde_json::Value>>(&content)
-                {
-                    return Some(ReplState::from_variables(variables));
-                }
+            && let Ok(variables) =
+                serde_json::from_str::<HashMap<String, serde_json::Value>>(&content)
+        {
+            return Some(ReplState::from_variables(variables));
+        }
         None
     }
 }
