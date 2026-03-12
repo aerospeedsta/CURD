@@ -74,7 +74,7 @@ uninstall:
 # Comprehensive cleanup
 clean:
 	cargo clean
-	rm -rf .tmp .curd .curd-grammars .git_old
+	rm -rf .tmp .curd .curd-grammars .git_old pkg/ target/
 	rm -rf curd-python/target curd-node/node_modules curd-node/target
 	rm -f curd-node/*.node curd-node/index.js curd-node/index.d.ts
 	find . -name ".DS_Store" -delete
@@ -98,7 +98,7 @@ curd-build-exec:
 # Targets: Linux(GNU), Linux(MUSL), Darwin, Windows, FreeBSD
 # Archs: x86_64, aarch64
 #
-# Note: Using zigbuild provides the sysroots for C dependencies (like wasmtime) 
+# Note: Using zigbuild provides the sysroots for C dependencies (like wasmtime)
 # automatically for all targets, including FreeBSD.
 
 ZIGBUILD := $(CURDIR)/scripts/cargo-zigbuild-wrapper.sh
@@ -139,6 +139,12 @@ release-freebsd: release-freebsd-x86
 release-freebsd-x86:
 	$(ZIGBUILD) build --release -p curd --no-default-features --features "mcp" --target x86_64-unknown-freebsd
 
+# Android (Bionic)
+release-android: release-android-arm64
+release-android-arm64:
+	CC_aarch64_linux_android=$(CURDIR)/scripts/bin/aarch64-linux-android-gcc \
+	$(ZIGBUILD) build --release -p curd --no-default-features --features "mcp" --target aarch64-linux-android
+
 # --- OCI / Docker / Podman builds ---
 # --- 4d Distribution & Packaging Plane ---
 # Output: ./dist/ (Binary artifacts, packages, wheels, and npm packs)
@@ -146,12 +152,44 @@ release-freebsd-x86:
 DIST_DIR := $(CURDIR)/dist
 ARCHS := x86_64 aarch64
 
-.PHONY: dist dist-cli dist-windows dist-python dist-node dist-package-managers dist-prep dist-arch dist-oci dist-deb dist-rpm dist-freebsd dist-nix dist-win-installer map test-dist
+.PHONY: dist dist-cli dist-windows dist-python dist-node dist-package-managers dist-prep dist-arch dist-oci dist-deb dist-rpm dist-freebsd dist-nix dist-win-installer dist-android map test-dist
+dist: dist-prep dist-assets
 
-dist: dist-prep
+# Android Distribution (Using robust static AArch64 MUSL binary)
+dist-android: release-linux-musl-arm
+	@echo "Packaging Android (Termux/Edge) binaries via static AArch64 MUSL..."
+	@mkdir -p $(DIST_DIR)/cli/android
+	@tar -czf $(DIST_DIR)/cli/android/curd-android-aarch64.tar.gz -C target/aarch64-unknown-linux-musl/release curd
+
 	$(MAKE) -j2 dist-cli dist-windows dist-win-installer dist-python dist-node dist-arch dist-oci dist-deb dist-rpm dist-freebsd dist-nix dist-package-managers
 	@$(MAKE) map
 
+# Generate Shell Completions and Man Pages
+dist-assets: dist-prep
+	@echo "Generating shell completions and man pages..."
+	@mkdir -p $(DIST_DIR)/assets/completions $(DIST_DIR)/assets/man
+	@mkdir -p curd/assets/completions curd/assets/man curd/assets/tldr
+	# Bash
+	cargo run --bin curd -- completions bash > $(DIST_DIR)/assets/completions/curd.bash
+	cp $(DIST_DIR)/assets/completions/curd.bash curd/assets/completions/curd.bash
+	# Zsh
+	cargo run --bin curd -- completions zsh > $(DIST_DIR)/assets/completions/_curd
+	cp $(DIST_DIR)/assets/completions/_curd curd/assets/completions/_curd
+	# Fish
+	cargo run --bin curd -- completions fish > $(DIST_DIR)/assets/completions/curd.fish
+	cp $(DIST_DIR)/assets/completions/curd.fish curd/assets/completions/curd.fish
+	# PowerShell
+	cargo run --bin curd -- completions powershell > $(DIST_DIR)/assets/completions/curd.ps1
+	cp $(DIST_DIR)/assets/completions/curd.ps1 curd/assets/completions/curd.ps1
+	# Man page
+	cargo run --bin curd -- man > $(DIST_DIR)/assets/man/curd.1
+	cp $(DIST_DIR)/assets/man/curd.1 curd/assets/man/curd.1
+	# TLDR page
+	@mkdir -p $(DIST_DIR)/assets/tldr
+	@echo "# curd\n\n> Semantic code intelligence control plane for humans and agents.\n> More information: <https://curd.aerospeedsta.dev>\n\n- Initialize a CURD workspace:\n  curd init\n\n- Search for a symbol by name:\n  curd search {{symbol_name}}\n\n- Explore the caller/callee graph of a symbol:\n  curd graph {{symbol_uri}}\n\n- Read a specific function or class:\n  curd read {{symbol_uri}}\n\n- Start a shadow workspace session for safe edits:\n  curd workspace begin\n\n- Commit shadow changes to disk:\n  curd workspace commit\n\n- Rollback shadow changes:\n  curd workspace rollback" > $(DIST_DIR)/assets/tldr/curd.md
+	@cp $(DIST_DIR)/assets/tldr/curd.md curd/assets/tldr/curd.md
+
+dist-prep:
 # Windows Interactive Installer (.exe)
 dist-win-installer: release-windows-x86
 	@echo "Generating Windows NSIS installer..."
@@ -183,14 +221,16 @@ dist-nix:
   }; \
 }' > $(DIST_DIR)/nix/flake.nix
 
-dist-deb: release-linux-x86
+dist-deb: release-linux-x86 release-linux-arm
 	@echo "Generating Debian packages... (Requires cargo-deb)"
-	# cargo-deb -p curd --target x86_64-unknown-linux-gnu --output $(DIST_DIR)/cli/linux-glibc/curd_x86_64.deb
+	cargo deb --no-build -p curd --target x86_64-unknown-linux-gnu --output $(DIST_DIR)/cli/linux-glibc/curd_x86_64.deb
+	cargo deb --no-build -p curd --target aarch64-unknown-linux-gnu --output $(DIST_DIR)/cli/linux-glibc/curd_aarch64.deb
 
 # RedHat/Fedora Package builder (.rpm)
-dist-rpm: release-linux-x86
+dist-rpm: release-linux-x86 release-linux-arm
 	@echo "Generating RPM packages... (Requires cargo-generate-rpm)"
-	# cargo-generate-rpm -p curd --target x86_64-unknown-linux-gnu --output $(DIST_DIR)/cli/linux-glibc/curd_x86_64.rpm
+	cargo generate-rpm --auto-req disabled -p curd --target x86_64-unknown-linux-gnu --output $(DIST_DIR)/cli/linux-glibc/curd_x86_64.rpm
+	cargo generate-rpm --auto-req disabled -p curd --target aarch64-unknown-linux-gnu --output $(DIST_DIR)/cli/linux-glibc/curd_aarch64.rpm
 
 # FreeBSD Package builder (.txz)
 dist-freebsd: release-freebsd-x86
@@ -229,7 +269,7 @@ dist-arch: release-linux-x86
 test-dist: dist-prep
 	@echo "Starting exhaustive post-build validation..."
 	@chmod +x scripts/test_in_container.sh scripts/vv_release.sh
-	
+
 	# 1. macOS Native Tests (Host)
 	@echo "Testing macOS Universal Binary (Native ARM64)..."
 	@CURD_BIN=$(DIST_DIR)/cli/macos/curd ./scripts/vv_release.sh
@@ -237,19 +277,19 @@ test-dist: dist-prep
 		echo "Testing macOS Universal Binary (x86_64 via Rosetta)..."; \
 		CURD_BIN=$(DIST_DIR)/cli/macos/curd arch -x86_64 ./scripts/vv_release.sh; \
 	fi
-	
+
 	# 2. Linux x86_64 (GLIBC/Ubuntu)
 	@./scripts/test_in_container.sh $(DIST_DIR)/cli/linux-glibc/curd-x86_64 ubuntu:latest linux/amd64
-	
+
 	# 3. Linux x86_64 (MUSL/Alpine)
 	@./scripts/test_in_container.sh $(DIST_DIR)/cli/linux-musl/curd-x86_64-static alpine:latest linux/amd64
-	
+
 	# 4. Linux aarch64 (GLIBC/Ubuntu - Emulated)
 	@./scripts/test_in_container.sh $(DIST_DIR)/cli/linux-glibc/curd-aarch64 arm64v8/ubuntu:latest linux/arm64
-	
+
 	# 5. Linux aarch64 (MUSL/Alpine - Emulated)
 	@./scripts/test_in_container.sh $(DIST_DIR)/cli/linux-musl/curd-aarch64-static arm64v8/alpine:latest linux/arm64
-	
+
 	# 6. Windows x64 (via Wine if available)
 	@if command -v wine64 >/dev/null; then \
 		echo "Testing Windows x64 binary via Wine..."; \
@@ -261,19 +301,27 @@ test-dist: dist-prep
 	@echo "All accessible platform tests passed."
 
 # Multi-arch OCI Images (x86_64 and arm64)
+# Build OCI Multi-arch image (Requires Docker Buildx)
 dist-oci: dist-cli
 	@echo "Building Multi-arch OCI images via Docker Buildx..."
 	@mkdir -p $(DIST_DIR)/cli/oci
 	# We copy binaries to a temp context to keep Dockerfile simple
 	@cp target/x86_64-unknown-linux-musl/release/curd $(DIST_DIR)/cli/linux-musl/curd-x86_64-static
 	@cp target/aarch64-unknown-linux-musl/release/curd $(DIST_DIR)/cli/linux-musl/curd-aarch64-static
-	# Buildx create if not exists
-	@docker buildx create --name curd-builder --use || true
-	# Build for both architectures and save as a local tarball
-	docker buildx build --platform linux/amd64,linux/arm64 \
-		-t curd:latest \
-		-f Dockerfile \
-		--output type=oci,dest=$(DIST_DIR)/cli/oci/curd-multiarch.oci.tar \
+	# Buildx create if not exists using docker-container driver for OCI exporter support
+	-docker buildx create --name curd-builder --driver docker-container --use
+	docker buildx inspect curd-builder --bootstrap
+	# Build Alpine version (Smallest)
+	docker buildx build --builder curd-builder --platform linux/amd64,linux/arm64 \
+		-t curd:latest-alpine \
+		-f Dockerfile.alpine \
+		--output type=oci,dest=$(DIST_DIR)/cli/oci/curd-alpine-multiarch.oci.tar \
+		$(DIST_DIR)/cli/linux-musl/
+	# Build Ubuntu version (For broader library compatibility)
+	docker buildx build --builder curd-builder --platform linux/amd64,linux/arm64 \
+		-t curd:latest-ubuntu \
+		-f Dockerfile.ubuntu \
+		--output type=oci,dest=$(DIST_DIR)/cli/oci/curd-ubuntu-multiarch.oci.tar \
 		$(DIST_DIR)/cli/linux-musl/
 
 dist-clean:
@@ -297,14 +345,14 @@ dist-cli: release-darwin-x86 release-darwin-arm release-linux-x86 release-linux-
 	             -output $(DIST_DIR)/cli/macos/curd
 	@scripts/package_macos.sh $(DIST_DIR)/cli/macos/curd
 	@mv curd-*.pkg $(DIST_DIR)/cli/macos/
-	
+
 	# Linux GLIBC (deb/rpm/tar)
 	@mkdir -p $(DIST_DIR)/cli/linux-glibc
 	@cp target/x86_64-unknown-linux-gnu/release/curd $(DIST_DIR)/cli/linux-glibc/curd-x86_64
 	@cp target/aarch64-unknown-linux-gnu/release/curd $(DIST_DIR)/cli/linux-glibc/curd-aarch64
 	@tar -czf $(DIST_DIR)/cli/linux-glibc/curd-linux-x86_64.tar.gz -C $(DIST_DIR)/cli/linux-glibc curd-x86_64
 	@tar -czf $(DIST_DIR)/cli/linux-glibc/curd-linux-aarch64.tar.gz -C $(DIST_DIR)/cli/linux-glibc curd-aarch64
-	
+
 	# Linux MUSL (static binary)
 	@mkdir -p $(DIST_DIR)/cli/linux-musl
 	@cp target/x86_64-unknown-linux-musl/release/curd $(DIST_DIR)/cli/linux-musl/curd-x86_64-static
@@ -320,7 +368,7 @@ dist-windows: release-windows-x86 release-windows-arm
 	@cp scripts/install_curd.ps1 $(DIST_DIR)/cli/windows/install.ps1
 	@zip -j $(DIST_DIR)/cli/windows/curd-win-x64.zip $(DIST_DIR)/cli/windows/curd-x64.exe $(DIST_DIR)/cli/windows/install.ps1
 	@zip -j $(DIST_DIR)/cli/windows/curd-win-arm64.zip $(DIST_DIR)/cli/windows/curd-arm64.exe $(DIST_DIR)/cli/windows/install.ps1
-	
+
 	# AUR templates are handled by dist-arch
 
 dist-python:

@@ -1,0 +1,3391 @@
+#compdef curd
+
+autoload -U is-at-least
+
+_curd() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+'::legacy_root -- (Legacy shorthand) Path to the workspace root to start the MCP server:_files' \
+":: :_curd_commands" \
+"*::: :->curd" \
+&& ret=0
+    case $state in
+    (curd)
+        words=($line[2] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-command-$line[2]:"
+        case $line[2] in
+            (mcp)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(init-agent)
+_arguments "${_arguments_options[@]}" : \
+'-n+[Optional\: Identifier for the agent (e.g., '\''alpha'\'', '\''claude_coder'\''). Use commas for multiple names]:NAME:_default' \
+'--name=[Optional\: Identifier for the agent (e.g., '\''alpha'\'', '\''claude_coder'\''). Use commas for multiple names]:NAME:_default' \
+'-r+[Optional\: Target harness to configure (gemini, cursor, claude_desktop, claude_code). Auto-detects if omitted]:HARNESS:_default' \
+'--harness=[Optional\: Target harness to configure (gemini, cursor, claude_desktop, claude_code). Auto-detects if omitted]:HARNESS:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(ina)
+_arguments "${_arguments_options[@]}" : \
+'-n+[Optional\: Identifier for the agent (e.g., '\''alpha'\'', '\''claude_coder'\''). Use commas for multiple names]:NAME:_default' \
+'--name=[Optional\: Identifier for the agent (e.g., '\''alpha'\'', '\''claude_coder'\''). Use commas for multiple names]:NAME:_default' \
+'-r+[Optional\: Target harness to configure (gemini, cursor, claude_desktop, claude_code). Auto-detects if omitted]:HARNESS:_default' \
+'--harness=[Optional\: Target harness to configure (gemini, cursor, claude_desktop, claude_code). Auto-detects if omitted]:HARNESS:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(agt)
+_arguments "${_arguments_options[@]}" : \
+'-n+[Optional\: Identifier for the agent (e.g., '\''alpha'\'', '\''claude_coder'\''). Use commas for multiple names]:NAME:_default' \
+'--name=[Optional\: Identifier for the agent (e.g., '\''alpha'\'', '\''claude_coder'\''). Use commas for multiple names]:NAME:_default' \
+'-r+[Optional\: Target harness to configure (gemini, cursor, claude_desktop, claude_code). Auto-detects if omitted]:HARNESS:_default' \
+'--harness=[Optional\: Target harness to configure (gemini, cursor, claude_desktop, claude_code). Auto-detects if omitted]:HARNESS:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(doctor)
+_arguments "${_arguments_options[@]}" : \
+'--max-total-ms=[Optional threshold\: fail when index total_ms exceeds this value]:MAX_TOTAL_MS:_default' \
+'--max-parse-fail=[Optional threshold\: fail when parse_fail count exceeds this value]:MAX_PARSE_FAIL:_default' \
+'--max-no-symbols-ratio=[Optional threshold\: fail when no_symbols/total_files exceeds this ratio (0.0..1.0)]:MAX_NO_SYMBOLS_RATIO:_default' \
+'--max-skipped-large-ratio=[Optional threshold\: fail when skipped_large/total_files exceeds this ratio (0.0..1.0)]:MAX_SKIPPED_LARGE_RATIO:_default' \
+'--min-coverage-ratio=[Optional threshold\: fail when coverage_ratio is below this value (0.0..1.0)]:MIN_COVERAGE_RATIO:_default' \
+'--require-coverage-state=[Optional threshold\: fail when coverage state does not match this exactly (e.g. '\''full'\'')]:REQUIRE_COVERAGE_STATE:_default' \
+'--min-symbol-count=[Optional threshold\: fail when total symbols found is below this count]:MIN_SYMBOL_COUNT:_default' \
+'--min-symbols-per-k-files=[Optional threshold\: fail when symbol density is below this value]:MIN_SYMBOLS_PER_K_FILES:_default' \
+'--min-overlap-with-full=[Optional threshold\: fail when overlap with full index is below this value]:MIN_OVERLAP_WITH_FULL:_default' \
+'--report-out=[Write report as JSON to this path]:REPORT_OUT:_files' \
+'--profile=[The profile of thresholds to apply ('\''ci_fast'\'' or '\''ci_strict'\''). Overrides config]:PROFILE:_default' \
+'--index-mode=[Optional index mode for this doctor run (e.g. '\''lazy'\'', '\''full'\'')]:INDEX_MODE:(lazy full)' \
+'--index-scope=[Optional index scope for this doctor run]:INDEX_SCOPE:(auto forced)' \
+'--index-max-file-size=[Optional max file size in bytes for this doctor run]:INDEX_MAX_FILE_SIZE:_default' \
+'--index-large-file-policy=[Optional large file policy for this doctor run]:INDEX_LARGE_FILE_POLICY:(skip skeleton full)' \
+'--index-execution=[Optional index execution model for this doctor run]:INDEX_EXECUTION:(multithreaded multiprocess singlethreaded)' \
+'--index-chunk-size=[Optional chunk size for multiprocess mode]:INDEX_CHUNK_SIZE:_default' \
+'--strict[Fail with non-zero status when warnings/findings are present]' \
+'--parity-rerun[Re-run the index build twice and ensure symbol counts and hashes match exactly]' \
+'--compare-with-full[Compare index contents against a '\''full'\'' mode run]' \
+'--profile-index[Run indexing multiple times to generate a performance profile]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(dct)
+_arguments "${_arguments_options[@]}" : \
+'--max-total-ms=[Optional threshold\: fail when index total_ms exceeds this value]:MAX_TOTAL_MS:_default' \
+'--max-parse-fail=[Optional threshold\: fail when parse_fail count exceeds this value]:MAX_PARSE_FAIL:_default' \
+'--max-no-symbols-ratio=[Optional threshold\: fail when no_symbols/total_files exceeds this ratio (0.0..1.0)]:MAX_NO_SYMBOLS_RATIO:_default' \
+'--max-skipped-large-ratio=[Optional threshold\: fail when skipped_large/total_files exceeds this ratio (0.0..1.0)]:MAX_SKIPPED_LARGE_RATIO:_default' \
+'--min-coverage-ratio=[Optional threshold\: fail when coverage_ratio is below this value (0.0..1.0)]:MIN_COVERAGE_RATIO:_default' \
+'--require-coverage-state=[Optional threshold\: fail when coverage state does not match this exactly (e.g. '\''full'\'')]:REQUIRE_COVERAGE_STATE:_default' \
+'--min-symbol-count=[Optional threshold\: fail when total symbols found is below this count]:MIN_SYMBOL_COUNT:_default' \
+'--min-symbols-per-k-files=[Optional threshold\: fail when symbol density is below this value]:MIN_SYMBOLS_PER_K_FILES:_default' \
+'--min-overlap-with-full=[Optional threshold\: fail when overlap with full index is below this value]:MIN_OVERLAP_WITH_FULL:_default' \
+'--report-out=[Write report as JSON to this path]:REPORT_OUT:_files' \
+'--profile=[The profile of thresholds to apply ('\''ci_fast'\'' or '\''ci_strict'\''). Overrides config]:PROFILE:_default' \
+'--index-mode=[Optional index mode for this doctor run (e.g. '\''lazy'\'', '\''full'\'')]:INDEX_MODE:(lazy full)' \
+'--index-scope=[Optional index scope for this doctor run]:INDEX_SCOPE:(auto forced)' \
+'--index-max-file-size=[Optional max file size in bytes for this doctor run]:INDEX_MAX_FILE_SIZE:_default' \
+'--index-large-file-policy=[Optional large file policy for this doctor run]:INDEX_LARGE_FILE_POLICY:(skip skeleton full)' \
+'--index-execution=[Optional index execution model for this doctor run]:INDEX_EXECUTION:(multithreaded multiprocess singlethreaded)' \
+'--index-chunk-size=[Optional chunk size for multiprocess mode]:INDEX_CHUNK_SIZE:_default' \
+'--strict[Fail with non-zero status when warnings/findings are present]' \
+'--parity-rerun[Re-run the index build twice and ensure symbol counts and hashes match exactly]' \
+'--compare-with-full[Compare index contents against a '\''full'\'' mode run]' \
+'--profile-index[Run indexing multiple times to generate a performance profile]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(build)
+_arguments "${_arguments_options[@]}" : \
+'--adapter=[Build adapter override (e.g. cargo, cmake, ninja, make, uv, poetry, pip, conda, mamba, npm, yarn, pnpm, bun)]:ADAPTER:_default' \
+'--profile=[Build profile (debug|release)]:PROFILE:_default' \
+'--execute=[Execute planned commands (default\: true)]:EXECUTE:(true false)' \
+'-c+[Custom command to run directly, overriding adapters (e.g. \`pixi run dev2\`)]:COMMAND:_default' \
+'--command=[Custom command to run directly, overriding adapters (e.g. \`pixi run dev2\`)]:COMMAND:_default' \
+'--plan[Only show the build plan, do not execute]' \
+'--allow-untrusted[Allow execution of custom adapters defined in workspace settings.toml without prompt]' \
+'--json[Output results as JSON]' \
+'--zig[Use cargo-zigbuild instead of cargo build]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::target_or_dir -- Optional build target/task to execute (or directory if no target is specified):_default' \
+'::dir -- Path to workspace root (if target is provided):_files' \
+'*::trailing_args -- Trailing arguments to pass directly to the underlying compiler/adapter:_default' \
+&& ret=0
+;;
+(bld)
+_arguments "${_arguments_options[@]}" : \
+'--adapter=[Build adapter override (e.g. cargo, cmake, ninja, make, uv, poetry, pip, conda, mamba, npm, yarn, pnpm, bun)]:ADAPTER:_default' \
+'--profile=[Build profile (debug|release)]:PROFILE:_default' \
+'--execute=[Execute planned commands (default\: true)]:EXECUTE:(true false)' \
+'-c+[Custom command to run directly, overriding adapters (e.g. \`pixi run dev2\`)]:COMMAND:_default' \
+'--command=[Custom command to run directly, overriding adapters (e.g. \`pixi run dev2\`)]:COMMAND:_default' \
+'--plan[Only show the build plan, do not execute]' \
+'--allow-untrusted[Allow execution of custom adapters defined in workspace settings.toml without prompt]' \
+'--json[Output results as JSON]' \
+'--zig[Use cargo-zigbuild instead of cargo build]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::target_or_dir -- Optional build target/task to execute (or directory if no target is specified):_default' \
+'::dir -- Path to workspace root (if target is provided):_files' \
+'*::trailing_args -- Trailing arguments to pass directly to the underlying compiler/adapter:_default' \
+&& ret=0
+;;
+(b)
+_arguments "${_arguments_options[@]}" : \
+'--adapter=[Build adapter override (e.g. cargo, cmake, ninja, make, uv, poetry, pip, conda, mamba, npm, yarn, pnpm, bun)]:ADAPTER:_default' \
+'--profile=[Build profile (debug|release)]:PROFILE:_default' \
+'--execute=[Execute planned commands (default\: true)]:EXECUTE:(true false)' \
+'-c+[Custom command to run directly, overriding adapters (e.g. \`pixi run dev2\`)]:COMMAND:_default' \
+'--command=[Custom command to run directly, overriding adapters (e.g. \`pixi run dev2\`)]:COMMAND:_default' \
+'--plan[Only show the build plan, do not execute]' \
+'--allow-untrusted[Allow execution of custom adapters defined in workspace settings.toml without prompt]' \
+'--json[Output results as JSON]' \
+'--zig[Use cargo-zigbuild instead of cargo build]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::target_or_dir -- Optional build target/task to execute (or directory if no target is specified):_default' \
+'::dir -- Path to workspace root (if target is provided):_files' \
+'*::trailing_args -- Trailing arguments to pass directly to the underlying compiler/adapter:_default' \
+&& ret=0
+;;
+(hook)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell -- The target shell (zsh, bash, fish, powershell):(zsh bash fish powershell)' \
+&& ret=0
+;;
+(hok)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell -- The target shell (zsh, bash, fish, powershell):(zsh bash fish powershell)' \
+&& ret=0
+;;
+(diff)
+_arguments "${_arguments_options[@]}" : \
+'--symbol=[Optional specific symbol to diff]:SYMBOL:_default' \
+'--semantic[Semantic AST-level diff]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(dif)
+_arguments "${_arguments_options[@]}" : \
+'--symbol=[Optional specific symbol to diff]:SYMBOL:_default' \
+'--semantic[Semantic AST-level diff]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(refactor)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__refactor_commands" \
+"*::: :->refactor" \
+&& ret=0
+
+    case $state in
+    (refactor)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-refactor-command-$line[1]:"
+        case $line[1] in
+            (rename)
+_arguments "${_arguments_options[@]}" : \
+'--lsp=[Optional\: Use an external LSP server for type-aware renaming (e.g., '\''rust-analyzer'\'')]:LSP:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':symbol:_default' \
+':new_name:_default' \
+&& ret=0
+;;
+(move)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':symbol:_default' \
+':target_file:_files' \
+&& ret=0
+;;
+(extract)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':file_range:_default' \
+':new_function_name:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__refactor__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-refactor-help-command-$line[1]:"
+        case $line[1] in
+            (rename)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(move)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(extract)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(ref)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__refactor_commands" \
+"*::: :->refactor" \
+&& ret=0
+
+    case $state in
+    (refactor)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-refactor-command-$line[1]:"
+        case $line[1] in
+            (rename)
+_arguments "${_arguments_options[@]}" : \
+'--lsp=[Optional\: Use an external LSP server for type-aware renaming (e.g., '\''rust-analyzer'\'')]:LSP:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':symbol:_default' \
+':new_name:_default' \
+&& ret=0
+;;
+(move)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':symbol:_default' \
+':target_file:_files' \
+&& ret=0
+;;
+(extract)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':file_range:_default' \
+':new_function_name:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__refactor__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-refactor-help-command-$line[1]:"
+        case $line[1] in
+            (rename)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(move)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(extract)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(context)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the primary workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__context_commands" \
+"*::: :->context" \
+&& ret=0
+
+    case $state in
+    (context)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-context-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+'--alias=[Optional alias for this context (auto-generated if omitted)]:ALIAS:_default' \
+'--index[Link context in Index mode (Search and Graph only, no file reads)]' \
+'--read[Link context in Read mode (Read-only, no writes)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':path -- The path to the external repository:_files' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'--force[Force removal even if there are dangling dependencies in the primary workspace]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':name -- Alias or path of the context to remove:_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__context__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-context-help-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(ctx)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the primary workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__context_commands" \
+"*::: :->context" \
+&& ret=0
+
+    case $state in
+    (context)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-context-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+'--alias=[Optional alias for this context (auto-generated if omitted)]:ALIAS:_default' \
+'--index[Link context in Index mode (Search and Graph only, no file reads)]' \
+'--read[Link context in Read mode (Read-only, no writes)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':path -- The path to the external repository:_files' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'--force[Force removal even if there are dangling dependencies in the primary workspace]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':name -- Alias or path of the context to remove:_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__context__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-context-help-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(init)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(ini)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(config)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__config_commands" \
+"*::: :->config" \
+&& ret=0
+
+    case $state in
+    (config)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-config-command-$line[1]:"
+        case $line[1] in
+            (show)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key -- Key in dotted notation (e.g. build.tasks.test):_default' \
+':value -- Value to set:_default' \
+&& ret=0
+;;
+(unset)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key -- Key in dotted notation:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__config__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-config-help-command-$line[1]:"
+        case $line[1] in
+            (show)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unset)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(cfg)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__config_commands" \
+"*::: :->config" \
+&& ret=0
+
+    case $state in
+    (config)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-config-command-$line[1]:"
+        case $line[1] in
+            (show)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key -- Key in dotted notation (e.g. build.tasks.test):_default' \
+':value -- Value to set:_default' \
+&& ret=0
+;;
+(unset)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key -- Key in dotted notation:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__config__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-config-help-command-$line[1]:"
+        case $line[1] in
+            (show)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unset)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(plugin-language)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plugin-language_commands" \
+"*::: :->plugin-language" \
+&& ret=0
+
+    case $state in
+    (plugin-language)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-language-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':archive_path -- Path to the signed archive (.curdl or .curdt):_files' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':package_id -- Installed package id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plugin-language__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-language-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(plang)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plugin-language_commands" \
+"*::: :->plugin-language" \
+&& ret=0
+
+    case $state in
+    (plugin-language)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-language-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':archive_path -- Path to the signed archive (.curdl or .curdt):_files' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':package_id -- Installed package id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plugin-language__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-language-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(plugin-tool)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plugin-tool_commands" \
+"*::: :->plugin-tool" \
+&& ret=0
+
+    case $state in
+    (plugin-tool)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-tool-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':archive_path -- Path to the signed archive (.curdl or .curdt):_files' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':package_id -- Installed package id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plugin-tool__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-tool-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(ptool)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plugin-tool_commands" \
+"*::: :->plugin-tool" \
+&& ret=0
+
+    case $state in
+    (plugin-tool)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-tool-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':archive_path -- Path to the signed archive (.curdl or .curdt):_files' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':package_id -- Installed package id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plugin-tool__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-tool-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(plugin-trust)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plugin-trust_commands" \
+"*::: :->plugin-trust" \
+&& ret=0
+
+    case $state in
+    (plugin-trust)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-trust-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'--label=[Optional label]:LABEL:_default' \
+'*--kind=[Allowed plugin kinds for this key]:KINDS:(tool language)' \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+':pubkey_hex -- Ed25519 public key hex:_default' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+&& ret=0
+;;
+(enable)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+&& ret=0
+;;
+(disable)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plugin-trust__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-trust-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(enable)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(disable)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(ptrust)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plugin-trust_commands" \
+"*::: :->plugin-trust" \
+&& ret=0
+
+    case $state in
+    (plugin-trust)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-trust-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'--label=[Optional label]:LABEL:_default' \
+'*--kind=[Allowed plugin kinds for this key]:KINDS:(tool language)' \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+':pubkey_hex -- Ed25519 public key hex:_default' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+&& ret=0
+;;
+(enable)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+&& ret=0
+;;
+(disable)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':key_id -- Trusted key id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plugin-trust__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plugin-trust-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(enable)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(disable)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(detach)
+_arguments "${_arguments_options[@]}" : \
+'--shadow=[How to handle an active shadow transaction before detaching]:SHADOW:(apply discard abort)' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(det)
+_arguments "${_arguments_options[@]}" : \
+'--shadow=[How to handle an active shadow transaction before detaching]:SHADOW:(apply discard abort)' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(delete)
+_arguments "${_arguments_options[@]}" : \
+'--shadow=[How to handle an active shadow transaction before deleting CURD state]:SHADOW:(apply discard abort)' \
+'-y[Force skip confirmation]' \
+'--yes[Force skip confirmation]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(del)
+_arguments "${_arguments_options[@]}" : \
+'--shadow=[How to handle an active shadow transaction before deleting CURD state]:SHADOW:(apply discard abort)' \
+'-y[Force skip confirmation]' \
+'--yes[Force skip confirmation]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(status)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(st)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(sts)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(log)
+_arguments "${_arguments_options[@]}" : \
+'-l+[Number of recent entries to show]:LIMIT:_default' \
+'--limit=[Number of recent entries to show]:LIMIT:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(repl)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(rpl)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(run)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'*--arg=[Script argument override in key=value form]:ARGS:_default' \
+'--profile=[Optional profile override]:PROFILE:_default' \
+'--out=[Output path for \`curd run compile ...\`]:OUT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':first -- Either a script path, or an action like '\''check'\'' / '\''compile'\'':_default' \
+'::second -- Script path when using an explicit action:_default' \
+&& ret=0
+;;
+(test)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-v[Show detailed list of broken links and dead zones]' \
+'--verbose[Show detailed list of broken links and dead zones]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::scope -- Scope of the test (nodes, edges, policy, architecture, all):(nodes edges policy architecture all)' \
+&& ret=0
+;;
+(tst)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-v[Show detailed list of broken links and dead zones]' \
+'--verbose[Show detailed list of broken links and dead zones]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::scope -- Scope of the test (nodes, edges, policy, architecture, all):(nodes edges policy architecture all)' \
+&& ret=0
+;;
+(search)
+_arguments "${_arguments_options[@]}" : \
+'--kind=[Optional kind filter (e.g. '\''function'\'', '\''class'\'')]:KIND:_default' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':query -- The query string:_default' \
+&& ret=0
+;;
+(sch)
+_arguments "${_arguments_options[@]}" : \
+'--kind=[Optional kind filter (e.g. '\''function'\'', '\''class'\'')]:KIND:_default' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':query -- The query string:_default' \
+&& ret=0
+;;
+(s)
+_arguments "${_arguments_options[@]}" : \
+'--kind=[Optional kind filter (e.g. '\''function'\'', '\''class'\'')]:KIND:_default' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':query -- The query string:_default' \
+&& ret=0
+;;
+(graph)
+_arguments "${_arguments_options[@]}" : \
+'--depth=[The traversal depth]:DEPTH:_default' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':uri -- The symbol URI to map:_default' \
+&& ret=0
+;;
+(g)
+_arguments "${_arguments_options[@]}" : \
+'--depth=[The traversal depth]:DEPTH:_default' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':uri -- The symbol URI to map:_default' \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':uri -- The URI to read (e.g., '\''src/main.rs'\'' or '\''src/main.rs\:\:my_function'\''):_default' \
+&& ret=0
+;;
+(red)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':uri -- The URI to read (e.g., '\''src/main.rs'\'' or '\''src/main.rs\:\:my_function'\''):_default' \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+'-a+[The action to perform ('\''upsert'\'' or '\''delete'\'')]:ACTION:_default' \
+'--action=[The action to perform ('\''upsert'\'' or '\''delete'\'')]:ACTION:_default' \
+'-c+[The literal code to insert (ignored if action is '\''delete'\'')]:CODE:_default' \
+'--code=[The literal code to insert (ignored if action is '\''delete'\'')]:CODE:_default' \
+'--base-state-hash=[Optional\: The expected Merkle Root of the workspace state for optimistic concurrency control]:BASE_STATE_HASH:_default' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':uri -- The URI to edit:_default' \
+&& ret=0
+;;
+(edt)
+_arguments "${_arguments_options[@]}" : \
+'-a+[The action to perform ('\''upsert'\'' or '\''delete'\'')]:ACTION:_default' \
+'--action=[The action to perform ('\''upsert'\'' or '\''delete'\'')]:ACTION:_default' \
+'-c+[The literal code to insert (ignored if action is '\''delete'\'')]:CODE:_default' \
+'--code=[The literal code to insert (ignored if action is '\''delete'\'')]:CODE:_default' \
+'--base-state-hash=[Optional\: The expected Merkle Root of the workspace state for optimistic concurrency control]:BASE_STATE_HASH:_default' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':uri -- The URI to edit:_default' \
+&& ret=0
+;;
+(e)
+_arguments "${_arguments_options[@]}" : \
+'-a+[The action to perform ('\''upsert'\'' or '\''delete'\'')]:ACTION:_default' \
+'--action=[The action to perform ('\''upsert'\'' or '\''delete'\'')]:ACTION:_default' \
+'-c+[The literal code to insert (ignored if action is '\''delete'\'')]:CODE:_default' \
+'--code=[The literal code to insert (ignored if action is '\''delete'\'')]:CODE:_default' \
+'--base-state-hash=[Optional\: The expected Merkle Root of the workspace state for optimistic concurrency control]:BASE_STATE_HASH:_default' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':uri -- The URI to edit:_default' \
+&& ret=0
+;;
+(diagram)
+_arguments "${_arguments_options[@]}" : \
+'*-u+[Symbol URIs to include as roots]:URIS:_default' \
+'*--uris=[Symbol URIs to include as roots]:URIS:_default' \
+'-r+[Path to the workspace root]:ROOT:_files' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-f+[Output format (ascii, svg, dot, mermaid)]:FORMAT:_default' \
+'--format=[Output format (ascii, svg, dot, mermaid)]:FORMAT:_default' \
+'--depth=[Traversal depth for dependencies]:DEPTH:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(dia)
+_arguments "${_arguments_options[@]}" : \
+'*-u+[Symbol URIs to include as roots]:URIS:_default' \
+'*--uris=[Symbol URIs to include as roots]:URIS:_default' \
+'-r+[Path to the workspace root]:ROOT:_files' \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-f+[Output format (ascii, svg, dot, mermaid)]:FORMAT:_default' \
+'--format=[Output format (ascii, svg, dot, mermaid)]:FORMAT:_default' \
+'--depth=[Traversal depth for dependencies]:DEPTH:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(session)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__session_commands" \
+"*::: :->session" \
+&& ret=0
+
+    case $state in
+    (session)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-session-command-$line[1]:"
+        case $line[1] in
+            (begin)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(review)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(log)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(commit)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(rollback)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__session__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-session-help-command-$line[1]:"
+        case $line[1] in
+            (begin)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(review)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(log)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(commit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rollback)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(ses)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__session_commands" \
+"*::: :->session" \
+&& ret=0
+
+    case $state in
+    (session)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-session-command-$line[1]:"
+        case $line[1] in
+            (begin)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(review)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(log)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(commit)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(rollback)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__session__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-session-help-command-$line[1]:"
+        case $line[1] in
+            (begin)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(review)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(log)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(commit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rollback)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plan_commands" \
+"*::: :->plan" \
+&& ret=0
+
+    case $state in
+    (plan)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plan-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(impl)
+_arguments "${_arguments_options[@]}" : \
+'--session=[The UUID of the active session this plan belongs to]:SESSION:_default' \
+'--dry-run[Perform a dry-run validation (simulate) instead of executing]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plan__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plan-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(impl)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(pln)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plan_commands" \
+"*::: :->plan" \
+&& ret=0
+
+    case $state in
+    (plan)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plan-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(impl)
+_arguments "${_arguments_options[@]}" : \
+'--session=[The UUID of the active session this plan belongs to]:SESSION:_default' \
+'--dry-run[Perform a dry-run validation (simulate) instead of executing]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plan__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plan-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(impl)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(p)
+_arguments "${_arguments_options[@]}" : \
+'--root=[Path to the workspace root]:ROOT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_curd__plan_commands" \
+"*::: :->plan" \
+&& ret=0
+
+    case $state in
+    (plan)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plan-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(impl)
+_arguments "${_arguments_options[@]}" : \
+'--session=[The UUID of the active session this plan belongs to]:SESSION:_default' \
+'--dry-run[Perform a dry-run validation (simulate) instead of executing]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':id -- The UUID of the plan:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__plan__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-plan-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(impl)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(index-worker)
+_arguments "${_arguments_options[@]}" : \
+'--request=[]:REQUEST:_files' \
+'--response=[]:RESPONSE:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(completions)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell -- The target shell:(bash elvish fish powershell zsh)' \
+&& ret=0
+;;
+(man)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(index)
+_arguments "${_arguments_options[@]}" : \
+'--max-total-ms=[Optional threshold\: fail when index total_ms exceeds this value]:MAX_TOTAL_MS:_default' \
+'--max-parse-fail=[Optional threshold\: fail when parse_fail count exceeds this value]:MAX_PARSE_FAIL:_default' \
+'--max-no-symbols-ratio=[Optional threshold\: fail when no_symbols/total_files exceeds this ratio (0.0..1.0)]:MAX_NO_SYMBOLS_RATIO:_default' \
+'--max-skipped-large-ratio=[Optional threshold\: fail when skipped_large/total_files exceeds this ratio (0.0..1.0)]:MAX_SKIPPED_LARGE_RATIO:_default' \
+'--min-coverage-ratio=[Optional threshold\: fail when coverage_ratio is below this value (0.0..1.0)]:MIN_COVERAGE_RATIO:_default' \
+'--require-coverage-state=[Optional threshold\: fail when coverage state does not match this exactly (e.g. '\''full'\'')]:REQUIRE_COVERAGE_STATE:_default' \
+'--min-symbol-count=[Optional threshold\: fail when total symbols found is below this count]:MIN_SYMBOL_COUNT:_default' \
+'--min-symbols-per-k-files=[Optional threshold\: fail when symbol density is below this value]:MIN_SYMBOLS_PER_K_FILES:_default' \
+'--min-overlap-with-full=[Optional threshold\: fail when overlap with full index is below this value]:MIN_OVERLAP_WITH_FULL:_default' \
+'--report-out=[Write report as JSON to this path]:REPORT_OUT:_files' \
+'--profile=[The profile of thresholds to apply ('\''ci_fast'\'' or '\''ci_strict'\''). Overrides config]:PROFILE:_default' \
+'--index-mode=[Optional index mode for this doctor run (e.g. '\''lazy'\'', '\''full'\'')]:INDEX_MODE:(lazy full)' \
+'--index-scope=[Optional index scope for this doctor run]:INDEX_SCOPE:(auto forced)' \
+'--index-max-file-size=[Optional max file size in bytes for this doctor run]:INDEX_MAX_FILE_SIZE:_default' \
+'--index-large-file-policy=[Optional large file policy for this doctor run]:INDEX_LARGE_FILE_POLICY:(skip skeleton full)' \
+'--index-execution=[Optional index execution model for this doctor run]:INDEX_EXECUTION:(multithreaded multiprocess singlethreaded)' \
+'--index-chunk-size=[Optional chunk size for multiprocess mode]:INDEX_CHUNK_SIZE:_default' \
+'--strict[Fail with non-zero status when warnings/findings are present]' \
+'--parity-rerun[Re-run the index build twice and ensure symbol counts and hashes match exactly]' \
+'--compare-with-full[Compare index contents against a '\''full'\'' mode run]' \
+'--profile-index[Run indexing multiple times to generate a performance profile]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(idx)
+_arguments "${_arguments_options[@]}" : \
+'--max-total-ms=[Optional threshold\: fail when index total_ms exceeds this value]:MAX_TOTAL_MS:_default' \
+'--max-parse-fail=[Optional threshold\: fail when parse_fail count exceeds this value]:MAX_PARSE_FAIL:_default' \
+'--max-no-symbols-ratio=[Optional threshold\: fail when no_symbols/total_files exceeds this ratio (0.0..1.0)]:MAX_NO_SYMBOLS_RATIO:_default' \
+'--max-skipped-large-ratio=[Optional threshold\: fail when skipped_large/total_files exceeds this ratio (0.0..1.0)]:MAX_SKIPPED_LARGE_RATIO:_default' \
+'--min-coverage-ratio=[Optional threshold\: fail when coverage_ratio is below this value (0.0..1.0)]:MIN_COVERAGE_RATIO:_default' \
+'--require-coverage-state=[Optional threshold\: fail when coverage state does not match this exactly (e.g. '\''full'\'')]:REQUIRE_COVERAGE_STATE:_default' \
+'--min-symbol-count=[Optional threshold\: fail when total symbols found is below this count]:MIN_SYMBOL_COUNT:_default' \
+'--min-symbols-per-k-files=[Optional threshold\: fail when symbol density is below this value]:MIN_SYMBOLS_PER_K_FILES:_default' \
+'--min-overlap-with-full=[Optional threshold\: fail when overlap with full index is below this value]:MIN_OVERLAP_WITH_FULL:_default' \
+'--report-out=[Write report as JSON to this path]:REPORT_OUT:_files' \
+'--profile=[The profile of thresholds to apply ('\''ci_fast'\'' or '\''ci_strict'\''). Overrides config]:PROFILE:_default' \
+'--index-mode=[Optional index mode for this doctor run (e.g. '\''lazy'\'', '\''full'\'')]:INDEX_MODE:(lazy full)' \
+'--index-scope=[Optional index scope for this doctor run]:INDEX_SCOPE:(auto forced)' \
+'--index-max-file-size=[Optional max file size in bytes for this doctor run]:INDEX_MAX_FILE_SIZE:_default' \
+'--index-large-file-policy=[Optional large file policy for this doctor run]:INDEX_LARGE_FILE_POLICY:(skip skeleton full)' \
+'--index-execution=[Optional index execution model for this doctor run]:INDEX_EXECUTION:(multithreaded multiprocess singlethreaded)' \
+'--index-chunk-size=[Optional chunk size for multiprocess mode]:INDEX_CHUNK_SIZE:_default' \
+'--strict[Fail with non-zero status when warnings/findings are present]' \
+'--parity-rerun[Re-run the index build twice and ensure symbol counts and hashes match exactly]' \
+'--compare-with-full[Compare index contents against a '\''full'\'' mode run]' \
+'--profile-index[Run indexing multiple times to generate a performance profile]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::root -- Path to the workspace root:_files' \
+&& ret=0
+;;
+(h)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-command-$line[1]:"
+        case $line[1] in
+            (mcp)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(init-agent)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(doctor)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(build)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(hook)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(diff)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(refactor)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help__refactor_commands" \
+"*::: :->refactor" \
+&& ret=0
+
+    case $state in
+    (refactor)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-refactor-command-$line[1]:"
+        case $line[1] in
+            (rename)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(move)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(extract)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(context)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help__context_commands" \
+"*::: :->context" \
+&& ret=0
+
+    case $state in
+    (context)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-context-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(init)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(config)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help__config_commands" \
+"*::: :->config" \
+&& ret=0
+
+    case $state in
+    (config)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-config-command-$line[1]:"
+        case $line[1] in
+            (show)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(unset)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(plugin-language)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help__plugin-language_commands" \
+"*::: :->plugin-language" \
+&& ret=0
+
+    case $state in
+    (plugin-language)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-plugin-language-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(plugin-tool)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help__plugin-tool_commands" \
+"*::: :->plugin-tool" \
+&& ret=0
+
+    case $state in
+    (plugin-tool)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-plugin-tool-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(plugin-trust)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help__plugin-trust_commands" \
+"*::: :->plugin-trust" \
+&& ret=0
+
+    case $state in
+    (plugin-trust)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-plugin-trust-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(enable)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(disable)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(detach)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(delete)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(status)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(log)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(repl)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(run)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(test)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(search)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(graph)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(diagram)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(session)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help__session_commands" \
+"*::: :->session" \
+&& ret=0
+
+    case $state in
+    (session)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-session-command-$line[1]:"
+        case $line[1] in
+            (begin)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(review)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(log)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(commit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rollback)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+":: :_curd__help__plan_commands" \
+"*::: :->plan" \
+&& ret=0
+
+    case $state in
+    (plan)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:curd-help-plan-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(read)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(edit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(impl)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(index-worker)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(completions)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(man)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(index)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(h)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_curd_commands] )) ||
+_curd_commands() {
+    local commands; commands=(
+'mcp:Start the Model Context Protocol (MCP) server over stdin/stdout' \
+'init-agent:Initialize and authorize a new agent keypair, auto-configuring a specified harness' \
+'ina:Initialize and authorize a new agent keypair, auto-configuring a specified harness' \
+'agt:Initialize and authorize a new agent keypair, auto-configuring a specified harness' \
+'doctor:Run built-in self diagnostics for indexing and regressions' \
+'dct:Run built-in self diagnostics for indexing and regressions' \
+'build:Build via CURD control plane (adapter-based dry-run/execute)' \
+'bld:Build via CURD control plane (adapter-based dry-run/execute)' \
+'b:Build via CURD control plane (adapter-based dry-run/execute)' \
+'hook:Print a shell hook to implicitly route standard commands (like '\''make'\'') through CURD' \
+'hok:Print a shell hook to implicitly route standard commands (like '\''make'\'') through CURD' \
+'diff:Compare symbols at AST level' \
+'dif:Compare symbols at AST level' \
+'refactor:Semantic refactoring engine' \
+'ref:Semantic refactoring engine' \
+'context:Manage external workspace contexts (Read-Only or Semantic linking)' \
+'ctx:Manage external workspace contexts (Read-Only or Semantic linking)' \
+'init:Initialize CURD workspace\: auto-detect build system, create .curd/ directory' \
+'ini:Initialize CURD workspace\: auto-detect build system, create .curd/ directory' \
+'config:Manage CURD configuration and policies' \
+'cfg:Manage CURD configuration and policies' \
+'plugin-language:Install, remove, or list signed language plugins (.curdl)' \
+'plang:Install, remove, or list signed language plugins (.curdl)' \
+'plugin-tool:Install, remove, or list signed tool plugins (.curdt)' \
+'ptool:Install, remove, or list signed tool plugins (.curdt)' \
+'plugin-trust:Manage trusted signing keys for CURD plugin packages' \
+'ptrust:Manage trusted signing keys for CURD plugin packages' \
+'detach:Soft detach CURD from the current workspace (removes git hooks and scrubs scripts)' \
+'det:Soft detach CURD from the current workspace (removes git hooks and scrubs scripts)' \
+'delete:Permanently delete CURD from the current workspace by removing the .curd/ directory' \
+'del:Permanently delete CURD from the current workspace by removing the .curd/ directory' \
+'status:Print a summary of the current workspace state (index stats, shadow changes, etc.)' \
+'st:Print a summary of the current workspace state (index stats, shadow changes, etc.)' \
+'sts:Print a summary of the current workspace state (index stats, shadow changes, etc.)' \
+'log:Tail the agent'\''s mutation and execution history' \
+'repl:Start the interactive CURD REPL for semantic exploration' \
+'rpl:Start the interactive CURD REPL for semantic exploration' \
+'run:Run a .curd script by compiling it to the current DSL IR' \
+'test:Run semantic integrity tests on the symbol graph' \
+'tst:Run semantic integrity tests on the symbol graph' \
+'search:Semantic search across the indexed graph' \
+'sch:Semantic search across the indexed graph' \
+'s:Semantic search across the indexed graph' \
+'graph:Explore the caller/callee dependency graph of a symbol' \
+'g:Explore the caller/callee dependency graph of a symbol' \
+'read:Read a file or semantic symbol exactly as the engine parses it' \
+'red:Read a file or semantic symbol exactly as the engine parses it' \
+'edit:Manually mutate a file or symbol via the AST-aware EditEngine' \
+'edt:Manually mutate a file or symbol via the AST-aware EditEngine' \
+'e:Manually mutate a file or symbol via the AST-aware EditEngine' \
+'diagram:Generate diagrams from the symbol graph' \
+'dia:Generate diagrams from the symbol graph' \
+'session:Manage manual ShadowStore transaction sessions' \
+'ses:Manage manual ShadowStore transaction sessions' \
+'plan:Manage, inspect, and execute saved AI plans' \
+'pln:Manage, inspect, and execute saved AI plans' \
+'p:Manage, inspect, and execute saved AI plans' \
+'index-worker:' \
+'completions:Generate shell completion scripts' \
+'man:Generate man pages' \
+'index:Alias for curd doctor indexing' \
+'idx:Alias for curd doctor indexing' \
+'h:Show help for CURD' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd commands' commands "$@"
+}
+(( $+functions[_curd__build_commands] )) ||
+_curd__build_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd build commands' commands "$@"
+}
+(( $+functions[_curd__completions_commands] )) ||
+_curd__completions_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd completions commands' commands "$@"
+}
+(( $+functions[_curd__config_commands] )) ||
+_curd__config_commands() {
+    local commands; commands=(
+'show:Show current workspace configuration' \
+'set:Set a configuration value (e.g. \`set index.mode fast\`)' \
+'unset:Remove a configuration value' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd config commands' commands "$@"
+}
+(( $+functions[_curd__config__help_commands] )) ||
+_curd__config__help_commands() {
+    local commands; commands=(
+'show:Show current workspace configuration' \
+'set:Set a configuration value (e.g. \`set index.mode fast\`)' \
+'unset:Remove a configuration value' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd config help commands' commands "$@"
+}
+(( $+functions[_curd__config__help__help_commands] )) ||
+_curd__config__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd config help help commands' commands "$@"
+}
+(( $+functions[_curd__config__help__set_commands] )) ||
+_curd__config__help__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd config help set commands' commands "$@"
+}
+(( $+functions[_curd__config__help__show_commands] )) ||
+_curd__config__help__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd config help show commands' commands "$@"
+}
+(( $+functions[_curd__config__help__unset_commands] )) ||
+_curd__config__help__unset_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd config help unset commands' commands "$@"
+}
+(( $+functions[_curd__config__set_commands] )) ||
+_curd__config__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd config set commands' commands "$@"
+}
+(( $+functions[_curd__config__show_commands] )) ||
+_curd__config__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd config show commands' commands "$@"
+}
+(( $+functions[_curd__config__unset_commands] )) ||
+_curd__config__unset_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd config unset commands' commands "$@"
+}
+(( $+functions[_curd__context_commands] )) ||
+_curd__context_commands() {
+    local commands; commands=(
+'add:Add an external repository context' \
+'remove:Remove a linked context by alias or path' \
+'list:List all currently linked contexts' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd context commands' commands "$@"
+}
+(( $+functions[_curd__context__add_commands] )) ||
+_curd__context__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd context add commands' commands "$@"
+}
+(( $+functions[_curd__context__help_commands] )) ||
+_curd__context__help_commands() {
+    local commands; commands=(
+'add:Add an external repository context' \
+'remove:Remove a linked context by alias or path' \
+'list:List all currently linked contexts' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd context help commands' commands "$@"
+}
+(( $+functions[_curd__context__help__add_commands] )) ||
+_curd__context__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd context help add commands' commands "$@"
+}
+(( $+functions[_curd__context__help__help_commands] )) ||
+_curd__context__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd context help help commands' commands "$@"
+}
+(( $+functions[_curd__context__help__list_commands] )) ||
+_curd__context__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd context help list commands' commands "$@"
+}
+(( $+functions[_curd__context__help__remove_commands] )) ||
+_curd__context__help__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd context help remove commands' commands "$@"
+}
+(( $+functions[_curd__context__list_commands] )) ||
+_curd__context__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd context list commands' commands "$@"
+}
+(( $+functions[_curd__context__remove_commands] )) ||
+_curd__context__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd context remove commands' commands "$@"
+}
+(( $+functions[_curd__delete_commands] )) ||
+_curd__delete_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd delete commands' commands "$@"
+}
+(( $+functions[_curd__detach_commands] )) ||
+_curd__detach_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd detach commands' commands "$@"
+}
+(( $+functions[_curd__diagram_commands] )) ||
+_curd__diagram_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd diagram commands' commands "$@"
+}
+(( $+functions[_curd__diff_commands] )) ||
+_curd__diff_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd diff commands' commands "$@"
+}
+(( $+functions[_curd__doctor_commands] )) ||
+_curd__doctor_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd doctor commands' commands "$@"
+}
+(( $+functions[_curd__edit_commands] )) ||
+_curd__edit_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd edit commands' commands "$@"
+}
+(( $+functions[_curd__graph_commands] )) ||
+_curd__graph_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd graph commands' commands "$@"
+}
+(( $+functions[_curd__h_commands] )) ||
+_curd__h_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd h commands' commands "$@"
+}
+(( $+functions[_curd__help_commands] )) ||
+_curd__help_commands() {
+    local commands; commands=(
+'mcp:Start the Model Context Protocol (MCP) server over stdin/stdout' \
+'init-agent:Initialize and authorize a new agent keypair, auto-configuring a specified harness' \
+'doctor:Run built-in self diagnostics for indexing and regressions' \
+'build:Build via CURD control plane (adapter-based dry-run/execute)' \
+'hook:Print a shell hook to implicitly route standard commands (like '\''make'\'') through CURD' \
+'diff:Compare symbols at AST level' \
+'refactor:Semantic refactoring engine' \
+'context:Manage external workspace contexts (Read-Only or Semantic linking)' \
+'init:Initialize CURD workspace\: auto-detect build system, create .curd/ directory' \
+'config:Manage CURD configuration and policies' \
+'plugin-language:Install, remove, or list signed language plugins (.curdl)' \
+'plugin-tool:Install, remove, or list signed tool plugins (.curdt)' \
+'plugin-trust:Manage trusted signing keys for CURD plugin packages' \
+'detach:Soft detach CURD from the current workspace (removes git hooks and scrubs scripts)' \
+'delete:Permanently delete CURD from the current workspace by removing the .curd/ directory' \
+'status:Print a summary of the current workspace state (index stats, shadow changes, etc.)' \
+'log:Tail the agent'\''s mutation and execution history' \
+'repl:Start the interactive CURD REPL for semantic exploration' \
+'run:Run a .curd script by compiling it to the current DSL IR' \
+'test:Run semantic integrity tests on the symbol graph' \
+'search:Semantic search across the indexed graph' \
+'graph:Explore the caller/callee dependency graph of a symbol' \
+'read:Read a file or semantic symbol exactly as the engine parses it' \
+'edit:Manually mutate a file or symbol via the AST-aware EditEngine' \
+'diagram:Generate diagrams from the symbol graph' \
+'session:Manage manual ShadowStore transaction sessions' \
+'plan:Manage, inspect, and execute saved AI plans' \
+'index-worker:' \
+'completions:Generate shell completion scripts' \
+'man:Generate man pages' \
+'index:Alias for curd doctor indexing' \
+'h:Show help for CURD' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd help commands' commands "$@"
+}
+(( $+functions[_curd__help__build_commands] )) ||
+_curd__help__build_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help build commands' commands "$@"
+}
+(( $+functions[_curd__help__completions_commands] )) ||
+_curd__help__completions_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help completions commands' commands "$@"
+}
+(( $+functions[_curd__help__config_commands] )) ||
+_curd__help__config_commands() {
+    local commands; commands=(
+'show:Show current workspace configuration' \
+'set:Set a configuration value (e.g. \`set index.mode fast\`)' \
+'unset:Remove a configuration value' \
+    )
+    _describe -t commands 'curd help config commands' commands "$@"
+}
+(( $+functions[_curd__help__config__set_commands] )) ||
+_curd__help__config__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help config set commands' commands "$@"
+}
+(( $+functions[_curd__help__config__show_commands] )) ||
+_curd__help__config__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help config show commands' commands "$@"
+}
+(( $+functions[_curd__help__config__unset_commands] )) ||
+_curd__help__config__unset_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help config unset commands' commands "$@"
+}
+(( $+functions[_curd__help__context_commands] )) ||
+_curd__help__context_commands() {
+    local commands; commands=(
+'add:Add an external repository context' \
+'remove:Remove a linked context by alias or path' \
+'list:List all currently linked contexts' \
+    )
+    _describe -t commands 'curd help context commands' commands "$@"
+}
+(( $+functions[_curd__help__context__add_commands] )) ||
+_curd__help__context__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help context add commands' commands "$@"
+}
+(( $+functions[_curd__help__context__list_commands] )) ||
+_curd__help__context__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help context list commands' commands "$@"
+}
+(( $+functions[_curd__help__context__remove_commands] )) ||
+_curd__help__context__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help context remove commands' commands "$@"
+}
+(( $+functions[_curd__help__delete_commands] )) ||
+_curd__help__delete_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help delete commands' commands "$@"
+}
+(( $+functions[_curd__help__detach_commands] )) ||
+_curd__help__detach_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help detach commands' commands "$@"
+}
+(( $+functions[_curd__help__diagram_commands] )) ||
+_curd__help__diagram_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help diagram commands' commands "$@"
+}
+(( $+functions[_curd__help__diff_commands] )) ||
+_curd__help__diff_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help diff commands' commands "$@"
+}
+(( $+functions[_curd__help__doctor_commands] )) ||
+_curd__help__doctor_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help doctor commands' commands "$@"
+}
+(( $+functions[_curd__help__edit_commands] )) ||
+_curd__help__edit_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help edit commands' commands "$@"
+}
+(( $+functions[_curd__help__graph_commands] )) ||
+_curd__help__graph_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help graph commands' commands "$@"
+}
+(( $+functions[_curd__help__h_commands] )) ||
+_curd__help__h_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help h commands' commands "$@"
+}
+(( $+functions[_curd__help__help_commands] )) ||
+_curd__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help help commands' commands "$@"
+}
+(( $+functions[_curd__help__hook_commands] )) ||
+_curd__help__hook_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help hook commands' commands "$@"
+}
+(( $+functions[_curd__help__index_commands] )) ||
+_curd__help__index_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help index commands' commands "$@"
+}
+(( $+functions[_curd__help__index-worker_commands] )) ||
+_curd__help__index-worker_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help index-worker commands' commands "$@"
+}
+(( $+functions[_curd__help__init_commands] )) ||
+_curd__help__init_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help init commands' commands "$@"
+}
+(( $+functions[_curd__help__init-agent_commands] )) ||
+_curd__help__init-agent_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help init-agent commands' commands "$@"
+}
+(( $+functions[_curd__help__log_commands] )) ||
+_curd__help__log_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help log commands' commands "$@"
+}
+(( $+functions[_curd__help__man_commands] )) ||
+_curd__help__man_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help man commands' commands "$@"
+}
+(( $+functions[_curd__help__mcp_commands] )) ||
+_curd__help__mcp_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help mcp commands' commands "$@"
+}
+(( $+functions[_curd__help__plan_commands] )) ||
+_curd__help__plan_commands() {
+    local commands; commands=(
+'list:List all saved plans in the workspace' \
+'read:Read a specific plan and format it as a readable execution tree' \
+'edit:Edit a saved plan or compiled script artifact interactively' \
+'impl:Execute a saved plan' \
+    )
+    _describe -t commands 'curd help plan commands' commands "$@"
+}
+(( $+functions[_curd__help__plan__edit_commands] )) ||
+_curd__help__plan__edit_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plan edit commands' commands "$@"
+}
+(( $+functions[_curd__help__plan__impl_commands] )) ||
+_curd__help__plan__impl_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plan impl commands' commands "$@"
+}
+(( $+functions[_curd__help__plan__list_commands] )) ||
+_curd__help__plan__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plan list commands' commands "$@"
+}
+(( $+functions[_curd__help__plan__read_commands] )) ||
+_curd__help__plan__read_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plan read commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-language_commands] )) ||
+_curd__help__plugin-language_commands() {
+    local commands; commands=(
+'list:List installed plugin packages' \
+'add:Install a signed plugin archive' \
+'remove:Remove an installed plugin package' \
+    )
+    _describe -t commands 'curd help plugin-language commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-language__add_commands] )) ||
+_curd__help__plugin-language__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-language add commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-language__list_commands] )) ||
+_curd__help__plugin-language__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-language list commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-language__remove_commands] )) ||
+_curd__help__plugin-language__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-language remove commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-tool_commands] )) ||
+_curd__help__plugin-tool_commands() {
+    local commands; commands=(
+'list:List installed plugin packages' \
+'add:Install a signed plugin archive' \
+'remove:Remove an installed plugin package' \
+    )
+    _describe -t commands 'curd help plugin-tool commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-tool__add_commands] )) ||
+_curd__help__plugin-tool__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-tool add commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-tool__list_commands] )) ||
+_curd__help__plugin-tool__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-tool list commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-tool__remove_commands] )) ||
+_curd__help__plugin-tool__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-tool remove commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-trust_commands] )) ||
+_curd__help__plugin-trust_commands() {
+    local commands; commands=(
+'list:List trusted signing keys' \
+'get:Get one trusted signing key' \
+'add:Add or replace a trusted signing key' \
+'remove:Remove a trusted signing key' \
+'enable:Enable a trusted signing key' \
+'disable:Disable a trusted signing key' \
+    )
+    _describe -t commands 'curd help plugin-trust commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-trust__add_commands] )) ||
+_curd__help__plugin-trust__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-trust add commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-trust__disable_commands] )) ||
+_curd__help__plugin-trust__disable_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-trust disable commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-trust__enable_commands] )) ||
+_curd__help__plugin-trust__enable_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-trust enable commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-trust__get_commands] )) ||
+_curd__help__plugin-trust__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-trust get commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-trust__list_commands] )) ||
+_curd__help__plugin-trust__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-trust list commands' commands "$@"
+}
+(( $+functions[_curd__help__plugin-trust__remove_commands] )) ||
+_curd__help__plugin-trust__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help plugin-trust remove commands' commands "$@"
+}
+(( $+functions[_curd__help__read_commands] )) ||
+_curd__help__read_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help read commands' commands "$@"
+}
+(( $+functions[_curd__help__refactor_commands] )) ||
+_curd__help__refactor_commands() {
+    local commands; commands=(
+'rename:Rename a function/class/variable' \
+'move:Move a function between files' \
+'extract:Extract code into a new function' \
+    )
+    _describe -t commands 'curd help refactor commands' commands "$@"
+}
+(( $+functions[_curd__help__refactor__extract_commands] )) ||
+_curd__help__refactor__extract_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help refactor extract commands' commands "$@"
+}
+(( $+functions[_curd__help__refactor__move_commands] )) ||
+_curd__help__refactor__move_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help refactor move commands' commands "$@"
+}
+(( $+functions[_curd__help__refactor__rename_commands] )) ||
+_curd__help__refactor__rename_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help refactor rename commands' commands "$@"
+}
+(( $+functions[_curd__help__repl_commands] )) ||
+_curd__help__repl_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help repl commands' commands "$@"
+}
+(( $+functions[_curd__help__run_commands] )) ||
+_curd__help__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help run commands' commands "$@"
+}
+(( $+functions[_curd__help__search_commands] )) ||
+_curd__help__search_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help search commands' commands "$@"
+}
+(( $+functions[_curd__help__session_commands] )) ||
+_curd__help__session_commands() {
+    local commands; commands=(
+'begin:Open a new shadow transaction' \
+'review:View changes and architectural impact of the current session' \
+'log:View a detailed log of all tool calls and their results' \
+'commit:Commit the active shadow transaction to disk' \
+'rollback:Discard the active shadow transaction' \
+    )
+    _describe -t commands 'curd help session commands' commands "$@"
+}
+(( $+functions[_curd__help__session__begin_commands] )) ||
+_curd__help__session__begin_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help session begin commands' commands "$@"
+}
+(( $+functions[_curd__help__session__commit_commands] )) ||
+_curd__help__session__commit_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help session commit commands' commands "$@"
+}
+(( $+functions[_curd__help__session__log_commands] )) ||
+_curd__help__session__log_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help session log commands' commands "$@"
+}
+(( $+functions[_curd__help__session__review_commands] )) ||
+_curd__help__session__review_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help session review commands' commands "$@"
+}
+(( $+functions[_curd__help__session__rollback_commands] )) ||
+_curd__help__session__rollback_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help session rollback commands' commands "$@"
+}
+(( $+functions[_curd__help__status_commands] )) ||
+_curd__help__status_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help status commands' commands "$@"
+}
+(( $+functions[_curd__help__test_commands] )) ||
+_curd__help__test_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd help test commands' commands "$@"
+}
+(( $+functions[_curd__hook_commands] )) ||
+_curd__hook_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd hook commands' commands "$@"
+}
+(( $+functions[_curd__index_commands] )) ||
+_curd__index_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd index commands' commands "$@"
+}
+(( $+functions[_curd__index-worker_commands] )) ||
+_curd__index-worker_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd index-worker commands' commands "$@"
+}
+(( $+functions[_curd__init_commands] )) ||
+_curd__init_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd init commands' commands "$@"
+}
+(( $+functions[_curd__init-agent_commands] )) ||
+_curd__init-agent_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd init-agent commands' commands "$@"
+}
+(( $+functions[_curd__log_commands] )) ||
+_curd__log_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd log commands' commands "$@"
+}
+(( $+functions[_curd__man_commands] )) ||
+_curd__man_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd man commands' commands "$@"
+}
+(( $+functions[_curd__mcp_commands] )) ||
+_curd__mcp_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd mcp commands' commands "$@"
+}
+(( $+functions[_curd__plan_commands] )) ||
+_curd__plan_commands() {
+    local commands; commands=(
+'list:List all saved plans in the workspace' \
+'read:Read a specific plan and format it as a readable execution tree' \
+'edit:Edit a saved plan or compiled script artifact interactively' \
+'impl:Execute a saved plan' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd plan commands' commands "$@"
+}
+(( $+functions[_curd__plan__edit_commands] )) ||
+_curd__plan__edit_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan edit commands' commands "$@"
+}
+(( $+functions[_curd__plan__help_commands] )) ||
+_curd__plan__help_commands() {
+    local commands; commands=(
+'list:List all saved plans in the workspace' \
+'read:Read a specific plan and format it as a readable execution tree' \
+'edit:Edit a saved plan or compiled script artifact interactively' \
+'impl:Execute a saved plan' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd plan help commands' commands "$@"
+}
+(( $+functions[_curd__plan__help__edit_commands] )) ||
+_curd__plan__help__edit_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan help edit commands' commands "$@"
+}
+(( $+functions[_curd__plan__help__help_commands] )) ||
+_curd__plan__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan help help commands' commands "$@"
+}
+(( $+functions[_curd__plan__help__impl_commands] )) ||
+_curd__plan__help__impl_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan help impl commands' commands "$@"
+}
+(( $+functions[_curd__plan__help__list_commands] )) ||
+_curd__plan__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan help list commands' commands "$@"
+}
+(( $+functions[_curd__plan__help__read_commands] )) ||
+_curd__plan__help__read_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan help read commands' commands "$@"
+}
+(( $+functions[_curd__plan__impl_commands] )) ||
+_curd__plan__impl_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan impl commands' commands "$@"
+}
+(( $+functions[_curd__plan__list_commands] )) ||
+_curd__plan__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan list commands' commands "$@"
+}
+(( $+functions[_curd__plan__read_commands] )) ||
+_curd__plan__read_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plan read commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language_commands] )) ||
+_curd__plugin-language_commands() {
+    local commands; commands=(
+'list:List installed plugin packages' \
+'add:Install a signed plugin archive' \
+'remove:Remove an installed plugin package' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd plugin-language commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language__add_commands] )) ||
+_curd__plugin-language__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-language add commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language__help_commands] )) ||
+_curd__plugin-language__help_commands() {
+    local commands; commands=(
+'list:List installed plugin packages' \
+'add:Install a signed plugin archive' \
+'remove:Remove an installed plugin package' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd plugin-language help commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language__help__add_commands] )) ||
+_curd__plugin-language__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-language help add commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language__help__help_commands] )) ||
+_curd__plugin-language__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-language help help commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language__help__list_commands] )) ||
+_curd__plugin-language__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-language help list commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language__help__remove_commands] )) ||
+_curd__plugin-language__help__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-language help remove commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language__list_commands] )) ||
+_curd__plugin-language__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-language list commands' commands "$@"
+}
+(( $+functions[_curd__plugin-language__remove_commands] )) ||
+_curd__plugin-language__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-language remove commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool_commands] )) ||
+_curd__plugin-tool_commands() {
+    local commands; commands=(
+'list:List installed plugin packages' \
+'add:Install a signed plugin archive' \
+'remove:Remove an installed plugin package' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd plugin-tool commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool__add_commands] )) ||
+_curd__plugin-tool__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-tool add commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool__help_commands] )) ||
+_curd__plugin-tool__help_commands() {
+    local commands; commands=(
+'list:List installed plugin packages' \
+'add:Install a signed plugin archive' \
+'remove:Remove an installed plugin package' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd plugin-tool help commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool__help__add_commands] )) ||
+_curd__plugin-tool__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-tool help add commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool__help__help_commands] )) ||
+_curd__plugin-tool__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-tool help help commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool__help__list_commands] )) ||
+_curd__plugin-tool__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-tool help list commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool__help__remove_commands] )) ||
+_curd__plugin-tool__help__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-tool help remove commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool__list_commands] )) ||
+_curd__plugin-tool__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-tool list commands' commands "$@"
+}
+(( $+functions[_curd__plugin-tool__remove_commands] )) ||
+_curd__plugin-tool__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-tool remove commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust_commands] )) ||
+_curd__plugin-trust_commands() {
+    local commands; commands=(
+'list:List trusted signing keys' \
+'get:Get one trusted signing key' \
+'add:Add or replace a trusted signing key' \
+'remove:Remove a trusted signing key' \
+'enable:Enable a trusted signing key' \
+'disable:Disable a trusted signing key' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd plugin-trust commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__add_commands] )) ||
+_curd__plugin-trust__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust add commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__disable_commands] )) ||
+_curd__plugin-trust__disable_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust disable commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__enable_commands] )) ||
+_curd__plugin-trust__enable_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust enable commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__get_commands] )) ||
+_curd__plugin-trust__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust get commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__help_commands] )) ||
+_curd__plugin-trust__help_commands() {
+    local commands; commands=(
+'list:List trusted signing keys' \
+'get:Get one trusted signing key' \
+'add:Add or replace a trusted signing key' \
+'remove:Remove a trusted signing key' \
+'enable:Enable a trusted signing key' \
+'disable:Disable a trusted signing key' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd plugin-trust help commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__help__add_commands] )) ||
+_curd__plugin-trust__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust help add commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__help__disable_commands] )) ||
+_curd__plugin-trust__help__disable_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust help disable commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__help__enable_commands] )) ||
+_curd__plugin-trust__help__enable_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust help enable commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__help__get_commands] )) ||
+_curd__plugin-trust__help__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust help get commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__help__help_commands] )) ||
+_curd__plugin-trust__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust help help commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__help__list_commands] )) ||
+_curd__plugin-trust__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust help list commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__help__remove_commands] )) ||
+_curd__plugin-trust__help__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust help remove commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__list_commands] )) ||
+_curd__plugin-trust__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust list commands' commands "$@"
+}
+(( $+functions[_curd__plugin-trust__remove_commands] )) ||
+_curd__plugin-trust__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd plugin-trust remove commands' commands "$@"
+}
+(( $+functions[_curd__read_commands] )) ||
+_curd__read_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd read commands' commands "$@"
+}
+(( $+functions[_curd__refactor_commands] )) ||
+_curd__refactor_commands() {
+    local commands; commands=(
+'rename:Rename a function/class/variable' \
+'move:Move a function between files' \
+'extract:Extract code into a new function' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd refactor commands' commands "$@"
+}
+(( $+functions[_curd__refactor__extract_commands] )) ||
+_curd__refactor__extract_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd refactor extract commands' commands "$@"
+}
+(( $+functions[_curd__refactor__help_commands] )) ||
+_curd__refactor__help_commands() {
+    local commands; commands=(
+'rename:Rename a function/class/variable' \
+'move:Move a function between files' \
+'extract:Extract code into a new function' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd refactor help commands' commands "$@"
+}
+(( $+functions[_curd__refactor__help__extract_commands] )) ||
+_curd__refactor__help__extract_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd refactor help extract commands' commands "$@"
+}
+(( $+functions[_curd__refactor__help__help_commands] )) ||
+_curd__refactor__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd refactor help help commands' commands "$@"
+}
+(( $+functions[_curd__refactor__help__move_commands] )) ||
+_curd__refactor__help__move_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd refactor help move commands' commands "$@"
+}
+(( $+functions[_curd__refactor__help__rename_commands] )) ||
+_curd__refactor__help__rename_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd refactor help rename commands' commands "$@"
+}
+(( $+functions[_curd__refactor__move_commands] )) ||
+_curd__refactor__move_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd refactor move commands' commands "$@"
+}
+(( $+functions[_curd__refactor__rename_commands] )) ||
+_curd__refactor__rename_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd refactor rename commands' commands "$@"
+}
+(( $+functions[_curd__repl_commands] )) ||
+_curd__repl_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd repl commands' commands "$@"
+}
+(( $+functions[_curd__run_commands] )) ||
+_curd__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd run commands' commands "$@"
+}
+(( $+functions[_curd__search_commands] )) ||
+_curd__search_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd search commands' commands "$@"
+}
+(( $+functions[_curd__session_commands] )) ||
+_curd__session_commands() {
+    local commands; commands=(
+'begin:Open a new shadow transaction' \
+'review:View changes and architectural impact of the current session' \
+'log:View a detailed log of all tool calls and their results' \
+'commit:Commit the active shadow transaction to disk' \
+'rollback:Discard the active shadow transaction' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd session commands' commands "$@"
+}
+(( $+functions[_curd__session__begin_commands] )) ||
+_curd__session__begin_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session begin commands' commands "$@"
+}
+(( $+functions[_curd__session__commit_commands] )) ||
+_curd__session__commit_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session commit commands' commands "$@"
+}
+(( $+functions[_curd__session__help_commands] )) ||
+_curd__session__help_commands() {
+    local commands; commands=(
+'begin:Open a new shadow transaction' \
+'review:View changes and architectural impact of the current session' \
+'log:View a detailed log of all tool calls and their results' \
+'commit:Commit the active shadow transaction to disk' \
+'rollback:Discard the active shadow transaction' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'curd session help commands' commands "$@"
+}
+(( $+functions[_curd__session__help__begin_commands] )) ||
+_curd__session__help__begin_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session help begin commands' commands "$@"
+}
+(( $+functions[_curd__session__help__commit_commands] )) ||
+_curd__session__help__commit_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session help commit commands' commands "$@"
+}
+(( $+functions[_curd__session__help__help_commands] )) ||
+_curd__session__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session help help commands' commands "$@"
+}
+(( $+functions[_curd__session__help__log_commands] )) ||
+_curd__session__help__log_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session help log commands' commands "$@"
+}
+(( $+functions[_curd__session__help__review_commands] )) ||
+_curd__session__help__review_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session help review commands' commands "$@"
+}
+(( $+functions[_curd__session__help__rollback_commands] )) ||
+_curd__session__help__rollback_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session help rollback commands' commands "$@"
+}
+(( $+functions[_curd__session__log_commands] )) ||
+_curd__session__log_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session log commands' commands "$@"
+}
+(( $+functions[_curd__session__review_commands] )) ||
+_curd__session__review_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session review commands' commands "$@"
+}
+(( $+functions[_curd__session__rollback_commands] )) ||
+_curd__session__rollback_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd session rollback commands' commands "$@"
+}
+(( $+functions[_curd__status_commands] )) ||
+_curd__status_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd status commands' commands "$@"
+}
+(( $+functions[_curd__test_commands] )) ||
+_curd__test_commands() {
+    local commands; commands=()
+    _describe -t commands 'curd test commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_curd" ]; then
+    _curd "$@"
+else
+    compdef _curd curd
+fi

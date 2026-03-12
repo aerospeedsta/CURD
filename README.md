@@ -209,40 +209,45 @@ This release also wires `.curdl` `build_system` metadata into real build detecti
 
 ## Installation
 
-### Source
+CURD is distributed via native OS packages, language-bound wrappers, and container images.
+
+### Native OS Package Managers
+
+| OS | Method | Command |
+| :--- | :--- | :--- |
+| **macOS / Linux** | **Homebrew** | `brew tap aerospeedsta/curd && brew install curd` |
+| **Windows** | **Winget** | `winget install curd` |
+| **Windows** | **Scoop** | `scoop bucket add curd https://github.com/aerospeedsta/curd-scoop.git && scoop install curd` |
+| **Arch Linux** | **AUR** | `paru -S curd-bin` |
+| **Debian / Ubuntu** | **APT** | `sudo dpkg -i curd_amd64.deb` (Download from GitHub Releases) |
+| **Fedora / RHEL** | **DNF** | `sudo rpm -i curd_x86_64.rpm` (Download from GitHub Releases) |
+
+### Wrapper Launchers (Instant Run)
+
+Run CURD instantly without system-level installation using our language wrappers:
 
 ```bash
-cargo build --release
+# Python (via uvx)
+uvx --from curd-python curd --version
+
+# Node.js (via bunx)
+bunx --bun curd-node --version
 ```
 
-### Python binding
+### Containerized MCP
+
+Serve the CURD MCP server via Docker:
 
 ```bash
-cd curd-python
-uv pip install .
+docker run -it --rm -v $(pwd):/workspace aerospeedsta/curd:latest
 ```
 
-### Node binding
+### Language Bindings
 
-```bash
-cd curd-node
-bun install
-```
+- **Python**: `pip install curd-python`
+- **Node.js**: `npm install curd-node`
 
-### Latest release binaries
-
-For public docs and quick installs, prefer GitHub latest-release links:
-
-- Linux x86_64: `https://github.com/bharath/CURD/releases/latest/download/curd-linux-x86_64.tar.gz`
-- Linux aarch64: `https://github.com/bharath/CURD/releases/latest/download/curd-linux-aarch64.tar.gz`
-- Linux x86_64 static: `https://github.com/bharath/CURD/releases/latest/download/curd-linux-x86_64-static.tar.gz`
-- Linux aarch64 static: `https://github.com/bharath/CURD/releases/latest/download/curd-linux-aarch64-static.tar.gz`
-- Windows x64: `https://github.com/bharath/CURD/releases/latest/download/curd-win-x64.zip`
-- Windows arm64: `https://github.com/bharath/CURD/releases/latest/download/curd-win-arm64.zip`
-
-Package-manager and launcher guidance is documented in:
-
-- [docs/PACKAGE_MANAGERS.md](docs/PACKAGE_MANAGERS.md)
+For manual pre-compiled binaries and advanced setup, visit [curd.aerospeedsta.dev/setup](https://curd.aerospeedsta.dev/setup).
 
 ## Documentation
 

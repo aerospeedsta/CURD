@@ -1,2 +1,2 @@
 #!/bin/bash
-exec /Users/bharath/workshop/expts/CURD/scripts/bin/zigcc -target aarch64-linux-musl "$@"
+exec "$(dirname "$0")/zigcc" -target aarch64-linux-musl "$@"

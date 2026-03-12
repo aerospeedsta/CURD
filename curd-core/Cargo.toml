@@ -2,6 +2,11 @@
 name = "curd-core"
 version = "0.7.1-beta"
 edition = "2024"
+description = "Core engines for the CURD semantic code intelligence plane"
+license = "GPL-3.0-or-later"
+authors = ["Aerospeedsta <dev@aerospeedsta.dev>"]
+repository = "https://github.com/aerospeedsta/CURD"
+documentation = "https://curd.aerospeedsta.dev"
 
 [dependencies]
 tree-sitter = { version = "0.25", features = ["wasm"] }

@@ -369,6 +369,14 @@ enum Commands {
         #[arg(long)]
         response: PathBuf,
     },
+    /// Generate shell completion scripts
+    Completions {
+        /// The target shell
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Generate man pages
+    Man,
     /// Alias for curd doctor indexing
     #[cfg(feature = "core")]
     #[command(visible_alias = "idx")]
@@ -662,6 +670,22 @@ async fn main() -> Result<()> {
             let resolved = resolve_workspace_root(root);
             enforce_workspace_config(&resolved)?;
             init::init_agent(name.as_deref(), harness.as_deref(), &resolved)
+        }
+        Some(Commands::Completions { shell }) => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            let bin_name = cmd.get_name().to_string();
+            clap_complete::generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
+            Ok(())
+        }
+        Some(Commands::Man) => {
+            use clap::CommandFactory;
+            let cmd = Cli::command();
+            let man = clap_mangen::Man::new(cmd);
+            let mut buffer: Vec<u8> = Default::default();
+            man.render(&mut buffer)?;
+            std::io::Write::write_all(&mut std::io::stdout(), &buffer)?;
+            Ok(())
         }
         #[cfg(feature = "core")]
         Some(Commands::Doctor(args)) | Some(Commands::Index(args)) => {

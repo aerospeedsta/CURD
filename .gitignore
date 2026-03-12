@@ -26,3 +26,4 @@ curd-proposals/
 .curd-grammars/
 curd-cli/curd
 dist/
+pkg/

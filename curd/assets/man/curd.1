@@ -1,0 +1,117 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH curd 1  "curd 0.7.1-beta" 
+.SH NAME
+curd \- A high\-performance deterministic semantic code execution engine
+.SH SYNOPSIS
+\fBcurd\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fILEGACY_ROOT\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+A high\-performance deterministic semantic code execution engine
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+curd\-mcp(1)
+Start the Model Context Protocol (MCP) server over stdin/stdout
+.TP
+curd\-init\-agent(1)
+Initialize and authorize a new agent keypair, auto\-configuring a specified harness
+.TP
+curd\-doctor(1)
+Run built\-in self diagnostics for indexing and regressions
+.TP
+curd\-build(1)
+Build via CURD control plane (adapter\-based dry\-run/execute)
+.TP
+curd\-hook(1)
+Print a shell hook to implicitly route standard commands (like \*(Aqmake\*(Aq) through CURD
+.TP
+curd\-diff(1)
+Compare symbols at AST level
+.TP
+curd\-refactor(1)
+Semantic refactoring engine
+.TP
+curd\-context(1)
+Manage external workspace contexts (Read\-Only or Semantic linking)
+.TP
+curd\-init(1)
+Initialize CURD workspace: auto\-detect build system, create .curd/ directory
+.TP
+curd\-config(1)
+Manage CURD configuration and policies
+.TP
+curd\-plugin\-language(1)
+Install, remove, or list signed language plugins (.curdl)
+.TP
+curd\-plugin\-tool(1)
+Install, remove, or list signed tool plugins (.curdt)
+.TP
+curd\-plugin\-trust(1)
+Manage trusted signing keys for CURD plugin packages
+.TP
+curd\-detach(1)
+Soft detach CURD from the current workspace (removes git hooks and scrubs scripts)
+.TP
+curd\-delete(1)
+Permanently delete CURD from the current workspace by removing the .curd/ directory
+.TP
+curd\-status(1)
+Print a summary of the current workspace state (index stats, shadow changes, etc.)
+.TP
+curd\-log(1)
+Tail the agent\*(Aqs mutation and execution history
+.TP
+curd\-repl(1)
+Start the interactive CURD REPL for semantic exploration
+.TP
+curd\-run(1)
+Run a .curd script by compiling it to the current DSL IR
+.TP
+curd\-test(1)
+Run semantic integrity tests on the symbol graph
+.TP
+curd\-search(1)
+Semantic search across the indexed graph
+.TP
+curd\-graph(1)
+Explore the caller/callee dependency graph of a symbol
+.TP
+curd\-read(1)
+Read a file or semantic symbol exactly as the engine parses it
+.TP
+curd\-edit(1)
+Manually mutate a file or symbol via the AST\-aware EditEngine
+.TP
+curd\-diagram(1)
+Generate diagrams from the symbol graph
+.TP
+curd\-session(1)
+Manage manual ShadowStore transaction sessions
+.TP
+curd\-plan(1)
+Manage, inspect, and execute saved AI plans
+.TP
+curd\-completions(1)
+Generate shell completion scripts
+.TP
+curd\-man(1)
+Generate man pages
+.TP
+curd\-index(1)
+Alias for curd doctor indexing
+.TP
+curd\-h(1)
+Show help for CURD
+.TP
+curd\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH VERSION
+v0.7.1\-beta
+.SH AUTHORS
+Aerospeedsta <dev@aerospeedsta.dev>

@@ -61,6 +61,14 @@ def render_homebrew(version: str, base_url: str, dist_dir: Path) -> str:
 
           def install
             bin.install "curd"
+            
+            # Generate shell completions
+            (bash_completion/"curd").write `#{bin}/curd completions bash`
+            (zsh_completion/"_curd").write `#{bin}/curd completions zsh`
+            (fish_completion/"curd.fish").write `#{bin}/curd completions fish`
+            
+            # Generate man page
+            (man1/"curd.1").write `#{bin}/curd man`
           end
 
           test do
@@ -309,6 +317,52 @@ def render_install_commands(version: str) -> str:
     )
 
 
+def render_conda_forge(version: str) -> str:
+    # Conda-forge usually strips the -beta suffix for its internal versioning if needed, 
+    # but we'll provide the raw one here.
+    return textwrap.dedent(
+        f"""\
+        {{% set name = "curd" %}}
+        {{% set version = "{version}" %}}
+
+        package:
+          name: {{{{ name|lower }}}}
+          version: {{{{ version }}}}
+
+        source:
+          url: https://github.com/bharath/CURD/archive/refs/tags/v{{{{ version }}}}.tar.gz
+          sha256: REPLACE_WITH_SOURCE_TARBALL_SHA256
+
+        build:
+          number: 0
+          script: cargo install --locked --root {{{{ PREFIX }}}} --path curd
+
+        requirements:
+          build:
+            - {{{{ compiler('c') }}}}
+            - {{{{ compiler('rust') }}}}
+          host:
+            - openssl
+          run:
+            - openssl
+
+        test:
+          commands:
+            - curd --version
+
+        about:
+          home: https://github.com/bharath/CURD
+          license: GPL-3.0-only
+          license_file: LICENSE
+          summary: 'Semantic code intelligence control plane for humans and agents'
+
+        extra:
+          recipe-maintainers:
+            - aerospeedsta
+        """
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate package manager release assets for CURD.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -333,6 +387,7 @@ def main() -> None:
     )
     for rel_path, content in render_winget_manifests(version, base_url, dist_dir).items():
         write(output / "winget" / rel_path, content)
+    write(output / "conda" / "meta.yaml", render_conda_forge(version))
     write(output / "pixi" / "pixi.toml", render_pixi_snippet(">=3.13,<3.14"))
     write(output / "mise" / "mise.toml", render_mise_snippet())
     write(output / "INSTALL_COMMANDS.md", render_install_commands(version))

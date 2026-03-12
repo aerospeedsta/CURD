@@ -1,0 +1,29 @@
+name: curd
+base: core24
+version: '0.7.1-beta'
+summary: Semantic code intelligence control plane
+description: |
+  CURD is a high-performance deterministic semantic code execution engine.
+  It maps your repository into a symbol graph for safe, AST-aware mutations.
+
+grade: stable
+confinement: strict
+
+apps:
+  curd:
+    command: bin/curd
+    plugs:
+      - home
+      - network
+      - removable-media
+
+parts:
+  curd:
+    plugin: rust
+    source: .
+    build-packages:
+      - pkg-config
+      - libssl-dev
+    stage-packages:
+      - libssl3
+    rust-path: curd

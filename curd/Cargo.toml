@@ -2,6 +2,28 @@
 name = "curd"
 version = "0.7.1-beta"
 edition = "2024"
+description = "A high-performance deterministic semantic code execution engine"
+license = "GPL-3.0-or-later"
+authors = ["Aerospeedsta <dev@aerospeedsta.dev>"]
+repository = "https://github.com/aerospeedsta/CURD"
+
+[package.metadata.deb]
+assets = [
+    ["target/release/curd", "/usr/bin/curd", "755"],
+    ["assets/man/curd.1", "/usr/share/man/man1/curd.1", "644"],
+    ["assets/completions/curd.bash", "/usr/share/bash-completion/completions/curd", "644"],
+    ["assets/completions/_curd", "/usr/share/zsh/vendor-completions/_curd", "644"],
+    ["assets/completions/curd.fish", "/usr/share/fish/vendor_completions.d/curd.fish", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/curd", dest = "/usr/bin/curd", mode = "755" },
+    { source = "assets/man/curd.1", dest = "/usr/share/man/man1/curd.1", mode = "644" },
+    { source = "assets/completions/curd.bash", dest = "/usr/share/bash-completion/completions/curd", mode = "644" },
+    { source = "assets/completions/_curd", dest = "/usr/share/zsh/vendor-completions/_curd", mode = "644" },
+    { source = "assets/completions/curd.fish", dest = "/usr/share/fish/vendor_completions.d/curd.fish", mode = "644" },
+]
 
 [features]
 default = ["full"]
@@ -25,6 +47,8 @@ colored = "2.1"
 rustyline = "14.0"
 log = "0.4"
 petgraph = "0.6"
+clap_complete = "4.5.66"
+clap_mangen = "0.2.31"
 
 [dev-dependencies]
 tempfile = "3.10"
